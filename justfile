@@ -9,21 +9,6 @@ test-honk:
 
 build-honk-assets: honc-cold-138-asset hoonc-octs-type-138-asset
 
-build-honk-test-assets: core-extension-preserves-previous-arms-oracle
-
-core-extension-preserves-previous-arms-oracle:
-    #!/usr/bin/env sh
-    set -eu
-    output=crates/honk/test-assets/arbitrary-jams/core_extension_preserves_previous_arms.jam
-    if [ -f "$output" ]; then
-        echo "$output is up to date"
-        exit 0
-    fi
-    mkdir -p crates/honk/test-assets/arbitrary-jams
-    rm -f core_extension_preserves_previous_arms.jam
-    target/release/hoonc --dynock --output core_extension_preserves_previous_arms.jam hoon/tests/hoon-compiler/core_extension_preserves_previous_arms.hoon hoon
-    mv core_extension_preserves_previous_arms.jam "$output"
-
 honc-cold-138-asset:
     mkdir -p assets target/honk-assets
     target/release/honk --new --dump-wrapper-assets target/honk-assets/wrapper-assets --prelude hoon/common/hoon.hoon hoon
