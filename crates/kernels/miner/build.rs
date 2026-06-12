@@ -1,4 +1,4 @@
-#[path = "../../../../scripts/kernel_jam_build.rs"]
+#[path = "../../../scripts/kernel_jam_build.rs"]
 mod kernel_jam_build;
 
 fn main() {
