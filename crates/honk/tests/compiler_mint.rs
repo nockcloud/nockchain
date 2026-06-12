@@ -132,37 +132,10 @@ fn repo_path(path: &str) -> PathBuf {
     }
 
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
+        .join("../..")
         .join(path)
 }
 
-fn repo_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    workspace_root_from(&manifest).unwrap_or_else(|| manifest.join("../../.."))
-}
-
-fn oracle_test_asset_path(rel: &str) -> PathBuf {
-    let checked_in_rel = format!("open/crates/honk/test-assets/arbitrary-jams/{rel}");
-    let bazel_output_rel = format!("open/crates/honk/test-assets/{rel}");
-    let checked_in_path = repo_path(&checked_in_rel);
-    let workspace = repo_root();
-    for candidate in [
-        checked_in_path.clone(),
-        repo_path(&bazel_output_rel),
-        workspace.join("bazel-bin").join(&bazel_output_rel),
-        workspace
-            .join("bazel-out")
-            .join("k8-opt")
-            .join("bin")
-            .join(&bazel_output_rel),
-    ] {
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-
-    checked_in_path
-}
 
 fn parser_dbug_enabled() -> bool {
     std::env::var("HOON_TEST_PARSER_DBUG")
@@ -197,13 +170,11 @@ fn wer_from_source_path(path: &Path) -> Vec<String> {
             _ => None,
         })
         .collect();
-    components
-        .windows(2)
-        .position(|window| {
-            matches!(window, [scope, hoon] if matches!(scope.as_str(), "open" | "closed") && hoon == "hoon")
-        })
-        .map(|idx| components[idx + 2..].to_vec())
-        .unwrap_or(components)
+    if let Some(idx) = components.iter().rposition(|segment| segment == "hoon") {
+        components[idx + 1..].to_vec()
+    } else {
+        components
+    }
 }
 
 fn parse_expr_with_path(src: &str, path: &Path) -> Hoon {
@@ -216,7 +187,7 @@ fn parse_expr_with_path(src: &str, path: &Path) -> Hoon {
 }
 
 fn hoon_test_source_path(rel: &str) -> PathBuf {
-    repo_path(&format!("open/hoon/tests/hoon-compiler/{rel}"))
+    repo_path(&format!("hoon/tests/hoon-compiler/{rel}"))
 }
 
 fn parse_hoon_test_source_expr(rel: &str) -> Hoon {
@@ -227,180 +198,33 @@ fn parse_hoon_test_source_expr(rel: &str) -> Hoon {
     parse_expr_with_path(src.as_str(), path.as_path())
 }
 
-fn required_oracle_jam_fixture(rel: &str) -> Vec<u8> {
-    let path = oracle_test_asset_path(rel);
-    fs::read(&path).unwrap_or_else(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            panic!(
-                "missing oracle jam fixture {}\n\
-                 generate it with:\n\
-                 `make build-honk-test-assets`\n\
-                 (Bazel targets: //open/crates/honk/test-assets:oracle_dynock_jams and :oracle_exact_artifact_jams)",
-                path.display()
-            );
-        }
-        panic!(
-            "failed to read oracle jam fixture {}: {err}",
-            path.display()
-        );
-    })
-}
-
-async fn compile_native_dynock_no_oracle(expr: &Hoon) -> Vec<u8> {
-    let mut native = native_compiler().await;
-    let mut compiled = native
-        .compile_expr(expr)
-        .expect("native compile should succeed");
-    compiled.jam_dynock()
-}
-
-fn rejam_with_noun_slab(jam: &[u8]) -> Vec<u8> {
-    let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-    let noun = <nockvm::noun::Noun as NounExt>::cue_bytes_slice(&mut stack, jam)
-        .expect("jam should cue before nounslab rejam");
-    let mut slab: NounSlab<NockJammer> = NounSlab::new();
-    let source_space = stack.noun_space();
-    let root = slab.copy_into(noun, &source_space);
-    slab.set_root(root);
-    slab.jam().to_vec()
-}
-
 fn create_native_test_context() -> Context {
     let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
     let cold = Cold::new(&mut stack);
     create_context(stack, native_hot_state(), cold, None, vec![])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JamCompareMode {
-    NounSlabRejam,
-}
-
-impl JamCompareMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::NounSlabRejam => "nounslab-rejam",
-        }
-    }
-}
-
-fn normalize_jam_for_compare(jam: &[u8], mode: JamCompareMode) -> Vec<u8> {
-    match mode {
-        JamCompareMode::NounSlabRejam => rejam_with_noun_slab(jam),
-    }
-}
-
-fn assert_jams_match_with_diff(
-    label: &str,
-    actual: &[u8],
-    expected: &[u8],
-    compare_mode: JamCompareMode,
-) {
-    let actual_cmp = normalize_jam_for_compare(actual, compare_mode);
-    let expected_cmp = normalize_jam_for_compare(expected, compare_mode);
-    if actual_cmp == expected_cmp {
-        return;
-    }
-
-    let raw_options = NounDiffOptions::default();
-    let no_hint_options = NounDiffOptions {
-        ignore_nock_hints: true,
-        ..NounDiffOptions::default()
-    };
-    let diff = noun_structural_diff_from_jams(&actual_cmp, &expected_cmp, raw_options);
-    let diff_no_hints = noun_structural_diff_from_jams(&actual_cmp, &expected_cmp, no_hint_options);
-    let diff_count = diff.as_ref().map(|d| d.entries.len()).unwrap_or(0);
-    let no_hint_diff_count = diff_no_hints.as_ref().map(|d| d.entries.len()).unwrap_or(0);
-
-    // In noun-compare mode we care about semantic noun equality, not encoder byte layout.
-    // If structural diff sees no differing axes, treat this as parity even when jam bytes differ.
-    if diff_count == 0 && no_hint_diff_count == 0 {
-        return;
-    }
-
-    if noun_diff_logging_enabled() {
-        if let Some(ref diff) = diff {
-            log_noun_structural_diff(label, diff);
-        } else {
-            eprintln!("[noun-diff:{label}] unable to decode one or both jam nouns");
-        }
-        if let Some(ref diff) = diff_no_hints {
-            log_noun_structural_diff(&format!("{label}-no-hints"), diff);
-        }
-        let left_strings =
-            collect_printable_atom_strings_from_jam(actual, 30_000, 24, 48).unwrap_or_default();
-        let right_strings =
-            collect_printable_atom_strings_from_jam(expected, 30_000, 24, 48).unwrap_or_default();
-        if !left_strings.is_empty() || !right_strings.is_empty() {
-            eprintln!("[noun-diff:{label}] printable atoms (actual):");
-            for entry in &left_strings {
-                eprintln!("  axis={} text={:?}", entry.axis.display(), entry.text);
-            }
-            eprintln!("[noun-diff:{label}] printable atoms (expected):");
-            for entry in &right_strings {
-                eprintln!("  axis={} text={:?}", entry.axis.display(), entry.text);
-            }
-        }
-    }
-    let first_axes = diff
-        .as_ref()
-        .map(|d| {
-            d.entries
-                .iter()
-                .take(8)
-                .map(|entry| entry.axis.display())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_else(|| "<unavailable>".to_string());
-    let compared_nodes = diff.as_ref().map(|d| d.compared_nodes).unwrap_or(0);
-    let truncated = diff.as_ref().map(|d| d.truncated).unwrap_or(false);
-    let no_hint_first_axes = diff_no_hints
-        .as_ref()
-        .map(|d| {
-            d.entries
-                .iter()
-                .take(8)
-                .map(|entry| entry.axis.display())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_else(|| "<unavailable>".to_string());
-
-    panic!(
-        "jam mismatch for {label}: compare_mode={} actual_len={} expected_len={} actual_hash={} expected_hash={} actual_cmp_len={} expected_cmp_len={} actual_cmp_hash={} expected_cmp_hash={} diff_count={} compared_nodes={} truncated={} first_axes=[{}] no_hint_diff_count={} no_hint_first_axes=[{}] (set HOON_TEST_NOUN_DIFF=1 for full axis diff log)",
-        compare_mode.label(),
-        actual.len(),
-        expected.len(),
-        blake3::hash(actual).to_hex(),
-        blake3::hash(expected).to_hex(),
-        actual_cmp.len(),
-        expected_cmp.len(),
-        blake3::hash(&actual_cmp).to_hex(),
-        blake3::hash(&expected_cmp).to_hex(),
-        diff_count,
-        compared_nodes,
-        truncated,
-        first_axes,
-        no_hint_diff_count,
-        no_hint_first_axes
-    );
-}
-
-macro_rules! assert_jams_match {
-    ($actual:expr, $expected:expr, $mode:expr) => {{
-        let actual_jam = $actual;
-        let expected_jam = $expected;
-        assert_jams_match_with_diff(
-            concat!(file!(), ":", line!()),
-            &actual_jam,
-            &expected_jam,
-            $mode,
-        );
-    }};
-}
 
 #[tokio::test]
+async fn core_extension_preserves_previous_arms_native() {
+    // This mirrors the hoon-138 "layering" pattern:
+    // a core (`|%`) is compiled, then a second `|%` is compiled in that core-subject,
+    // and should still be able to resolve earlier arms (unadorned, without `^`).
+    let expr = parse_hoon_test_source_expr("core_extension_preserves_previous_arms.hoon");
+    let mut compiler = native_compiler().await;
+    let mut compiled = compiler.compile_expr(&expr).expect("compile failed");
+    let use_axis = compiled.arm_map().axis_for("use").expect("use axis missing");
+    let core_jam = eval_formula_jam(&compiled.jam());
+
+    let mut runner = ArmRunner::new().expect("runner init failed");
+    let result = runner
+        .run_arm_jam(&core_jam, use_axis, &jam_atom(42))
+        .expect("use arm run failed");
+    let value = runner
+        .result_atom_u64(&result)
+        .expect("use arm result not atom or too large");
+    assert_eq!(value, 42);
+}
 async fn core_extension_preserves_previous_arms_native() {
     // This mirrors the hoon-138 "layering" pattern:
     // a core (`|%`) is compiled, then a second `|%` is compiled in that core-subject,
@@ -558,21 +382,6 @@ fn compiled_type_tag(compiled: &honk::Compiled) -> Option<String> {
 
 fn workspace_root_from(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
-        let cargo_toml = ancestor.join("Cargo.toml");
-        if !cargo_toml.exists() {
-            continue;
-        }
-        let Ok(contents) = fs::read_to_string(&cargo_toml) else {
-            continue;
-        };
-        if contents.contains("[workspace]") {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-    None
-}
-
-async fn compile_native_smoke(expr: &Hoon) -> Vec<u8> {
     let mut native = native_compiler().await;
     let mut compiled = native.compile_expr(expr).expect("native compile failed");
 
