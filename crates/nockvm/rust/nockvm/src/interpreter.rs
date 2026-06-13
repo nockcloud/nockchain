@@ -19,7 +19,7 @@ use crate::jets::warm::Warm;
 use crate::jets::{cold, JetErr};
 use crate::mem::{Arena, NockStack, Preserve};
 use crate::noun::{Atom, Cell, CellHandle, IndirectAtom, Noun, NounSpace, Slots, D, T};
-use crate::trace::{write_behavior_event_safe, write_nock_trace, TraceInfo, TraceStack};
+use crate::trace::{write_nock_trace, TraceInfo, TraceStack};
 use crate::unifying_equality::unifying_equality;
 use crate::{flog, noun};
 
@@ -1898,25 +1898,6 @@ mod hint {
     use crate::noun::{tape, Atom, Cell, Noun, D, T};
     use crate::unifying_equality::unifying_equality;
 
-    fn atom_text(atom: Atom, space: &NounSpace) -> Option<String> {
-        let atom = atom.in_space(space);
-        let text = std::str::from_utf8(atom.as_ne_bytes()).ok()?;
-        Some(text.trim_end_matches('\0').to_string())
-    }
-
-    fn log_hint_event(context: &mut Context, phase: &str, tag: Atom, detail: Option<&str>) {
-        let space = context.stack.fast_noun_space();
-        let Some(tag_text) = atom_text(tag, &space) else {
-            return;
-        };
-        let detail_text = if let Some(detail) = detail {
-            format!("tag={tag_text} {detail}")
-        } else {
-            format!("tag={tag_text}")
-        };
-        write_behavior_event_safe(context, "oracle", phase, None, None, Some(&detail_text));
-    }
-
     pub(super) fn is_tail(tag: Atom) -> bool {
         //  XX: handle IndirectAtom tags
         match tag.direct() {
@@ -2058,7 +2039,6 @@ mod hint {
                 Some(res)
             }
             tas!(b"slog") => {
-                log_hint_event(context, "hint.slog", tag, None);
                 let stack = &mut context.stack;
                 let slogger = &mut context.slogger;
 
@@ -2074,7 +2054,6 @@ mod hint {
                 None
             }
             tas!(b"hand") | tas!(b"hunk") | tas!(b"lose") | tas!(b"mean") | tas!(b"spot") => {
-                log_hint_event(context, "hint.push", tag, None);
                 let stack = &mut context.stack;
                 let (_form, clue) = hint?;
                 let noun = T(stack, &[tag.as_noun(), clue]);
@@ -2140,16 +2119,6 @@ mod hint {
         body: Noun,
         res: Noun,
     ) -> Option<Noun> {
-        if let Some(tag_direct) = tag.direct() {
-            let data = tag_direct.data();
-            if matches!(
-                data,
-                tas!(b"hand") | tas!(b"hunk") | tas!(b"lose") | tas!(b"mean") | tas!(b"spot")
-            ) {
-                log_hint_event(context, "hint.pop", tag, None);
-            }
-        }
-
         let stack = &mut context.stack;
         let slogger = &mut context.slogger;
         let cold = &mut context.cold;
