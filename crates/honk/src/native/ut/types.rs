@@ -145,12 +145,6 @@ pub type CoolMemoKey = (u32, u32, u8, u64, u64);
 pub type ChipMemoKey = (u32, u8, u8, u8, u8, u64, u64, u64, u64);
 pub type WingAxisMemoKey = (u32, u64, u64);
 pub type LookMemoKey = (u64, u64);
-pub type ArmTypeRawMemoKey = (u64, u64, u64, u64, u64);
-pub type ArmFireRawMemoKey = (u64, u64, u64, u64, u64, u64, u8);
-pub type ArmTypeMugMemoKey = (u32, u32, u32, u32, u32);
-pub type ArmFireMugMemoKey = (u32, u32, u32, u32, u32, u8, u64);
-pub type ArmDryNounMemoKey = (u64, u64);
-pub type CoreKeyMemoKey = u64;
 pub type HoldTypeRawMemoKey = (u64, u64);
 pub type HoldTypeMemoKey = (u32, u32);
 pub type HoldRepoRawMemoKey = (u64, u64, u64);
@@ -220,28 +214,6 @@ impl Default for LookupMemoSet {
             wing_axis: Default::default(),
             look: Default::default(),
             loot: Default::default(),
-        }
-    }
-}
-
-pub struct ArmMemoSet {
-    pub arm_type_raw: RawMemoMap<ArmTypeRawMemoKey, Noun>,
-    pub arm_type: BucketMemo<ArmTypeMugMemoKey, ArmCacheMugEntry>,
-    pub arm_fire_raw: RawMemoMap<ArmFireRawMemoKey, Noun>,
-    pub arm_fire: BucketMemo<ArmFireMugMemoKey, ArmCacheMugEntry>,
-    pub arm_dry_noun: RawMemoMap<ArmDryNounMemoKey, Noun>,
-    pub core_key: RawMemoMap<CoreKeyMemoKey, (u64, u64, u64, u64)>,
-}
-
-impl Default for ArmMemoSet {
-    fn default() -> Self {
-        Self {
-            arm_type_raw: Default::default(),
-            arm_type: Default::default(),
-            arm_fire_raw: Default::default(),
-            arm_fire: Default::default(),
-            arm_dry_noun: Default::default(),
-            core_key: Default::default(),
         }
     }
 }
@@ -918,17 +890,6 @@ pub struct NestCacheEntry {
     pub sut: Noun,
     pub ref_: Noun,
     pub result: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ArmCacheMugEntry {
-    pub payload: Noun,
-    pub garb: Noun,
-    pub context: Noun,
-    pub tomes: Noun,
-    pub hoon: Noun,
-    pub fan_context: u64,
-    pub ty: Noun,
 }
 
 #[derive(Clone, Copy, Debug)]

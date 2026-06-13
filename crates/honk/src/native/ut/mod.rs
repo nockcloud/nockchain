@@ -148,7 +148,6 @@ pub struct Ut<'a> {
     dbug_locations: Vec<CompilerErrorLocation>,
     // Memoization tables. New cache keys should derive semantic/memo state from the helper
     // accessors below rather than hand-assembling context tuples at each cache surface.
-    pub arm_memo: ArmMemoSet,
     // Recursion / in-progress guards. These are not caches; they constrain valid memo reuse and
     // are folded into the memo-context helpers when the cache policy requires it.
     pub arm_in_progress: HashSet<(Arc<str>, u64)>,
@@ -1824,7 +1823,6 @@ impl<'a> Ut<'a> {
             slab,
             vet: true,
             dbug_locations: Vec::new(),
-            arm_memo: Default::default(),
             arm_in_progress: HashSet::new(),
             arm_goal_in_progress: Vec::new(),
             arm_placeholder_play_in_progress: HashSet::new(),
@@ -1983,7 +1981,6 @@ impl<'a> Ut<'a> {
     pub fn clear_build_memos(&mut self) {
         self.clear_build_transients();
         self.arm_epoch = 0;
-        self.arm_memo = Default::default();
         self.hold_memo = Default::default();
         self.boundary_memo = Default::default();
         self.lookup_memo = Default::default();
