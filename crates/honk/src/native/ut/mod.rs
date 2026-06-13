@@ -1978,6 +1978,19 @@ impl<'a> Ut<'a> {
         self.vet = vet;
     }
 
+    /// Run `f` with `vet` forced off, restoring the previous value afterward
+    /// (on both Ok and Err). Replaces the hand-rolled raw-pointer `VetGuard`
+    /// drop guards in the type-checker; vet is plain `Copy` state, so a
+    /// save/restore around the call is sufficient and avoids `unsafe` in
+    /// semantic logic. (A panic unwinding through here leaves vet off, but
+    /// honk discards the Ut after any caught compile panic.)
+    fn with_vet_off<R>(&mut self, f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
+        let prev = std::mem::replace(&mut self.vet, false);
+        let result = f(self);
+        self.vet = prev;
+        result
+    }
+
     pub fn clear_build_memos(&mut self) {
         self.clear_build_transients();
         self.arm_epoch = 0;
@@ -3847,27 +3860,12 @@ impl<'a> Ut<'a> {
     }
 
     pub fn play(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
-        // Canonical ++play runs with vet disabled for the entire evaluation scope.
-        struct VetGuard {
-            vet: *mut bool,
-            prev: bool,
-        }
-        impl Drop for VetGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    *self.vet = self.prev;
-                }
-            }
-        }
-        let vet_ptr: *mut bool = std::ptr::addr_of_mut!(self.vet);
-        let prev_vet = unsafe { *vet_ptr };
-        unsafe {
-            *vet_ptr = false;
-        }
-        let _play_vet_guard = VetGuard {
-            vet: vet_ptr,
-            prev: prev_vet,
-        };
+        // Canonical ++play runs with vet disabled for the entire evaluation
+        // scope; restore it afterward (safe save/restore — see with_vet_off).
+        self.with_vet_off(|ut| ut.play_inner(sut, gen))
+    }
+
+    fn play_inner(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
         let result = {
             match gen {
                 Hoon::Pair(p, q) => {
@@ -6474,30 +6472,12 @@ impl<'a> Ut<'a> {
     fn mint_zpts(&mut self, sut: Noun, gol: Noun, p: &Hoon) -> Result<(Noun, Noun)> {
         let noun_ty = ty_noun(self.slab);
         let ty = self.nice(sut, gol, noun_ty)?;
-        struct VetGuard {
-            vet: *mut bool,
-            prev: bool,
-        }
-        impl Drop for VetGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    *self.vet = self.prev;
-                }
-            }
-        }
-        let vet_ptr: *mut bool = std::ptr::addr_of_mut!(self.vet);
-        let prev_vet = unsafe { *vet_ptr };
-        unsafe {
-            *vet_ptr = false;
-        }
-        let _vet_guard = VetGuard {
-            vet: vet_ptr,
-            prev: prev_vet,
-        };
         // hoon-138: `%zpts` compiles inner with `gol=%noun` under `vet=|`.
-        let (_p_ty, p_formula) = self.mint(sut, noun_ty, p)?;
-        let formula = T(self.slab, &[D(1), p_formula]);
-        Ok((ty, formula))
+        self.with_vet_off(|ut| {
+            let (_p_ty, p_formula) = ut.mint(sut, noun_ty, p)?;
+            let formula = T(ut.slab, &[D(1), p_formula]);
+            Ok((ty, formula))
+        })
     }
 
     fn mint_zppt(
@@ -10728,27 +10708,7 @@ impl<'a> Ut<'a> {
                 }
                 // Fire sut-side with vet on, dox-side with vet off.
                 let p_ty = ut.fire(&hag_p)?;
-                struct VetGuard {
-                    vet: *mut bool,
-                    prev: bool,
-                }
-                impl Drop for VetGuard {
-                    fn drop(&mut self) {
-                        unsafe {
-                            *self.vet = self.prev;
-                        }
-                    }
-                }
-                let vet_ptr: *mut bool = std::ptr::addr_of_mut!(ut.vet);
-                let prev_vet = unsafe { *vet_ptr };
-                unsafe {
-                    *vet_ptr = false;
-                }
-                let _vet_guard = VetGuard {
-                    vet: vet_ptr,
-                    prev: prev_vet,
-                };
-                let q_ty = ut.fire(&hag_q)?;
+                let q_ty = ut.with_vet_off(|ut| ut.fire(&hag_q))?;
                 Ok((p_ty, q_ty))
             }
             // Mismatched opal types: one leg, one arm
