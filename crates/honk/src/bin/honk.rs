@@ -15,7 +15,7 @@ use honk::native::ut::{ty_noun, Ut};
 use honk::pipeline;
 use honk::pipeline::{NativeImportKind, ScopeMode};
 use nockapp::noun::slab::{NockJammer, NounSlab};
-use nockapp::noun::NounAllocatorExt;
+use nockapp::noun::{BrandedEvalExt, BrandedNounSpaceExt, NounAllocatorExt};
 use nockapp::utils::{create_context, NOCK_STACK_SIZE_MEDIUM};
 use nockvm::jets::JetDispatchMode;
 use nockapp::AtomExt;
@@ -3133,50 +3133,62 @@ fn eval_formula_noun_in_context(
         let eval_value = unsafe {
             eval_context.with_stack_frame(0, |context| -> std::result::Result<Noun, NockError> {
                 let trace = env::var_os("NATIVE_HOON_TRACE").is_some();
-                let start = Instant::now();
-                let subject = build_subject(&mut context.stack);
-                if trace {
-                    eprintln!(
-                        "[honk] eval {label}: assembled subject {:.3}s",
-                        start.elapsed().as_secs_f64()
-                    );
-                }
-                let start = Instant::now();
-                let formula = copy_noun_to_allocator(&mut context.stack, formula, formula_space);
-                if trace {
-                    eprintln!(
-                        "[honk] eval {label}: copied formula {:.3}s",
-                        start.elapsed().as_secs_f64()
-                    );
-                }
-                let start = Instant::now();
-                let interpreted = interpret(context, subject, formula);
-                let elapsed = start.elapsed();
-                add_interpret_timing(elapsed);
-                debug!(
-                    label = label,
-                    reason = "evaluating minted Hoon formula with its assembled subject",
-                    elapsed_ms = elapsed.as_secs_f64() * 1_000.0,
-                    success = interpreted.is_ok(),
-                    "NockStack eval finished"
-                );
-                match interpreted {
-                    Ok(value) => {
-                        if trace {
-                            eprintln!(
-                                "[honk] eval {label}: interpreted {:.3}s",
-                                elapsed.as_secs_f64()
-                            );
-                        }
-                        Ok(value)
+                // Eval boundary: brand the interpreter's stack so the slab
+                // formula must be copied in (acquiring the stack's brand)
+                // before it can reach `interpret`. The raw slab `formula` no
+                // longer type-checks as an argument here — the "alien noun"
+                // hazard is now a brand error rather than a runtime range panic.
+                let stack_space = context.stack.noun_space();
+                stack_space.with_brand(|brand| -> std::result::Result<Noun, NockError> {
+                    let start = Instant::now();
+                    let subject = brand.handle(build_subject(&mut context.stack));
+                    if trace {
+                        eprintln!(
+                            "[honk] eval {label}: assembled subject {:.3}s",
+                            start.elapsed().as_secs_f64()
+                        );
                     }
-                    Err(err) => {
-                        if trace {
-                            trace_interpret_error(context, &err);
-                        }
-                        Err(err)
+                    let start = Instant::now();
+                    let formula = brand.copy_in(&mut context.stack, formula, formula_space);
+                    if trace {
+                        eprintln!(
+                            "[honk] eval {label}: copied formula {:.3}s",
+                            start.elapsed().as_secs_f64()
+                        );
                     }
-                }
+                    let start = Instant::now();
+                    let interpreted = brand.interpret(context, subject, formula);
+                    let elapsed = start.elapsed();
+                    add_interpret_timing(elapsed);
+                    debug!(
+                        label = label,
+                        reason = "evaluating minted Hoon formula with its assembled subject",
+                        elapsed_ms = elapsed.as_secs_f64() * 1_000.0,
+                        success = interpreted.is_ok(),
+                        "NockStack eval finished"
+                    );
+                    match interpreted {
+                        Ok(value) => {
+                            if trace {
+                                eprintln!(
+                                    "[honk] eval {label}: interpreted {:.3}s",
+                                    elapsed.as_secs_f64()
+                                );
+                            }
+                            // The branded product can't escape `with_brand`;
+                            // unwrap to the raw stack noun, which the caller
+                            // re-associates with the eval stack exactly as the
+                            // pre-branded path did.
+                            Ok(value.unbranded().noun())
+                        }
+                        Err(err) => {
+                            if trace {
+                                trace_interpret_error(context, &err);
+                            }
+                            Err(err)
+                        }
+                    }
+                })
             })
         }
         .map_err(|err| format!("interpret formula: {err:?}"))?;
