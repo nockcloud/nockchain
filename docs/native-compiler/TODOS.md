@@ -4,7 +4,7 @@ Cf. `docs/native-compiler/DOR-DEEP-EQUALITY.md`, "honk's nouns live in NounSlabs
 
 This isn't allowed in the post-PMA nockvm. The burden of and reasons for copying/referencing PMA nouns (cold state? something else?) need to be analyzed and `honk` made to conform to PMA `nockvm` memory-safety constraints.
 
-- Phase 0: commit to copy-at-boundary as the one regime; delete the dormant readonly-range machinery from NockStack/EqualityWork (TODOS-PERF #5).
+- Phase 0: commit to copy-at-boundary as the one regime; delete the dormant readonly-range machinery from NockStack/EqualityWork (TODOS-PERF #5). DONE (2026-06-12): readonly ranges, replace_extra_noun_ptr_ranges, and the EqualityWork rework are deleted; unifying_equality.rs is back to the merge-base implementation.
 - Phase 1: make the boundary mechanical — handle/branded-handle APIs on honk's eval wrappers so raw slab nouns can't reach interpret; replace Compiled::formula()+noun_space() with a scoped with_formula (subsumes the "raw Noun without lifetime binding" TODO); corral the musk raw-pointer juggling (subsumes the "unsafe borrow workarounds" TODO).
 - Phase 2: restore a release-mode net where it's free — copy_into already walks every node, so validate provenance there.
 - Phase 3: slab generations instead of address-as-identity for the mack caches, explicit context epochs instead of frame_identity, then un-leak the slab (subsumes the unbounded-slab-lifetime TODO; also the right moment to fix mack's cached-panic conflation).
