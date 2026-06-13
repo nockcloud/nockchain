@@ -248,10 +248,6 @@ impl Sig64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    fn new() -> Self {
-        Self::new_with_dbug_spots(false)
-    }
-
     fn new_with_dbug_spots(include_dbug_spot: bool) -> Self {
         Self {
             state: Self::OFFSET,
@@ -309,12 +305,6 @@ impl Sig64 {
     fn write_spot(&mut self, spot: &Spot) {
         self.write_path(&spot.p);
         self.write_pint(&spot.q);
-    }
-
-    fn hoon_signature(hoon: &Hoon) -> Option<u64> {
-        let mut sig = Self::new();
-        sig.write_hoon(hoon)?;
-        Some(sig.finish())
     }
 
     fn hoon_signature_spot_sensitive(hoon: &Hoon) -> Option<u64> {
@@ -2335,10 +2325,6 @@ impl<'a> Ut<'a> {
         hash
     }
 
-    fn hoon_cache_signature(gen: &Hoon) -> Option<u64> {
-        Sig64::hoon_signature(gen)
-    }
-
     fn mint_cache_signature(gen: &Hoon) -> Option<u64> {
         // `mint` returns formula nouns with `%spot` hints, so cache keys must include debug spots.
         Sig64::hoon_signature_spot_sensitive(gen)
@@ -3472,38 +3458,6 @@ impl<'a> Ut<'a> {
         Ok(())
     }
 
-    fn cool_cache_lookup(
-        &mut self,
-        pol: bool,
-        sut: Noun,
-        ref_type: Noun,
-        wing: &WingType,
-    ) -> Result<Option<Noun>> {
-        let _ = (pol, sut, ref_type, wing);
-        Ok(None)
-    }
-
-    fn cool_cache_store(
-        &mut self,
-        pol: bool,
-        sut: Noun,
-        ref_type: Noun,
-        wing: &WingType,
-        typ: Noun,
-    ) -> Result<()> {
-        let _ = (pol, sut, ref_type, wing, typ);
-        Ok(())
-    }
-
-    fn chip_cache_lookup(&mut self, how: bool, sut: Noun, gen_sig: u64) -> Result<Option<Noun>> {
-        let _ = (how, sut, gen_sig);
-        Ok(None)
-    }
-
-    fn chip_cache_store(&mut self, how: bool, sut: Noun, gen_sig: u64, typ: Noun) -> Result<()> {
-        let _ = (how, sut, gen_sig, typ);
-        Ok(())
-    }
 
     fn noun_mug_cached(&self, noun: Noun) -> u32 {
         // Prefer the mug cached on allocated nouns. This avoids building an ever-growing Rust
@@ -8693,100 +8647,82 @@ impl<'a> Ut<'a> {
     }
 
     fn chip(&mut self, how: bool, sut: Noun, gen: &Hoon) -> Result<Noun> {
-        let cache_sig = Self::hoon_cache_signature(gen);
-        if let Some(gen_sig) = cache_sig {
-            if let Some(cached) = self.chip_cache_lookup(how, sut, gen_sig)? {
-                return Ok(cached);
+        match gen {
+            // Source-location/debug wrappers are non-semantic.
+            Hoon::Dbug(_, inner) | Hoon::Note(_, inner) => self.chip(how, sut, inner.as_ref()),
+            Hoon::WutTis(spec, wing) => {
+                let example = self.spec_example_cached(spec);
+                let ref_type = self.play(sut, example.as_ref())?;
+                self.cool(how, sut, wing, ref_type)
             }
-        }
-        let result = {
-            match gen {
-                // Source-location/debug wrappers are non-semantic.
-                Hoon::Dbug(_, inner) | Hoon::Note(_, inner) => self.chip(how, sut, inner.as_ref()),
-                Hoon::WutTis(spec, wing) => {
-                    let example = self.spec_example_cached(spec);
-                    let ref_type = self.play(sut, example.as_ref())?;
-                    self.cool(how, sut, wing, ref_type)
-                }
-                Hoon::WutHax(skin, wing) => {
-                    let port = self.find(sut, Way::Both, wing)?;
-                    let palo = match port {
-                        Port::Palo(palo) => palo,
-                        Port::Synthetic { .. } => return Ok(sut),
-                    };
-                    let duz = |ut: &mut Self, a: Noun| {
-                        if how {
-                            ut.gain_skin(sut, a, skin)
-                        } else {
-                            ut.lose_skin(sut, a, skin)
-                        }
-                    };
-                    let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
-                    Ok(ty)
-                }
-                Hoon::WutPam(list) if how => {
-                    let mut acc = sut;
-                    for item in list {
-                        acc = self.chip(how, acc, item)?;
-                    }
-                    Ok(acc)
-                }
-                Hoon::WutBar(list) if !how => {
-                    let mut acc = sut;
-                    for item in list {
-                        acc = self.chip(how, acc, item)?;
-                    }
-                    Ok(acc)
-                }
-                _ => {
-                    if let Some(opened) = self.open_cached(gen) {
-                        self.chip(how, sut, opened.as_ref())
+            Hoon::WutHax(skin, wing) => {
+                let port = self.find(sut, Way::Both, wing)?;
+                let palo = match port {
+                    Port::Palo(palo) => palo,
+                    Port::Synthetic { .. } => return Ok(sut),
+                };
+                let duz = |ut: &mut Self, a: Noun| {
+                    if how {
+                        ut.gain_skin(sut, a, skin)
                     } else {
-                        Ok(sut)
+                        ut.lose_skin(sut, a, skin)
                     }
+                };
+                let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
+                Ok(ty)
+            }
+            Hoon::WutPam(list) if how => {
+                let mut acc = sut;
+                for item in list {
+                    acc = self.chip(how, acc, item)?;
+                }
+                Ok(acc)
+            }
+            Hoon::WutBar(list) if !how => {
+                let mut acc = sut;
+                for item in list {
+                    acc = self.chip(how, acc, item)?;
+                }
+                Ok(acc)
+            }
+            _ => {
+                if let Some(opened) = self.open_cached(gen) {
+                    self.chip(how, sut, opened.as_ref())
+                } else {
+                    Ok(sut)
                 }
             }
-        };
-        if let (Ok(typ), Some(gen_sig)) = (result.as_ref(), cache_sig) {
-            self.chip_cache_store(how, sut, gen_sig, *typ)?;
         }
-        result
     }
 
     fn cool(&mut self, pol: bool, sut: Noun, wing: &WingType, ref_type: Noun) -> Result<Noun> {
-        {
-            if let Some(cached) = self.cool_cache_lookup(pol, sut, ref_type, wing)? {
-                return Ok(cached);
+        let port = self.find(sut, Way::Both, wing)?;
+        let palo = match port {
+            Port::Palo(palo) => palo,
+            Port::Synthetic { .. } => return Ok(sut),
+        };
+        let duz = |ut: &mut Self, a: Noun| {
+            if pol {
+                ut.fuse(a, ref_type)
+            } else {
+                ut.crop(a, ref_type)
             }
-            let port = self.find(sut, Way::Both, wing)?;
-            let palo = match port {
-                Port::Palo(palo) => palo,
-                Port::Synthetic { .. } => return Ok(sut),
-            };
-            let duz = |ut: &mut Self, a: Noun| {
-                if pol {
-                    ut.fuse(a, ref_type)
-                } else {
-                    ut.crop(a, ref_type)
-                }
-            };
-            let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
-            let ty = if unsafe { ty.raw_equals(&sut) } {
+        };
+        let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
+        let ty = if unsafe { ty.raw_equals(&sut) } {
+            sut
+        } else {
+            // `noun_eq` on large recursive types is expensive; only attempt structural
+            // comparison when mug-equality says it is possible.
+            let ty_mug = self.noun_mug_cached(ty);
+            let sut_mug = self.noun_mug_cached(sut);
+            if ty_mug == sut_mug && noun_eq(ty, sut, &self.slab.noun_space())? {
                 sut
             } else {
-                // `noun_eq` on large recursive types is expensive; only attempt structural
-                // comparison when mug-equality says it is possible.
-                let ty_mug = self.noun_mug_cached(ty);
-                let sut_mug = self.noun_mug_cached(sut);
-                if ty_mug == sut_mug && noun_eq(ty, sut, &self.slab.noun_space())? {
-                    sut
-                } else {
-                    ty
-                }
-            };
-            self.cool_cache_store(pol, sut, ref_type, wing, ty)?;
-            Ok(ty)
-        }
+                ty
+            }
+        };
+        Ok(ty)
     }
 
     fn gain_skin(&mut self, sut: Noun, ref_: Noun, skin: &Skin) -> Result<Noun> {
@@ -10033,12 +9969,16 @@ impl<'a> Ut<'a> {
         go(self, sut, way, axis, &mut seen_holds)
     }
 
+    /// Grow the native stack before recursing into deep type operations
+    /// (`redo`, `mull`, `nest`). Without this, deeply nested types overflow
+    /// the Rust stack on consumers running with a default 8 MB thread stack.
+    /// Constants match the `mint`/`play` guard in `native/mod.rs`.
     fn with_stack_guard<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         #[cfg(test)]
         {
             self.stack_guard_calls = self.stack_guard_calls.saturating_add(1);
         }
-        f(self)
+        stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || f(self))
     }
 
     // =========================================================================
@@ -10064,8 +10004,8 @@ impl<'a> Ut<'a> {
             return Err(CompilerError::Noun("mull-none".to_string()));
         }
 
-        // Use stacker for deep recursion safety (matches mint/play pattern)
-        let result = self.mull_inner(sut, gol, dox, gen)?;
+        // Grow the native stack for deep recursion safety (matches mint/play).
+        let result = self.with_stack_guard(|ut| ut.mull_inner(sut, gol, dox, gen))?;
         self.mull_cache_store(sut, gol, dox, gen_noun, result.0, result.1)?;
         Ok(result)
     }
