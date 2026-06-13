@@ -844,6 +844,16 @@ fn hoon_relative_components(path: &Path) -> Option<Vec<String>> {
     Some(components[marker_idx + 2..].to_vec())
 }
 
+/// When set (HONK_NATIVE_PARITY), the canonical hoon-138 build does NOT
+/// substitute hoonc's embedded prelude formula/subject-type; honk mints them
+/// natively instead. This exposes whether honk's own +mint of the prelude
+/// matches hoonc, rather than passing parity by importing hoonc-produced
+/// nouns. The honk-produced cold state and the canonical $octs input are kept
+/// (they are jet-registration / data inputs, not compiler artifacts).
+fn native_parity_enabled() -> bool {
+    std::env::var_os("HONK_NATIVE_PARITY").is_some()
+}
+
 fn build_context_with_shared_prelude(
     cli: &Cli,
     prelude: &Hoon,
@@ -880,7 +890,8 @@ fn build_context_with_shared_prelude(
             },
         )?;
     }
-    let prelude_formula = if canonical_hoon_138 {
+    let use_embedded = canonical_hoon_138 && !native_parity_enabled();
+    let prelude_formula = if use_embedded {
         trace_timed("cueing canonical honc formula", || {
             cue_honc_formula_to_slab(&mut *ut.slab, EMBEDDED_HONC_FORMULA_138_JAM)
         })?
@@ -891,7 +902,7 @@ fn build_context_with_shared_prelude(
     };
     let prelude_eval_value = D(0);
     let subject_type_jam =
-        subject_type_jam.or_else(|| canonical_hoon_138.then_some(EMBEDDED_HONC_TYPE_138_JAM));
+        subject_type_jam.or_else(|| use_embedded.then_some(EMBEDDED_HONC_TYPE_138_JAM));
     let subject_type_override = if let Some(subject_type_jam) = subject_type_jam {
         Some(trace_timed("cueing shared subject type override", || {
             cue_subject_type_to_slab(&mut *ut.slab, subject_type_jam)
@@ -975,8 +986,9 @@ fn build_context_with_dynamic_wrapper_prelude(
     let mut prelude_vase = trace_timed("seeding shared honc type", || {
         seed_honc_type_with_ut(&mut ut, &mut eval_context, prelude)
     })?;
+    let use_embedded = canonical_hoon_138 && !native_parity_enabled();
     let subject_type_jam =
-        subject_type_jam.or_else(|| canonical_hoon_138.then_some(EMBEDDED_HONC_TYPE_138_JAM));
+        subject_type_jam.or_else(|| use_embedded.then_some(EMBEDDED_HONC_TYPE_138_JAM));
     let subject_type_override = if let Some(subject_type_jam) = subject_type_jam {
         Some(trace_timed("cueing shared subject type override", || {
             cue_subject_type_to_slab(&mut *ut.slab, subject_type_jam)
@@ -1226,8 +1238,10 @@ impl<'a> NativeBuildContext<'a> {
 
         // hoonc arbitrary artifacts serialize the exact +build-honc formula produced by hoon.hoon.
         // Keep canonical hoon-138 artifacts byte-identical while preserving the native fallback for
-        // non-canonical preludes.
-        let prelude_eval_formula = if prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE {
+        // non-canonical preludes (and for the HONK_NATIVE_PARITY audit, which mints natively).
+        let prelude_eval_formula = if prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE
+            && !native_parity_enabled()
+        {
             cue_honc_formula_to_slab(&mut *self.ut.slab, EMBEDDED_HONC_FORMULA_138_JAM)?
         } else {
             prelude_eval_formula
