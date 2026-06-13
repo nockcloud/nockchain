@@ -191,7 +191,7 @@ impl NativeImportResolver {
             parse_native_hoon_source_with_wer_and_dbug(path, source.as_str(), wer, self.dbug)?;
         expr = self.synthetic_urbit_scope_faces(path, expr);
 
-        let mut imports = parse_leading_imports(source.as_str());
+        let mut imports = parse_leading_imports(source.as_str())?;
         let synthetic = self.synthetic_urbit_scope_imports(path, is_root);
         if !synthetic.is_empty() {
             imports.splice(0..0, synthetic);
@@ -221,7 +221,7 @@ impl NativeImportResolver {
     fn resolve_imports_for(&self, path: &Path, is_root: bool) -> Result<Vec<ResolvedNativeImport>> {
         let source = std::fs::read_to_string(path)?;
         let source = sanitize_urbit_sys_header(self.scope_mode, path, source.as_str());
-        let mut imports = parse_leading_imports(source.as_str());
+        let mut imports = parse_leading_imports(source.as_str())?;
         let synthetic = self.synthetic_urbit_scope_imports(path, is_root);
         if !synthetic.is_empty() {
             imports.splice(0..0, synthetic);
@@ -230,11 +230,28 @@ impl NativeImportResolver {
         imports
             .into_iter()
             .map(|import| {
-                let path = self.resolve_import(path, import.kind, import.suffix.as_str())?;
                 let kind = match import.kind {
-                    ImportKind::Bar => NativeImportKind::Data,
+                    ImportKind::Bar => {
+                        // `/*` data imports must declare a mark honk supports.
+                        // Only `%jam` (raw jammed-noun inclusion) is
+                        // implemented; reject others rather than silently
+                        // importing them as generic data.
+                        match import.mark.as_deref() {
+                            Some("jam") => NativeImportKind::Data,
+                            other => {
+                                return Err(CompilerError::UnsupportedExpr(format!(
+                                    "/* import `{}` uses mark {} which honk does not support (only %jam)",
+                                    import.suffix,
+                                    other
+                                        .map(|m| format!("%{m}"))
+                                        .unwrap_or_else(|| "<none>".to_string()),
+                                )));
+                            }
+                        }
+                    }
                     _ => NativeImportKind::Hoon,
                 };
+                let path = self.resolve_import(path, import.kind, import.suffix.as_str())?;
                 Ok(ResolvedNativeImport {
                     kind,
                     face: import.face,
@@ -396,7 +413,7 @@ fn vendored_hoon_sys_path() -> Option<PathBuf> {
     }
 }
 
-fn parse_leading_imports(source: &str) -> Vec<ScopedImport> {
+fn parse_leading_imports(source: &str) -> Result<Vec<ScopedImport>> {
     let mut imports = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
     let mut index = 0usize;
@@ -421,6 +438,10 @@ fn parse_leading_imports(source: &str) -> Vec<ScopedImport> {
         let Some(rune) = chars.next() else {
             break;
         };
+        // A leading `/` whose rune is not an import rune ends the import
+        // block (e.g. the body starts). `/?` (Ford kelvin pin) and `/%`
+        // (propagating build) are import-block runes honk handles
+        // explicitly below.
         if !matches!(rune, '-' | '+' | '=' | '*' | '#' | '?' | '%') {
             break;
         }
@@ -444,50 +465,52 @@ fn parse_leading_imports(source: &str) -> Vec<ScopedImport> {
             break;
         }
 
-        let kind = match rune {
-            '+' => Some(ImportKind::Lib),
-            '=' => Some(ImportKind::Raw),
-            '-' => Some(ImportKind::Sur),
-            '#' => Some(ImportKind::Dat),
-            '*' => Some(ImportKind::Bar),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            if kind == ImportKind::Raw {
-                if let Some(import) = parse_raw_import_clause(clause.as_str()) {
-                    imports.push(import);
-                }
-            } else if kind == ImportKind::Bar {
-                if let Some(import) = parse_bar_import_clause(clause.as_str()) {
-                    imports.push(import);
-                }
-            } else {
-                imports.extend(parse_import_clause(kind, clause.as_str()));
+        match rune {
+            '=' => imports.push(parse_raw_import_clause(clause.as_str())?),
+            '*' => imports.push(parse_bar_import_clause(clause.as_str())?),
+            '+' => imports.extend(parse_import_clause(ImportKind::Lib, clause.as_str())?),
+            '-' => imports.extend(parse_import_clause(ImportKind::Sur, clause.as_str())?),
+            '#' => imports.extend(parse_import_clause(ImportKind::Dat, clause.as_str())?),
+            // `/?` pins the Ford kelvin version; it is not an import. Accept
+            // and ignore it rather than silently treating it as data.
+            '?' => {
+                tracing::debug!(clause = %clause, "ignoring /? Ford version pin");
             }
+            // `/%` (propagating build) is a real Ford rune honk does not
+            // implement; reject rather than silently dropping it.
+            '%' => {
+                return Err(CompilerError::UnsupportedExpr(format!(
+                    "/% imports are not supported by honk: `/%{clause}`"
+                )));
+            }
+            _ => unreachable!("rune gated by matches! above"),
         }
     }
 
-    imports
+    Ok(imports)
 }
 
-fn parse_raw_import_clause(clause: &str) -> Option<ScopedImport> {
+fn parse_raw_import_clause(clause: &str) -> Result<ScopedImport> {
     let token = strip_inline_comment(clause).trim();
+    let malformed = || {
+        CompilerError::Parse(format!("malformed /= import clause: `/={clause}` (expected `face suffix`)"))
+    };
     if token.is_empty() {
-        return None;
+        return Err(malformed());
     }
 
     let mut parts = token.split_whitespace();
-    let face = parts.next()?;
-    let suffix = parts.next()?;
+    let face = parts.next().ok_or_else(malformed)?;
+    let suffix = parts.next().ok_or_else(malformed)?;
     if parts.next().is_some() {
-        return None;
+        return Err(malformed());
     }
     let face = if face == "*" {
         None
     } else {
         Some(face.to_string())
     };
-    Some(ScopedImport {
+    Ok(ScopedImport {
         kind: ImportKind::Raw,
         face,
         mark: None,
@@ -495,25 +518,30 @@ fn parse_raw_import_clause(clause: &str) -> Option<ScopedImport> {
     })
 }
 
-fn parse_bar_import_clause(clause: &str) -> Option<ScopedImport> {
+fn parse_bar_import_clause(clause: &str) -> Result<ScopedImport> {
     let token = strip_inline_comment(clause).trim();
+    let malformed = || {
+        CompilerError::Parse(format!(
+            "malformed /* import clause: `/*{clause}` (expected `face mark suffix`)"
+        ))
+    };
     if token.is_empty() {
-        return None;
+        return Err(malformed());
     }
 
     let mut parts = token.split_whitespace();
-    let face = parts.next()?;
-    let mark = parts.next()?;
-    let suffix = parts.next()?;
+    let face = parts.next().ok_or_else(malformed)?;
+    let mark = parts.next().ok_or_else(malformed)?;
+    let suffix = parts.next().ok_or_else(malformed)?;
     if parts.next().is_some() {
-        return None;
+        return Err(malformed());
     }
     let face = if face == "*" {
         None
     } else {
         Some(face.to_string())
     };
-    Some(ScopedImport {
+    Ok(ScopedImport {
         kind: ImportKind::Bar,
         face,
         mark: Some(mark.trim_start_matches('%').to_string()),
@@ -521,50 +549,51 @@ fn parse_bar_import_clause(clause: &str) -> Option<ScopedImport> {
     })
 }
 
-fn parse_import_clause(kind: ImportKind, clause: &str) -> Vec<ScopedImport> {
-    clause
-        .split(',')
-        .filter_map(|item| {
-            let token = strip_inline_comment(item.trim());
-            if token.is_empty() {
-                return None;
-            }
+fn parse_import_clause(kind: ImportKind, clause: &str) -> Result<Vec<ScopedImport>> {
+    let mut imports = Vec::new();
+    for item in clause.split(',') {
+        let token = strip_inline_comment(item.trim());
+        if token.is_empty() {
+            continue;
+        }
 
-            if let Some(rest) = token.strip_prefix('*') {
-                let suffix = rest.trim();
-                if suffix.is_empty() {
-                    None
-                } else {
-                    Some(ScopedImport {
-                        kind,
-                        face: None,
-                        mark: None,
-                        suffix: suffix.to_string(),
-                    })
-                }
-            } else if let Some((face, suffix)) = token.split_once('=') {
-                let face = face.trim();
-                let suffix = suffix.trim();
-                if face.is_empty() || suffix.is_empty() {
-                    None
-                } else {
-                    Some(ScopedImport {
-                        kind,
-                        face: Some(face.to_string()),
-                        mark: None,
-                        suffix: suffix.to_string(),
-                    })
-                }
-            } else {
-                Some(ScopedImport {
-                    kind,
-                    face: Some(token.to_string()),
-                    mark: None,
-                    suffix: token.to_string(),
-                })
+        if let Some(rest) = token.strip_prefix('*') {
+            let suffix = rest.trim();
+            if suffix.is_empty() {
+                return Err(CompilerError::Parse(format!(
+                    "malformed import clause item `{token}` (empty `*` suffix)"
+                )));
             }
-        })
-        .collect()
+            imports.push(ScopedImport {
+                kind,
+                face: None,
+                mark: None,
+                suffix: suffix.to_string(),
+            });
+        } else if let Some((face, suffix)) = token.split_once('=') {
+            let face = face.trim();
+            let suffix = suffix.trim();
+            if face.is_empty() || suffix.is_empty() {
+                return Err(CompilerError::Parse(format!(
+                    "malformed import clause item `{token}` (expected `face=suffix`)"
+                )));
+            }
+            imports.push(ScopedImport {
+                kind,
+                face: Some(face.to_string()),
+                mark: None,
+                suffix: suffix.to_string(),
+            });
+        } else {
+            imports.push(ScopedImport {
+                kind,
+                face: Some(token.to_string()),
+                mark: None,
+                suffix: token.to_string(),
+            });
+        }
+    }
+    Ok(imports)
 }
 
 fn strip_inline_comment(token: &str) -> &str {
@@ -925,7 +954,7 @@ mod tests {
     #[test]
     fn parses_plus_import_clause_with_alias_and_star() {
         let source = "/+  default-agent, util=verb, *dbug\n|=([a=@ b=@] a)\n";
-        let imports = parse_leading_imports(source);
+        let imports = parse_leading_imports(source).expect("imports parse");
 
         assert_eq!(imports.len(), 3);
         assert_eq!(
@@ -960,7 +989,7 @@ mod tests {
     #[test]
     fn parses_minus_import_clause() {
         let source = "/-  bowl, *lull\n|=([a=@ b=@] a)\n";
-        let imports = parse_leading_imports(source);
+        let imports = parse_leading_imports(source).expect("imports parse");
 
         assert_eq!(imports.len(), 2);
         assert_eq!(
@@ -987,7 +1016,7 @@ mod tests {
     fn parses_raw_and_dat_import_clauses() {
         let source =
             "/=  t  /common/tx-engine\n/=  *  /common/wrapper\n/#  softed-constraints\n|%\n--\n";
-        let imports = parse_leading_imports(source);
+        let imports = parse_leading_imports(source).expect("imports parse");
 
         assert_eq!(imports.len(), 3);
         assert_eq!(
@@ -1017,6 +1046,58 @@ mod tests {
                 suffix: "softed-constraints".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn parses_bar_data_import_with_mark() {
+        let source = "/*  blocks  %jam  /jams/small-blocks/jam\n|%\n--\n";
+        let imports = parse_leading_imports(source).expect("imports parse");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(
+            imports[0],
+            ScopedImport {
+                kind: ImportKind::Bar,
+                face: Some("blocks".to_string()),
+                mark: Some("jam".to_string()),
+                suffix: "/jams/small-blocks/jam".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_ford_version_pin() {
+        // `/?` pins the Ford kelvin version; it is not an import.
+        let source = "/?  310\n/=  *  /common/wrapper\n|%\n--\n";
+        let imports = parse_leading_imports(source).expect("imports parse");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].kind, ImportKind::Raw);
+        assert_eq!(imports[0].suffix, "/common/wrapper");
+    }
+
+    #[test]
+    fn rejects_propagating_build_rune() {
+        let source = "/%  thing  %hoon  /lib/thing\n|%\n--\n";
+        let err = parse_leading_imports(source).expect_err("/% must be rejected");
+        assert!(
+            matches!(err, CompilerError::UnsupportedExpr(_)),
+            "expected UnsupportedExpr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_raw_import() {
+        // `/=` requires `face suffix`; a lone token is malformed.
+        let source = "/=  onlyface\n|%\n--\n";
+        let err = parse_leading_imports(source).expect_err("malformed /= must error");
+        assert!(matches!(err, CompilerError::Parse(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_malformed_bar_import() {
+        // `/*` requires `face mark suffix`.
+        let source = "/*  blocks  /jams/x/jam\n|%\n--\n";
+        let err = parse_leading_imports(source).expect_err("malformed /* must error");
+        assert!(matches!(err, CompilerError::Parse(_)), "got {err:?}");
     }
 
     #[test]
