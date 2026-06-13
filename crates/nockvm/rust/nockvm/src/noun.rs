@@ -672,6 +672,20 @@ impl<'space, 'id> BrandedNounHandle<'space, 'id> {
     pub fn slot(self, axis: u64) -> Result<Self> {
         self.handle.slot(axis).map(Self::from_unbranded)
     }
+
+    /// Discard the generative brand, yielding the underlying space-scoped
+    /// handle (from which the raw `Noun` and its `NounSpace` are reachable).
+    ///
+    /// This is the single deliberate exit from the branded world. The write
+    /// side of the boundary — the `copy_in` / branded `interpret` extensions
+    /// in `nockapp` — uses it to reach the raw `Noun` they must hand to
+    /// `NounAllocatorExt::copy_into` and `interpret`. Ordinary traversal reads
+    /// through the branded handle and never needs this. Unwrapping drops the
+    /// cross-arena guarantee, so the result must be reasoned about manually,
+    /// exactly as raw nouns are today.
+    pub fn unbranded(self) -> NounHandle<'space> {
+        self.handle
+    }
 }
 
 #[derive(Copy, Clone)]
