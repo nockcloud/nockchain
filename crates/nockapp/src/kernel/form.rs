@@ -16,6 +16,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use nockvm::hamt::Hamt;
 use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
 use nockvm::jets::cold::{Cold, Nounable};
+use nockvm::jets::JetDispatchMode;
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::{AllocationError, NewStackError, NockStack};
@@ -2017,7 +2018,14 @@ impl Serf {
 
         let mut context =
             run_serf_init_phase(&diagnostics, "create Nock interpreter context", || {
-                create_context(stack, &hot_state, cold, trace.into(), test_jets)
+                create_context(
+                    stack,
+                    &hot_state,
+                    cold,
+                    trace.into(),
+                    test_jets,
+                    JetDispatchMode::Exact,
+                )
             })?;
         let cancel_token = context.cancel_token();
 
@@ -3489,7 +3497,7 @@ mod tests {
         let mut stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
         let cold = Cold::new(&mut stack);
         let hot_state: [HotEntry; 0] = [];
-        let context = create_context(stack, &hot_state, cold, None, vec![]);
+        let context = create_context(stack, &hot_state, cold, None, vec![], JetDispatchMode::Exact);
         let cancel_token = context.cancel_token();
         Serf {
             ker_hash: Hash::from([0; 32]),
@@ -3654,7 +3662,14 @@ mod tests {
         let mut inject_stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
         let inject_cold = Cold::new(&mut inject_stack);
         let mut inject_context =
-            create_context(inject_stack, URBIT_HOT_STATE, inject_cold, None, vec![]);
+            create_context(
+            inject_stack,
+            URBIT_HOT_STATE,
+            inject_cold,
+            None,
+            vec![],
+            JetDispatchMode::Exact,
+        );
 
         let reinject_cued_cold_into_vm_start = Instant::now();
         let cued_cold_in_vm = cued_cold_slab.copy_to_stack(&mut inject_context.stack);
@@ -3668,7 +3683,11 @@ mod tests {
         let hot = inject_context.hot;
         let test_jets = inject_context.test_jets;
         inject_context.warm = Warm::init(
-            &mut inject_context.stack, &mut inject_context.cold, &hot, &test_jets,
+            &mut inject_context.stack,
+            &mut inject_context.cold,
+            &hot,
+            &test_jets,
+            JetDispatchMode::Exact,
         );
         let reinject_cued_cold_into_vm = reinject_cued_cold_into_vm_start.elapsed();
 

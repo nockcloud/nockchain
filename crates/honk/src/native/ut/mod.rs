@@ -16,6 +16,7 @@ use hatch::utils::{
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::NounAllocatorExt;
 use nockapp::utils::{create_context, NOCK_STACK_SIZE_MEDIUM};
+use nockvm::jets::JetDispatchMode;
 use nockvm::ext::{AtomExt, NounExt};
 use nockvm::interpreter::{interpret, Context};
 use nockvm::jets::cold::{Cold, Nounable};
@@ -10902,7 +10903,14 @@ const HONK_EVAL_STACK_SIZE: usize = NOCK_STACK_SIZE_MEDIUM; // 16GB
 fn create_musk_eval_context() -> Context {
     let mut stack = NockStack::new(HONK_EVAL_STACK_SIZE, 0);
     let cold = Cold::new(&mut stack);
-    create_context(stack, native_hot_state(), cold, None, vec![])
+    create_context(
+        stack,
+        native_hot_state(),
+        cold,
+        None,
+        vec![],
+        JetDispatchMode::HintBlind,
+    )
 }
 
 fn slot_formula_axis_noun(slab: &mut NounSlab, axis_noun: Noun) -> Noun {
@@ -10976,7 +10984,11 @@ fn install_musk_cold_state(context: &mut Context, raw: &[u8], label: &str) -> Re
         &mut context.stack, battery_to_paths, root_to_paths, path_to_batteries,
     );
     context.warm = Warm::init(
-        &mut context.stack, &mut context.cold, &context.hot, &context.test_jets,
+        &mut context.stack,
+        &mut context.cold,
+        &context.hot,
+        &context.test_jets,
+        context.jet_dispatch,
     );
     Ok(())
 }

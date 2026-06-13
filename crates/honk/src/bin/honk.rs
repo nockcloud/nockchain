@@ -17,6 +17,7 @@ use honk::pipeline::{NativeImportKind, ScopeMode};
 use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::noun::NounAllocatorExt;
 use nockapp::utils::{create_context, NOCK_STACK_SIZE_MEDIUM};
+use nockvm::jets::JetDispatchMode;
 use nockapp::AtomExt;
 use nockvm::ext::NounExt;
 use nockvm::hamt::Hamt;
@@ -2962,7 +2963,11 @@ fn load_cold_state(context: &mut Context, raw: &[u8], label: &str) -> Result<()>
         &mut context.stack, battery_to_paths, root_to_paths, path_to_batteries,
     );
     context.warm = Warm::init(
-        &mut context.stack, &mut context.cold, &context.hot, &context.test_jets,
+        &mut context.stack,
+        &mut context.cold,
+        &context.hot,
+        &context.test_jets,
+        context.jet_dispatch,
     );
     Ok(())
 }
@@ -3084,7 +3089,14 @@ const HONK_EVAL_STACK_SIZE: usize = NOCK_STACK_SIZE_MEDIUM; // 16GB
 fn create_eval_context() -> Context {
     let mut stack = NockStack::new(HONK_EVAL_STACK_SIZE, 0);
     let cold = Cold::new(&mut stack);
-    create_context(stack, native_hot_state(), cold, None, vec![])
+    create_context(
+        stack,
+        native_hot_state(),
+        cold,
+        None,
+        vec![],
+        JetDispatchMode::HintBlind,
+    )
 }
 
 fn eval_formula_noun_in_context(
