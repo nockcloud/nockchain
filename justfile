@@ -54,3 +54,35 @@ roswell-jam:
 honk-roswell-kernel:
     mkdir -p assets/native
     cargo run --release -p honk --bin honk -- --new --output assets/native/roswell.jam --prelude hoon/common/hoon.hoon hoon/apps/roswell/roswell.hoon hoon
+
+# Build every kernel in assets/ natively with honk into assets/native/.
+# Never touches the hoonc-built reference jams in assets/.
+honk-kernel-jams:
+    cargo build --release -p honk
+    mkdir -p assets/native
+    target/release/honk --new --output assets/native/dumb.jam --prelude hoon/common/hoon.hoon hoon/apps/dumbnet/outer.hoon hoon
+    target/release/honk --new --output assets/native/wal.jam --prelude hoon/common/hoon.hoon hoon/apps/wallet/wallet.hoon hoon
+    target/release/honk --new --output assets/native/miner.jam --prelude hoon/common/hoon.hoon hoon/apps/dumbnet/miner.hoon hoon
+    target/release/honk --new --output assets/native/peek.jam --prelude hoon/common/hoon.hoon hoon/apps/peek/peek.hoon hoon
+    target/release/honk --new --output assets/native/bridge.jam --prelude hoon/common/hoon.hoon hoon/apps/bridge/bridge.hoon hoon
+    target/release/honk --new --output assets/native/roswell.jam --prelude hoon/common/hoon.hoon hoon/apps/roswell/roswell.hoon hoon
+
+# Compare every honk-built kernel against the hoonc-built reference.
+# PASS requires byte equality or a dir-hash-only difference (proven by
+# substitution + rejam). See jam-diff --kernel-parity.
+honk-parity:
+    cargo build --release -p honk-tools
+    target/release/jam-diff --kernel-parity assets/dumb.jam assets/native/dumb.jam
+    target/release/jam-diff --kernel-parity assets/wal.jam assets/native/wal.jam
+    target/release/jam-diff --kernel-parity assets/miner.jam assets/native/miner.jam
+    target/release/jam-diff --kernel-parity assets/peek.jam assets/native/peek.jam
+    target/release/jam-diff --kernel-parity assets/bridge.jam assets/native/bridge.jam
+    target/release/jam-diff --kernel-parity assets/roswell.jam assets/native/roswell.jam
+
+# Gate: honk must compile the roswell kernel in under 60 seconds
+# (cargo build excluded). Diagnose failures with NATIVE_HOON_TRACE=1 and
+# RUST_LOG=honk=info for per-phase timing.
+honk-roswell-timed:
+    cargo build --release -p honk
+    mkdir -p assets/native
+    bash -c 'start=$(date +%s); target/release/honk --new --output assets/native/roswell.jam --prelude hoon/common/hoon.hoon hoon/apps/roswell/roswell.hoon hoon; end=$(date +%s); elapsed=$((end-start)); echo "roswell native compile: ${elapsed}s"; test "$elapsed" -lt 60'

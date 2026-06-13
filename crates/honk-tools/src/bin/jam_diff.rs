@@ -546,9 +546,245 @@ fn find_spot(jam: &[u8], file_frag: &str, line: u64) {
     println!("total matches: {found}");
 }
 
+struct AtomDiff {
+    axis: String,
+    left_u64: Option<u64>,
+    right_u64: Option<u64>,
+}
+
+/// Walk both trees collecting atom-leaf differences (up to `cap`), instead
+/// of stopping at the first mismatch like `structural_diff`. A shape
+/// mismatch (atom vs cell) is an immediate error: kernel parity tolerates
+/// differing atom values (the dir-hash leaf), never differing structure.
+fn collect_atom_diffs(
+    left: Noun,
+    right: Noun,
+    left_space: &NounSpace,
+    right_space: &NounSpace,
+    cap: usize,
+) -> Result<Vec<AtomDiff>, String> {
+    let mut todo = vec![(left, right, "1".to_string())];
+    let mut seen: HashSet<(u64, u64)> = HashSet::new();
+    let mut diffs = Vec::new();
+    while let Some((left, right, axis)) = todo.pop() {
+        let raw_pair = unsafe { (left.as_raw(), right.as_raw()) };
+        if !seen.insert(raw_pair) {
+            continue;
+        }
+        match (atom_bytes(left, left_space), atom_bytes(right, right_space)) {
+            (Some(left_bytes), Some(right_bytes)) => {
+                if left_bytes != right_bytes {
+                    diffs.push(AtomDiff {
+                        axis: axis.clone(),
+                        left_u64: atom_u64(left, left_space),
+                        right_u64: atom_u64(right, right_space),
+                    });
+                    if diffs.len() > cap {
+                        return Err(format!("more than {cap} atom differences; aborting"));
+                    }
+                }
+            }
+            (None, None) => {
+                let (Some(lh), Some(lt), Some(rh), Some(rt)) = (
+                    noun_head(left, left_space),
+                    noun_tail(left, left_space),
+                    noun_head(right, right_space),
+                    noun_tail(right, right_space),
+                ) else {
+                    return Err(format!("axis={axis} invalid cell"));
+                };
+                todo.push((lt, rt, format!("{axis}.3")));
+                todo.push((lh, rh, format!("{axis}.2")));
+            }
+            _ => {
+                return Err(format!(
+                    "axis={axis} shape mismatch: left={} right={}",
+                    preview(left, left_space),
+                    preview(right, right_space)
+                ));
+            }
+        }
+    }
+    Ok(diffs)
+}
+
+/// Rebuild `root` with the atom at dotted `axis` replaced by `value`.
+fn substitute_at_axis(
+    stack: &mut NockStack,
+    root: Noun,
+    axis: &str,
+    value: Noun,
+    space: &NounSpace,
+) -> Option<Noun> {
+    use nockvm::noun::T;
+    fn go(
+        stack: &mut NockStack,
+        cur: Noun,
+        parts: &[&str],
+        value: Noun,
+        space: &NounSpace,
+    ) -> Option<Noun> {
+        let Some((first, rest)) = parts.split_first() else {
+            return Some(value);
+        };
+        let head = noun_head(cur, space)?;
+        let tail = noun_tail(cur, space)?;
+        match *first {
+            "2" => {
+                let new_head = go(stack, head, rest, value, space)?;
+                Some(T(stack, &[new_head, tail]))
+            }
+            "3" => {
+                let new_tail = go(stack, tail, rest, value, space)?;
+                Some(T(stack, &[head, new_tail]))
+            }
+            _ => None,
+        }
+    }
+    let parts: Vec<&str> = axis.split('.').skip(1).collect();
+    go(stack, root, &parts, value, space)
+}
+
+/// Kernel parity gate: exact byte equality, or equality modulo exactly one
+/// direct-atom leaf (the `dir-hash=@uvI` directory mug, which differs
+/// between Bazel-sandboxed and local builds). On the dir-hash-only path,
+/// additionally substitutes the reference value into the candidate and
+/// proves rejam byte-equality through a single canonical jammer.
+fn kernel_parity(reference_path: &str, candidate_path: &str) -> i32 {
+    let reference = match fs::read(reference_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("failed to read {reference_path}: {err}");
+            return 2;
+        }
+    };
+    let candidate = match fs::read(candidate_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("failed to read {candidate_path}: {err}");
+            return 2;
+        }
+    };
+
+    if reference == candidate {
+        println!("PASS (exact): {candidate_path} == {reference_path}");
+        return 0;
+    }
+
+    let mut reference_stack = NockStack::new(NOCK_STACK_SIZE_MEDIUM, 0);
+    let mut candidate_stack = NockStack::new(NOCK_STACK_SIZE_MEDIUM, 0);
+    let reference_noun = cue(&mut reference_stack, &reference, "reference");
+    let candidate_noun = cue(&mut candidate_stack, &candidate, "candidate");
+    let reference_space = reference_stack.noun_space();
+    let candidate_space = candidate_stack.noun_space();
+
+    let diffs = match collect_atom_diffs(
+        reference_noun,
+        candidate_noun,
+        &reference_space,
+        &candidate_space,
+        16,
+    ) {
+        Ok(diffs) => diffs,
+        Err(err) => {
+            eprintln!("FAIL (structure): {candidate_path} vs {reference_path}: {err}");
+            return 1;
+        }
+    };
+
+    match diffs.as_slice() {
+        [] => {
+            // Structurally identical but bytes differ: encoding difference
+            // (padding/sharing). Prove equivalence through one jammer.
+            let reference_rejam = rejam(&reference, "reference");
+            let candidate_rejam = rejam(&candidate, "candidate");
+            if reference_rejam == candidate_rejam {
+                println!(
+                    "PASS (rejam): {candidate_path} == {reference_path} modulo encoding"
+                );
+                0
+            } else {
+                eprintln!(
+                    "FAIL (encoding): {candidate_path} vs {reference_path}: structurally equal but rejams differ"
+                );
+                1
+            }
+        }
+        [diff] => {
+            let (Some(reference_value), Some(candidate_value)) = (diff.left_u64, diff.right_u64)
+            else {
+                eprintln!(
+                    "FAIL: single differing leaf at axis={} is not a direct-atom pair (dir-hash must be @uvI)",
+                    diff.axis
+                );
+                return 1;
+            };
+            if reference_value > u32::MAX as u64 || candidate_value > u32::MAX as u64 {
+                eprintln!(
+                    "FAIL: single differing leaf at axis={} exceeds 32 bits (left={reference_value} right={candidate_value}); not a dir-hash",
+                    diff.axis
+                );
+                return 1;
+            }
+            // Substitute the reference dir-hash into the candidate and
+            // require byte-identical canonical jams.
+            let substituted = substitute_at_axis(
+                &mut candidate_stack,
+                candidate_noun,
+                &diff.axis,
+                nockvm::noun::D(reference_value),
+                &candidate_space,
+            );
+            let Some(substituted) = substituted else {
+                eprintln!("FAIL: could not substitute dir-hash at axis={}", diff.axis);
+                return 1;
+            };
+            let candidate_space = candidate_stack.noun_space();
+            let mut slab: NounSlab<NockJammer> = NounSlab::new();
+            let root = slab.copy_into(substituted, &candidate_space);
+            slab.set_root(root);
+            let substituted_jam = slab.jam().to_vec();
+            let reference_rejam = rejam(&reference, "reference");
+            if substituted_jam == reference_rejam {
+                println!(
+                    "PASS (dir-hash only): {candidate_path} == {reference_path} modulo dir-hash at axis={} (reference={reference_value:#x} candidate={candidate_value:#x})",
+                    diff.axis
+                );
+                0
+            } else {
+                eprintln!(
+                    "FAIL: dir-hash substitution at axis={} does not reconcile the artifacts",
+                    diff.axis
+                );
+                1
+            }
+        }
+        many => {
+            eprintln!(
+                "FAIL: {} differing atom leaves between {candidate_path} and {reference_path}:",
+                many.len()
+            );
+            for diff in many.iter().take(16) {
+                eprintln!(
+                    "  axis={} left={:?} right={:?}",
+                    diff.axis, diff.left_u64, diff.right_u64
+                );
+            }
+            1
+        }
+    }
+}
+
 fn main() {
     let program = env::args().next().unwrap_or_else(|| "jam-diff".to_string());
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("--kernel-parity") {
+        if args.len() != 3 {
+            eprintln!("usage: {program} --kernel-parity <reference.jam> <candidate.jam>");
+            process::exit(2);
+        }
+        process::exit(kernel_parity(&args[1], &args[2]));
+    }
     if args.first().map(String::as_str) == Some("--find-spot") {
         if args.len() != 4 {
             eprintln!("usage: {program} --find-spot <input.jam> <file-frag> <line>");
