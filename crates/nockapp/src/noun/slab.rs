@@ -16,7 +16,8 @@ use nockvm::ext::noun_equality;
 use nockvm::mem::NockStack;
 use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
 use nockvm::noun::{
-    Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, D, DIRECT_MAX,
+    Atom, BrandedNounSpace, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator,
+    NounSpace, D, DIRECT_MAX,
 };
 use nockvm::serialization::{met0_u64_to_usize, met0_usize};
 use thiserror::Error;
@@ -505,6 +506,21 @@ impl<J> NounSlab<J> {
 
     pub fn noun_space_with_stack(&self, stack: &NockStack) -> NounSpace {
         stack.noun_space().with_extra_ptr_ranges(self.ptr_ranges())
+    }
+
+    /// Run `f` with this slab's noun space branded by a fresh generative
+    /// brand. Branded handles obtained from `bspace` (via `bspace.handle(..)`)
+    /// resolve this slab's nouns, but cannot be combined with branded handles
+    /// from any other space and cannot escape `f` — the provenance check is a
+    /// compile error, not a runtime range test. This is the slab-side entry to
+    /// `NounSpace::with_brand`; the generative `'id` requires the closure form
+    /// (a branded space cannot be returned).
+    pub fn with_brand<R>(
+        &self,
+        f: impl for<'id> FnOnce(BrandedNounSpace<'_, 'id>) -> R,
+    ) -> R {
+        let space = NounAllocator::noun_space(self);
+        space.with_brand(f)
     }
 
     pub fn ptr_ranges(&self) -> Vec<(usize, usize)> {
@@ -1027,6 +1043,38 @@ mod tests {
         let space = slab.noun_space();
         let big = atom.in_space(&space).as_ubig(&mut slab);
         assert_eq!(big, big_exp);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn with_brand_reads_slab_nouns() {
+        // The slab-side entry to NounSpace::with_brand: branded handles
+        // resolve this slab's nouns for read-side traversal. (The brand's
+        // no-mix / no-escape guarantees are compile-time, exercised by the
+        // doc-tests on NounSpace::with_brand.)
+        let mut slab: NounSlab = NounSlab::new();
+        let cell = T(&mut slab, &[D(5), D(23)]);
+        let (head, tail) = slab.with_brand(|bspace| {
+            let root = bspace
+                .handle(cell)
+                .as_cell()
+                .expect("branded slab root is a cell");
+            let head = root
+                .head()
+                .as_atom()
+                .expect("head atom")
+                .as_u64()
+                .expect("head u64");
+            let tail = root
+                .tail()
+                .as_atom()
+                .expect("tail atom")
+                .as_u64()
+                .expect("tail u64");
+            (head, tail)
+        });
+        assert_eq!(head, 5);
+        assert_eq!(tail, 23);
     }
 
     #[test]
