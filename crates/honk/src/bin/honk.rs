@@ -1035,8 +1035,7 @@ async fn compile_batch_with_shared_prelude(
     for entry in entries {
         let label = format!("{}", entry.entry.display());
         trace_native(format!("batch compiling {label}"));
-        let mut product =
-            builder.compile_entry_with_miss_persistence(&entry.entry, false)?;
+        let mut product = builder.compile_entry(&entry.entry)?;
         let mut jam = builder.jam_product(
             &mut product,
             entry.mode,
@@ -1640,24 +1639,17 @@ impl<'a> NativeBuildContext<'a> {
     }
 
     fn compile_entry(&mut self, path: &Path) -> Result<NativeBuildProduct> {
-        self.compile_entry_with_miss_persistence(path, true)
-    }
-
-    fn compile_entry_with_miss_persistence(
-        &mut self,
-        path: &Path,
-        persist_miss: bool,
-    ) -> Result<NativeBuildProduct> {
-        // Persisting `miss` verdicts across calls is sound for a single
-        // entry compile (the configuration the parity corpus validates), but
-        // not in batch mode: compile state accumulated from earlier entries
-        // (rest/redo/nest caches) drifts in ways that flip memoized verdicts
-        // and miscompile (redo-match failures in the kernel batch) — see
-        // Ut::miss. Batch entries therefore run with per-call memos only.
+        // Entry/kernel compiles always use per-call `miss` memos, never the
+        // cross-call persistent one. Persisting `miss` verdicts is only sound
+        // while compiling the isolated prelude (a fixed source in a fresh Ut);
+        // during a kernel compile the mutable state `miss` reads (rest/redo/
+        // nest caches) drifts and memoized verdicts flip, miscompiling as
+        // `redo-match` — see Ut::miss. This surfaced as honk failing to
+        // compile the roswell test kernel (`test-h-map-dif-large-against-small`)
+        // even single-entry; the per-call memo already prevents the >10^8
+        // recursion blowup, so dropping cross-call persistence costs no real
+        // time (all six kernels stay byte-exact and compile in <60s).
         self.ut.set_miss_memo_persistence(false);
-        if persist_miss {
-            self.ut.set_miss_memo_persistence(true);
-        }
         let canonical = path.canonicalize()?;
         match self.compile_path_uncached(path, true, false, false, true, true)? {
             NativeCompileOutput::Product(product) => Ok(product),
