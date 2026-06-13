@@ -2501,15 +2501,58 @@ fn evaluate_honc_isolated(
     }
 }
 
+// honk cannot natively compile softed-constraints.hoon (it cues two large
+// constraint jams and `soft`s them), so it substitutes the cued jam pair
+// directly. That shortcut is valid ONLY for the exact source + jam content it
+// was proven against; key it on content hashes rather than the bare filename,
+// and hard-error on drift so a source/jam change cannot silently ship a stale
+// substitution. Pins are blake3 hex of the corresponding files.
+const SOFTED_CONSTRAINTS_SOURCE_B3: &str =
+    "4fe81e9738b06b217b6fe13810dc23f650cc4b95d80d7671ac2392e6cb7e3c80";
+const CONSTRAINTS_0_1_JAM_B3: &str =
+    "8c18e6175059e1a2176c27a201268f0f283028e36a6ee9e2fc6a09f91b9bca29";
+const CONSTRAINTS_2_JAM_B3: &str =
+    "613afc7a8ff5b22dbe59edd99c9bbd4bcede474b5dec8596c3d8c907f89bac7f";
+
 fn native_value_override(
     context: &mut Context,
     path: &Path,
     directory: &Path,
 ) -> Result<Option<Noun>> {
     if path.file_name().and_then(|name| name.to_str()) == Some("softed-constraints.hoon") {
+        validate_softed_constraints_pins(path, directory)?;
         return Ok(Some(softed_constraints_value(context, directory)?));
     }
     Ok(None)
+}
+
+fn validate_softed_constraints_pins(path: &Path, directory: &Path) -> Result<()> {
+    let checks = [
+        (path.to_path_buf(), SOFTED_CONSTRAINTS_SOURCE_B3, "softed-constraints.hoon source"),
+        (
+            directory.join("jams/constraints-0-1.jam"),
+            CONSTRAINTS_0_1_JAM_B3,
+            "jams/constraints-0-1.jam",
+        ),
+        (directory.join("jams/constraints-2.jam"), CONSTRAINTS_2_JAM_B3, "jams/constraints-2.jam"),
+    ];
+    let mut stale = Vec::new();
+    for (file, expected, label) in checks {
+        let actual = blake3::hash(&fs::read(&file)?).to_hex();
+        if actual.as_str() != expected {
+            stale.push(format!("{label}: actual {actual}, pinned {expected}"));
+        }
+    }
+    if !stale.is_empty() {
+        return Err(format!(
+            "softed-constraints native shortcut is stale ({}). honk substitutes a fixed cued \
+             jam pair for this exact content; re-validate byte parity and update the pins in \
+             honk.rs.",
+            stale.join("; "),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn softed_constraints_value(context: &mut Context, directory: &Path) -> Result<Noun> {
