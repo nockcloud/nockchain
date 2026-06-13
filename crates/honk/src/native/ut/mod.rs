@@ -2973,12 +2973,19 @@ impl<'a> Ut<'a> {
     }
 
     fn mint_cache_key(&mut self, sut: Noun, gol: Noun, gen_sig: u64) -> MintBoundaryKey {
-        let semantic = self.semantic_context_key();
+        // mint's result depends on the active fan scope (%hold/%rest legs) and
+        // on in-progress recursive-arm state, exactly like the sibling
+        // core_mint cache — include the full context (fan + arm epoch +
+        // placeholder), all of which collapse to 0 in the steady state.
+        let context = self.cache_context_key();
         (
             self.noun_mug_cached(sut),
             self.noun_mug_cached(gol),
-            semantic.vet_key,
+            context.semantic.vet_key,
             gen_sig,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
         )
     }
 
@@ -3116,13 +3123,20 @@ impl<'a> Ut<'a> {
     }
 
     fn mull_cache_key(&mut self, sut: Noun, gol: Noun, dox: Noun, gen: Noun) -> MullBoundaryKey {
-        let semantic = self.semantic_context_key();
+        // Like mint, the dual-perspective wet recheck depends on the active
+        // fan scope and in-progress arm state; carry the full context (all
+        // steady-state-0). fire_wet_rib is deliberately NOT keyed (it is not
+        // steady-state-collapsing); no concrete rib-only divergence is known.
+        let context = self.cache_context_key();
         (
             self.noun_mug_cached(sut),
             self.noun_mug_cached(gol),
             self.noun_mug_cached(dox),
-            semantic.vet_key,
+            context.semantic.vet_key,
             self.noun_mug_cached(gen) as u64,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
         )
     }
 
@@ -3201,11 +3215,14 @@ impl<'a> Ut<'a> {
     }
 
     fn unary_type_boundary_key(&mut self, sut: Noun, ref_: Noun) -> TypeBinaryBoundaryKey {
+        // Shared by crop and fuse; both call repo() on %hold types, whose
+        // unfolding depends on the active fan scope.
         let semantic = self.semantic_context_key();
         (
             self.noun_mug_cached(sut),
             self.noun_mug_cached(ref_),
             semantic.vet_key,
+            semantic.fan_context_key,
         )
     }
 
@@ -3301,6 +3318,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(ref_),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let Some(bucket) = self.boundary_memo.redo.get(&key) else {
             return Ok(None);
@@ -3330,6 +3348,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(ref_),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let bucket = self
             .boundary_memo
@@ -3367,6 +3386,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(legs),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let Some(bucket) = self.boundary_memo.rest.get(&key) else {
             return Ok(None);
@@ -3396,6 +3416,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(legs),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let bucket = self
             .boundary_memo
@@ -3421,7 +3442,12 @@ impl<'a> Ut<'a> {
 
     fn fish_boundary_lookup(&mut self, sut: Noun, axis: u64) -> Result<Option<Noun>> {
         let semantic = self.semantic_context_key();
-        let key = (self.noun_mug_cached(sut), axis, semantic.vet_key);
+        let key = (
+            self.noun_mug_cached(sut),
+            axis,
+            semantic.vet_key,
+            semantic.fan_context_key,
+        );
         let Some(bucket) = self.boundary_memo.fish.get(&key) else {
             return Ok(None);
         };
@@ -3438,7 +3464,12 @@ impl<'a> Ut<'a> {
 
     fn fish_boundary_store(&mut self, sut: Noun, axis: u64, result: Noun) -> Result<()> {
         let semantic = self.semantic_context_key();
-        let key = (self.noun_mug_cached(sut), axis, semantic.vet_key);
+        let key = (
+            self.noun_mug_cached(sut),
+            axis,
+            semantic.vet_key,
+            semantic.fan_context_key,
+        );
         let bucket = self
             .boundary_memo
             .fish
@@ -3472,6 +3503,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(ref_),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let Some(entries) = self.boundary_memo.nest.get(&key) else {
             return Ok(None);
@@ -3492,6 +3524,7 @@ impl<'a> Ut<'a> {
             self.noun_mug_cached(sut),
             self.noun_mug_cached(ref_),
             semantic.vet_key,
+            semantic.fan_context_key,
         );
         let bucket = self
             .boundary_memo

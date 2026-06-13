@@ -695,26 +695,31 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
         .with_rest_leg(rest_inner, rest_hoon, |ut| {
             let inner_context_key = ut.hold_repo_fan_context_key();
             assert_ne!(inner_context_key, 0);
+            // Entries were stored with no active fan (fan_context_key == 0).
+            // Under an active leg the cache keys carry a different
+            // fan_context_key, so every context-sensitive cache MISSES rather
+            // than serving the fan-empty result — the partition this test name
+            // asserts (and the bug class that miscompiled roswell).
             assert!(ut
                 .mint_boundary_lookup_exact(sut, gol, mint_gen)
                 .expect("inner mint boundary lookup")
-                .is_some());
+                .is_none());
             assert!(ut
                 .mull_cache_lookup(sut, gol, ref_type, mull_gen)
                 .expect("inner mull boundary lookup")
-                .is_some());
+                .is_none());
             assert!(ut
                 .redo_boundary_lookup(sut, redo_ref)
                 .expect("inner redo boundary lookup")
-                .is_some());
+                .is_none());
             assert!(ut
                 .rest_boundary_lookup(rest_sut, rest_legs_noun)
                 .expect("inner rest boundary lookup")
-                .is_some());
+                .is_none());
             assert_eq!(
                 ut.nest_mug_lookup(sut, ref_type)
                     .expect("inner nest mug lookup"),
-                Some(true)
+                None
             );
             ut.set_vet(true);
             assert_eq!(
@@ -753,26 +758,28 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
     ut.with_rest_leg(rest_inner, rest_hoon, |ut| {
         let inner_context_key = ut.hold_repo_fan_context_key();
         assert_eq!(inner_context_key, first_inner_context_key);
+        // Same active leg, still fan_context_key != 0; the entries live only
+        // under the fan-empty key, so these remain misses.
         assert!(ut
             .mint_boundary_lookup_exact(sut, gol, mint_gen)
             .expect("repeat inner mint boundary lookup")
-            .is_some());
+            .is_none());
         assert!(ut
             .mull_cache_lookup(sut, gol, ref_type, mull_gen)
             .expect("repeat inner mull boundary lookup")
-            .is_some());
+            .is_none());
         assert!(ut
             .redo_boundary_lookup(sut, redo_ref)
             .expect("repeat inner redo boundary lookup")
-            .is_some());
+            .is_none());
         assert!(ut
             .rest_boundary_lookup(rest_sut, rest_legs_noun)
             .expect("repeat inner rest boundary lookup")
-            .is_some());
+            .is_none());
         assert_eq!(
             ut.nest_mug_lookup(sut, ref_type)
                 .expect("repeat inner nest mug lookup"),
-            Some(true)
+            None
         );
         Ok(())
     })
@@ -780,7 +787,7 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
 }
 
 #[test]
-fn active_rest_fan_context_does_not_partition_rest_boundary() {
+fn active_rest_fan_context_partitions_rest_boundary() {
     let mut slab = NounSlab::new();
     let inner = core_with_context_face_only(&mut slab, "tree");
     let hoon = hoon_to_noun(&mut slab, &Hoon::Axis(1));
@@ -815,20 +822,26 @@ fn active_rest_fan_context_does_not_partition_rest_boundary() {
         })
         .expect("rest leg should succeed");
 
+    // The entry was stored under an active leg (fan_context_key != 0). Outside
+    // any fan scope the key carries fan_context_key == 0, so the lookup MISSES
+    // — the rest boundary partitions by fan context (it does NOT serve a
+    // fan-scoped result back at top level, which would replace a real type
+    // with a possibly loop-truncated one).
     assert_eq!(ut.hold_repo_fan_context_key(), 0);
-    let outside_cached = ut
+    assert!(ut
         .rest_boundary_lookup(rest_sut, legs_noun)
         .expect("rest boundary lookup outside fan")
-        .expect("rest boundary cache is structural across fan contexts");
-    assert!(noun_eq(outside_cached, cached, &ut.slab.noun_space()).expect("outside noun_eq"));
+        .is_none());
 
+    // Re-entering the SAME leg restores the same fan_context_key, so the entry
+    // stored under it hits.
     ut.with_rest_leg(inner, hoon, |ut| {
         let context_key = ut.hold_repo_fan_context_key();
         assert_eq!(context_key, first_context);
         let rest_cached = ut
             .rest_boundary_lookup(rest_sut, legs_noun)
             .expect("rest boundary lookup on re-entry")
-            .expect("rest boundary should hit on re-entry");
+            .expect("rest boundary should hit on re-entry under the same leg");
         assert!(
             noun_eq(rest_cached, cached, &ut.slab.noun_space()).expect("rest re-entry noun_eq")
         );
@@ -836,15 +849,16 @@ fn active_rest_fan_context_does_not_partition_rest_boundary() {
     })
     .expect("same rest leg should reuse context");
 
+    // A DIFFERENT (nested) leg set yields a different fan_context_key, so the
+    // entry stored under the original leg does not leak across — it misses.
     ut.with_rest_leg(outer_inner, outer_hoon, |ut| {
         ut.with_rest_leg(inner, hoon, |ut| {
             let context_key = ut.hold_repo_fan_context_key();
             assert_ne!(context_key, first_context);
-            let nested_cached = ut
+            assert!(ut
                 .rest_boundary_lookup(rest_sut, legs_noun)
                 .expect("nested rest boundary lookup")
-                .expect("rest boundary cache is structural across nested fan contexts");
-            assert!(noun_eq(nested_cached, cached, &ut.slab.noun_space()).expect("nested noun_eq"));
+                .is_none());
             Ok(())
         })
     })

@@ -51,3 +51,11 @@ N0 → N1 → N2 → N3 → N4 → N5 → N6, then H0 → H1 → H2 → H3 → H
 ## Deferred follow-ups
 
 TODOS #11 (hoonc-oracle fixtures for strict compiler_mint tests — the kernel parity harness partially compensates at whole-artifact granularity), TODOS #14 (ut/mod.rs split — H2's cache_keys and H5's musk_runtime/eval_boundary modules carve the seams a future split extends), TODOS #15 (find/fend/fund/fond parity matrices — the status=partial markers stay until executable matrices exist).
+
+## H2 cache-soundness audit + fix (2026-06-13)
+
+A multi-agent adversarial audit of every honk type-checker cache/memo surface found 7 with the roswell-class latent miscompile (key omits active %rest/%hold fan_context_key): mint, mull, redo, rest, fish, nest, crop+fuse. All were widened to carry fan_context_key (mint/mull also carry the arm_epoch/placeholder memo context, matching the sibling core_mint cache). All widenings are output-safe (every kernel stays byte-exact; the context fields collapse to 0 in the steady state, so the key only adds misses where the result genuinely depends on context the mugs don't capture). Two existing tests (active_rest_fan_context_partitions_context_sensitive_native_ut_caches, …_does_not_partition_rest_boundary) encoded the bug by asserting cross-fan cache hits; flipped to assert the correct partition. The audit confirmed musk mack caches are sound (no change).
+
+ACCEPTED TRADEOFF (user decision): the extra misses push roswell from 53s to ~75s, over the 60s gate. Per user direction, the hardening ships over-gate; recovering <60s is a follow-up via the deferred H4 perf work (per-batch directory-mug cache, SourceFile read/parse cache) which the plan scoped as demand-driven against this budget. Measured points (quiet machine, all byte-exact): narrow 53s, fan-only 68s, fan+arm-epoch 75s.
+
+FOLLOW-UPS surfaced by the audit (not yet done): (Step 4) bran_semi key omits the non-hold portion of the seen_raw recursion guard — latent, no reaching case constructed, but matches a documented requirement; (Step 6) the ArmMemoSet cache surface is entirely unwired and the placeholder_context_key is permanently 0 (dead set) — remove the dead recursion-naive scaffolding (the exact shape that caused the roswell miss-memo bug when wired) or wire it deliberately; (perf) the H4 dir-mug + SourceFile caches to bring roswell back under 60s.

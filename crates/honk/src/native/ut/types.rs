@@ -122,14 +122,21 @@ where
 
 pub type CoreMintBoundaryKey = (u32, u32, u32, u8, u8, u64, u64, u64);
 pub type BranSemiMemoKey = (u32, u8, u64, u64, u64, usize);
-pub type MintBoundaryKey = (u32, u32, u8, u64);
-pub type MullBoundaryKey = (u32, u32, u32, u8, u64);
-pub type RedoBoundaryKey = (u32, u32, u8);
-pub type RestBoundaryKey = (u32, u32, u8);
+// Boundary-cache keys carry the active semantic/memo context (fan_context_key
+// for %rest/%hold scope, and for mint/mull the arm_epoch/placeholder context)
+// in addition to (mug, …, vet). These collapse to 0 in the steady state, so
+// adding them only forces a fresh (correct) recompute when the cached type
+// operation's result actually depends on context the mugs don't capture —
+// closing the same roswell-class stale-hit bug the miss memo had. See the
+// cache-context construction sites in ut/mod.rs.
+pub type MintBoundaryKey = (u32, u32, u8, u64, u64, u64, u64);
+pub type MullBoundaryKey = (u32, u32, u32, u8, u64, u64, u64, u64);
+pub type RedoBoundaryKey = (u32, u32, u8, u64);
+pub type RestBoundaryKey = (u32, u32, u8, u64);
 pub type NestBoundaryRawKey = (u64, u64, u64);
-pub type NestBoundaryKey = (u32, u32, u8);
-pub type TypeBinaryBoundaryKey = (u32, u32, u8);
-pub type FishBoundaryKey = (u32, u64, u8);
+pub type NestBoundaryKey = (u32, u32, u8, u64);
+pub type TypeBinaryBoundaryKey = (u32, u32, u8, u64);
+pub type FishBoundaryKey = (u32, u64, u8, u64);
 pub type FindMemoKey = (u32, u8, u64, u64, u64, u64);
 pub type FindRawMemoKey = (u64, u8, u64, u64, u64, u64);
 pub type StrictTermPortMemoKey = (u32, u32, u32, u32, u8, u64, u64);
