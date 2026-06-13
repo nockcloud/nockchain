@@ -582,17 +582,22 @@ fn match_warm_entries(
     subject: Noun,
     space: &NounSpace,
     dispatch: JetDispatchMode,
-) -> Option<JetLookupResult> {
+) -> Option<(Noun, Batteries, Jet, bool)> {
     for (path, batteries, jet, test) in warm_it {
         if batteries.matches(stack, subject, space, dispatch) {
-            return Some(if test {
-                JetLookupResult::Test { jet, path }
-            } else {
-                JetLookupResult::Run { jet, path }
-            });
+            return Some((path, batteries, jet, test));
         }
     }
     None
+}
+
+#[inline]
+fn jet_result(jet: Jet, path: Noun, test: bool) -> JetLookupResult {
+    if test {
+        JetLookupResult::Test { jet, path }
+    } else {
+        JetLookupResult::Run { jet, path }
+    }
 }
 
 impl Warm {
@@ -682,8 +687,10 @@ impl Warm {
     ) -> JetLookupResult {
         let space = stack.fast_noun_space();
         if let Some(warm_it) = self.0.lookup(stack, f) {
-            if let Some(result) = match_warm_entries(stack, warm_it, *s, &space, dispatch) {
-                return result;
+            if let Some((path, _batteries, jet, test)) =
+                match_warm_entries(stack, warm_it, *s, &space, dispatch)
+            {
+                return jet_result(jet, path, test);
             }
         }
 
@@ -692,14 +699,59 @@ impl Warm {
             if normalized && !raw_noun_eq(*f, normalized_formula) {
                 let mut formula = normalized_formula;
                 if let Some(warm_it) = self.0.lookup(stack, &mut formula) {
-                    if let Some(result) = match_warm_entries(stack, warm_it, *s, &space, dispatch) {
-                        return result;
+                    if let Some((path, batteries, jet, test)) =
+                        match_warm_entries(stack, warm_it, *s, &space, dispatch)
+                    {
+                        self.maybe_insert_alias(
+                            stack,
+                            f,
+                            &space,
+                            WarmRegistration {
+                                path,
+                                batteries,
+                                jet,
+                                test,
+                            },
+                        );
+                        return jet_result(jet, path, test);
                     }
                 }
             }
         }
 
         JetLookupResult::NoJet
+    }
+
+    /// Memoize a hint-blind fallback hit under the raw query formula so the
+    /// next dispatch of the same formula hits the first HAMT lookup instead
+    /// of re-normalizing. Inserting mid-interpret is sound for the same
+    /// reason `%memo` cache inserts are: every Ret/Done work item preserves
+    /// `context.warm` outward frame-by-frame, and `exit()` restores the
+    /// entry snapshot when a computation bails, so alias nodes never outlive
+    /// a discarded region. Aliases live only in the warm table — never in
+    /// cold state, which honk serializes via `--dump-wrapper-assets`.
+    ///
+    /// Skip formulas whose memory sits in the current frame: the HAMT would
+    /// retain the formula as a key and `preserve` would deep-copy the whole
+    /// tree once per frame pop, costing more than the normalize-per-miss it
+    /// avoids. (Honk's hot case — arm formulas of cores interned at the eval
+    /// stack root — is always senior to the dispatching frame.)
+    fn maybe_insert_alias(
+        &mut self,
+        stack: &mut NockStack,
+        formula: &mut Noun,
+        space: &NounSpace,
+        entry: WarmRegistration,
+    ) {
+        let Ok(allocated) = (*formula).as_allocated() else {
+            // Direct atoms can't carry hint wrappers; nothing to alias.
+            return;
+        };
+        let ptr = unsafe { allocated.to_raw_pointer(space) };
+        if unsafe { stack.is_in_frame(ptr) } {
+            return;
+        }
+        self.insert(stack, formula, entry);
     }
 }
 
@@ -1040,6 +1092,96 @@ mod test {
             ),
             JetLookupResult::Run { .. }
         ));
+    }
+
+    #[test]
+    fn test_warm_hint_blind_fallback_inserts_alias_for_senior_formula() {
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut warm = Warm::new(&mut stack);
+        let batteries = make_simple_batteries(&mut stack, 10);
+        let mut formula = D(100);
+        warm.insert(
+            &mut stack,
+            &mut formula,
+            WarmRegistration {
+                path: D(1000),
+                batteries,
+                jet: dummy_jet,
+                test: false,
+            },
+        );
+
+        // Allocate the hinted query in the root frame (senior), then
+        // dispatch from a pushed frame, mirroring how interpret calls
+        // find_jet on arm formulas of long-lived cores.
+        let mut query = hinted_formula(&mut stack, tas!(b"spot"), D(1), D(100));
+        let mut subject = D(10);
+
+        stack.frame_push(0);
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::HintBlind,
+            ),
+            JetLookupResult::Run { .. }
+        ));
+        // The raw (hinted) key is now directly present in the warm table.
+        assert!(warm.0.lookup(&mut stack, &mut query).is_some());
+
+        // The alias survives frame pop via the same preserve discipline
+        // interpret applies to context.warm at every Ret/Done.
+        unsafe {
+            stack.preserve(&mut warm);
+            stack.frame_pop();
+        }
+        assert!(warm.0.lookup(&mut stack, &mut query).is_some());
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::HintBlind,
+            ),
+            JetLookupResult::Run { .. }
+        ));
+    }
+
+    #[test]
+    fn test_warm_hint_blind_fallback_skips_alias_for_junior_formula() {
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut warm = Warm::new(&mut stack);
+        let batteries = make_simple_batteries(&mut stack, 10);
+        let mut formula = D(100);
+        warm.insert(
+            &mut stack,
+            &mut formula,
+            WarmRegistration {
+                path: D(1000),
+                batteries,
+                jet: dummy_jet,
+                test: false,
+            },
+        );
+
+        // Allocate the hinted query inside the dispatching frame: the
+        // fallback must still hit, but no alias may be inserted (the HAMT
+        // would retain a frame-local key).
+        stack.frame_push(0);
+        let mut query = hinted_formula(&mut stack, tas!(b"spot"), D(1), D(100));
+        let mut subject = D(10);
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::HintBlind,
+            ),
+            JetLookupResult::Run { .. }
+        ));
+        assert!(warm.0.lookup(&mut stack, &mut query).is_none());
+        unsafe { stack.frame_pop() };
     }
 
     /// Helper to verify a noun is not stack-allocated (is in offset form)
