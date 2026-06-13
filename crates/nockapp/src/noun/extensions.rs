@@ -5,7 +5,10 @@ use either::Either;
 use intmap::IntMap;
 use nockvm::ext::AtomExt as CoreAtomExt;
 pub use nockvm::ext::{IndirectAtomExt, JammedNoun, NounExt};
-use nockvm::noun::{Atom, Cell, IndirectAtom, NounAllocator, NounSpace, D};
+use nockvm::interpreter::{interpret, Context, Error as NockError};
+use nockvm::noun::{
+    Atom, BrandedNounHandle, BrandedNounSpace, Cell, IndirectAtom, NounAllocator, NounSpace, D,
+};
 use noun_serde::NounEncode;
 
 use crate::noun::slab::{NockJammer, NounSlab};
@@ -197,6 +200,119 @@ impl<A: NounAllocator> NounAllocatorExt for A {
     }
 }
 
+/// Write-side operations for the generative [`BrandedNounSpace`].
+///
+/// `BrandedNounSpace` and its handles (defined in `nockvm`) are read-only by
+/// design: they let code traverse a noun while a generative `'id` brand proves
+/// the noun belongs to one specific arena and that no handle escapes the
+/// `with_brand` scope. The native Hoon compiler's eval boundary needs two
+/// operations the read-only layer can't express — copy a foreign noun *into*
+/// the branded arena, and evaluate a branded formula — so they live here in
+/// nockapp, where the copy primitive ([`NounAllocatorExt::copy_into`]) and the
+/// interpreter both do, rather than as a sui-generis Noun wrapper inside honk.
+///
+/// The payoff is provenance by construction: a `BrandedNounHandle` for the
+/// eval arena can only be obtained by copying a foreign noun in
+/// ([`Self::copy_in`]) or by branding a noun already resident in the arena
+/// ([`BrandedNounSpace::handle`]). Because the branded
+/// [`interpret`](BrandedEvalExt::interpret) requires its subject and formula to
+/// carry the *same* brand as the arena it runs in, a raw slab noun can no
+/// longer reach `interpret` by accident — the "alien noun" hazard becomes a
+/// brand/borrow error at compile time instead of a pointer-range panic at run
+/// time.
+///
+/// `self`'s space and `allocator` must describe the *same* arena. That pairing
+/// can't be proven by the type system (the `NounSpace` and the allocator are
+/// distinct values), so it is checked in debug builds: the copied noun is
+/// resolved against this space, which panics if it landed in a foreign arena.
+/// Release builds trust the pairing, matching the identity fast path in
+/// `NounSpace`'s pointer resolution.
+pub trait BrandedNounSpaceExt<'space, 'id> {
+    /// Copy `source` (resident in `source_space`) into this branded space via
+    /// `allocator`, returning a handle branded to this space.
+    fn copy_in<A: NounAllocator>(
+        self,
+        allocator: &mut A,
+        source: Noun,
+        source_space: &NounSpace,
+    ) -> BrandedNounHandle<'space, 'id>;
+
+    /// Copy a noun held by a (possibly differently-branded) handle into this
+    /// branded space. This is the only way to move a noun across brands, and it
+    /// always goes through a real copy.
+    fn copy_in_handle<A: NounAllocator>(
+        self,
+        allocator: &mut A,
+        source: BrandedNounHandle<'_, '_>,
+    ) -> BrandedNounHandle<'space, 'id>;
+}
+
+impl<'space, 'id> BrandedNounSpaceExt<'space, 'id> for BrandedNounSpace<'space, 'id> {
+    fn copy_in<A: NounAllocator>(
+        self,
+        allocator: &mut A,
+        source: Noun,
+        source_space: &NounSpace,
+    ) -> BrandedNounHandle<'space, 'id> {
+        let copied = allocator.copy_into(source, source_space);
+        let handle = self.handle(copied);
+        #[cfg(debug_assertions)]
+        {
+            // Resolving the copy against this space panics if `allocator` was
+            // not the allocator backing this branded space — i.e. the copy
+            // landed in a foreign arena. Catches a mismatched
+            // (allocator, brand) pairing at the boundary in debug builds.
+            let _ = handle.unbranded().allocated_location();
+        }
+        handle
+    }
+
+    fn copy_in_handle<A: NounAllocator>(
+        self,
+        allocator: &mut A,
+        source: BrandedNounHandle<'_, '_>,
+    ) -> BrandedNounHandle<'space, 'id> {
+        let unbranded = source.unbranded();
+        self.copy_in(allocator, unbranded.noun(), unbranded.space())
+    }
+}
+
+/// The branded eval entry: evaluate a branded `formula` against a branded
+/// `subject` — both branded to the arena `interpret` runs in — and return the
+/// product branded to that same arena. See [`BrandedNounSpaceExt`] for how the
+/// brands close the "alien noun" boundary.
+pub trait BrandedEvalExt<'space, 'id> {
+    fn interpret(
+        self,
+        context: &mut Context,
+        subject: BrandedNounHandle<'space, 'id>,
+        formula: BrandedNounHandle<'space, 'id>,
+    ) -> std::result::Result<BrandedNounHandle<'space, 'id>, NockError>;
+}
+
+impl<'space, 'id> BrandedEvalExt<'space, 'id> for BrandedNounSpace<'space, 'id> {
+    fn interpret(
+        self,
+        context: &mut Context,
+        subject: BrandedNounHandle<'space, 'id>,
+        formula: BrandedNounHandle<'space, 'id>,
+    ) -> std::result::Result<BrandedNounHandle<'space, 'id>, NockError> {
+        let product = interpret(
+            context,
+            subject.unbranded().noun(),
+            formula.unbranded().noun(),
+        )?;
+        let handle = self.handle(product);
+        #[cfg(debug_assertions)]
+        {
+            // The product is allocated in `context.stack`; resolving it against
+            // this space panics if this brand does not describe that stack.
+            let _ = handle.unbranded().allocated_location();
+        }
+        Ok(handle)
+    }
+}
+
 pub trait NounJamExt {
     fn jam_bytes(self, space: &NounSpace) -> Bytes;
 }
@@ -227,7 +343,7 @@ mod tests {
     use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
     use nockvm::noun::{Atom, NounAllocator, D, T};
 
-    use super::{AtomExt, IntoSlab, NounAllocatorExt};
+    use super::{AtomExt, BrandedEvalExt, BrandedNounSpaceExt, IntoSlab, NounAllocatorExt};
     use crate::noun::slab::{NockJammer, NounSlab};
 
     #[test]
@@ -317,5 +433,73 @@ mod tests {
             get_mug(copied_cell.tail().noun(), &copied_space),
             Some(atom_mug)
         );
+    }
+
+    #[test]
+    fn branded_copy_in_round_trips_across_spaces() {
+        // Source noun `[5 23]` lives in a slab.
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let source = T(&mut slab, &[D(5), D(23)]);
+        let source_space = slab.noun_space();
+
+        // Destination is a separate stack arena, branded for the read-back.
+        let mut stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
+        let dest_space = stack.noun_space();
+
+        let (head, tail) = dest_space.with_brand(|brand| {
+            let copied = brand.copy_in(&mut stack, source, &source_space);
+            let cell = copied.as_cell().expect("copied root should be a cell");
+            let head = cell
+                .head()
+                .as_atom()
+                .expect("head atom")
+                .as_u64()
+                .expect("head u64");
+            let tail = cell
+                .tail()
+                .as_atom()
+                .expect("tail atom")
+                .as_u64()
+                .expect("tail u64");
+            (head, tail)
+        });
+
+        assert_eq!((head, tail), (5, 23));
+    }
+
+    #[test]
+    fn branded_interpret_evaluates_copied_in_formula() {
+        use nockvm::jets::cold::Cold;
+        use nockvm::jets::JetDispatchMode;
+
+        use crate::utils::create_context;
+
+        // Nock formula `[1 42]` (op 1 = produce constant) lives in a slab —
+        // the "alien" arena, foreign to the interpreter's stack.
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let formula = T(&mut slab, &[D(1), D(42)]);
+        let formula_space = slab.noun_space();
+
+        let mut stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
+        let cold = Cold::new(&mut stack);
+        let mut context = create_context(stack, &[], cold, None, vec![], JetDispatchMode::Exact);
+
+        let stack_space = context.stack.noun_space();
+        let product = stack_space.with_brand(|brand| {
+            // Subject is a native direct atom; formula is copied in from the
+            // slab. Both now carry this stack's brand, so `interpret` accepts
+            // them; the raw slab `formula` would not type-check here.
+            let subject = brand.handle(D(0));
+            let formula = brand.copy_in(&mut context.stack, formula, &formula_space);
+            let out = brand
+                .interpret(&mut context, subject, formula)
+                .expect("interpret should succeed");
+            out.as_atom()
+                .expect("product atom")
+                .as_u64()
+                .expect("product u64")
+        });
+
+        assert_eq!(product, 42);
     }
 }
