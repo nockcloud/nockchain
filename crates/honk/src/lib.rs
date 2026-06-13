@@ -70,9 +70,11 @@ impl Compiled {
         self.slab.noun_space()
     }
 
-    pub fn formula(&self) -> Noun {
-        self.formula
-    }
+    // Note: no public `formula() -> Noun` accessor. Returning the raw formula
+    // noun unbound from `self.slab` is the "alien noun" hazard the provenance
+    // audit warns about (a Noun whose validity depends on this Compiled's
+    // private slab outliving every use). Callers get the formula only through
+    // the slab-scoped `jam*` methods below, which keep the owner alive.
 
     pub fn arm_map(&self) -> &ArmMap {
         &self.arm_map
