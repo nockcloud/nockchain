@@ -192,7 +192,6 @@ pub struct NounSpace {
     pma_end: Option<usize>,
     pma_words: Option<usize>,
     extra_ptr_ranges: Vec<(usize, usize)>,
-    readonly_extra_ptr_ranges: Vec<(usize, usize)>,
 }
 
 impl NounSpace {
@@ -237,7 +236,6 @@ impl NounSpace {
             pma_end,
             pma_words,
             extra_ptr_ranges: Vec::new(),
-            readonly_extra_ptr_ranges: Vec::new(),
         }
     }
 
@@ -258,7 +256,6 @@ impl NounSpace {
             pma_end,
             pma_words,
             extra_ptr_ranges: Vec::new(),
-            readonly_extra_ptr_ranges: Vec::new(),
         }
     }
 
@@ -277,7 +274,6 @@ impl NounSpace {
             pma_end,
             pma_words,
             extra_ptr_ranges: Vec::new(),
-            readonly_extra_ptr_ranges: Vec::new(),
         }
     }
 
@@ -309,67 +305,6 @@ impl NounSpace {
     pub fn with_extra_ptr_ranges(mut self, ranges: Vec<(usize, usize)>) -> Self {
         self.extra_ptr_ranges = ranges;
         self
-    }
-
-    /// Register extra pointer ranges whose nouns must not be semantically
-    /// mutated: unifying equality will not rewrite references into or within
-    /// them, and the stack copier never writes forwarding pointers into them
-    /// (they are never in any stack frame).
-    ///
-    /// "Readonly" does not mean byte-immutable: mug caching (`set_mug`) may
-    /// still write correct cached mugs into the metadata of nouns in these
-    /// ranges. That is sound only while the backing memory is private,
-    /// writable, and accessed from a single thread — e.g. a `NounSlab` owned
-    /// by the same thread. Do not register memory that is shared across
-    /// threads or mapped read-only.
-    pub fn with_readonly_extra_ptr_ranges(mut self, ranges: Vec<(usize, usize)>) -> Self {
-        self.readonly_extra_ptr_ranges = ranges;
-        self
-    }
-
-    #[inline]
-    pub fn has_extra_ptr_ranges(&self) -> bool {
-        !(self.extra_ptr_ranges.is_empty() && self.readonly_extra_ptr_ranges.is_empty())
-    }
-
-    #[inline]
-    pub fn has_readonly_extra_ptr_ranges(&self) -> bool {
-        !self.readonly_extra_ptr_ranges.is_empty()
-    }
-
-    #[inline]
-    fn addr_in_ranges(ranges: &[(usize, usize)], addr: usize) -> bool {
-        ranges
-            .iter()
-            .any(|(base, end)| addr >= *base && addr < *end)
-    }
-
-    #[inline]
-    pub(crate) fn ptr_in_extra_range(&self, ptr: *const u64) -> bool {
-        let addr = ptr as usize;
-        Self::addr_in_ranges(&self.extra_ptr_ranges, addr)
-            || Self::addr_in_ranges(&self.readonly_extra_ptr_ranges, addr)
-    }
-
-    #[inline]
-    pub(crate) fn ptr_in_readonly_extra_range(&self, ptr: *const u64) -> bool {
-        Self::addr_in_ranges(&self.readonly_extra_ptr_ranges, ptr as usize)
-    }
-
-    #[inline]
-    pub(crate) fn noun_in_extra_range(&self, noun: Noun) -> bool {
-        let Ok(allocated) = noun.as_allocated() else {
-            return false;
-        };
-        unsafe { self.ptr_in_extra_range(allocated.to_raw_pointer(self)) }
-    }
-
-    #[inline]
-    pub(crate) fn noun_in_readonly_extra_range(&self, noun: Noun) -> bool {
-        let Ok(allocated) = noun.as_allocated() else {
-            return false;
-        };
-        unsafe { self.ptr_in_readonly_extra_range(allocated.to_raw_pointer(self)) }
     }
 
     pub fn handle<'a>(&'a self, noun: Noun) -> NounHandle<'a> {
@@ -489,11 +424,6 @@ impl NounSpace {
                 return ptr;
             }
         }
-        for (base, end) in &self.readonly_extra_ptr_ranges {
-            if addr >= *base && addr < *end {
-                return ptr;
-            }
-        }
         panic!(
             "pointer-form noun {:p} is not within stack or PMA arenas",
             ptr
@@ -521,11 +451,6 @@ impl NounSpace {
             }
         }
         for (base, end) in &self.extra_ptr_ranges {
-            if addr >= *base && addr < *end {
-                return AllocLocation::Stack;
-            }
-        }
-        for (base, end) in &self.readonly_extra_ptr_ranges {
             if addr >= *base && addr < *end {
                 return AllocLocation::Stack;
             }
