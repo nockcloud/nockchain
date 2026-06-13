@@ -644,6 +644,13 @@ fn parse_build_leaf(
     } else {
         build_import_wer(path, deps_dir)
     };
+    // Docs MUST be disabled here for byte-for-byte artifact parity: with docs
+    // enabled, honk anchors doc-comment blocks into the AST and emits %help/
+    // %hint nodes that hoonc's build artifacts do not contain. Enabling docs
+    // was tested against the kernel-parity harness and broke all six kernels
+    // (structural `%help`/`%hint` shape mismatches vs the hoonc references);
+    // disabling docs reproduces hoonc's artifact spots exactly. (Note: this is
+    // the build-leaf parse only; the public parser paths keep docs enabled.)
     Ok(pipeline::parse_native_hoon_source_without_docs(
         path,
         source.as_str(),
