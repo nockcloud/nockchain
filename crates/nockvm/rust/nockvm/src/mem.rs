@@ -671,8 +671,6 @@ pub struct NockStack {
     arena: Arc<Arena>,
     /// Optional PMA arena for offset noun resolution
     pma: Option<Arc<Arena>>,
-    /// Extra pointer-form noun ranges that should be considered valid for transient evaluation.
-    extra_noun_ptr_ranges: Vec<(usize, usize)>,
     /// Epoch that increments on reset/flip to invalidate stack-pointer nouns.
     stack_epoch: Arc<AtomicU64>,
     /// Process-unique identity for caches that store nouns in this stack's arena.
@@ -780,22 +778,12 @@ impl NockStack {
 
     #[inline]
     pub fn noun_space(&self) -> NounSpace {
-        let space = NounSpace::from_stack(self, self.pma.clone());
-        if self.extra_noun_ptr_ranges.is_empty() {
-            space
-        } else {
-            space.with_readonly_extra_ptr_ranges(self.extra_noun_ptr_ranges.clone())
-        }
+        NounSpace::from_stack(self, self.pma.clone())
     }
 
     #[inline]
     pub(crate) fn fast_noun_space(&self) -> NounSpace {
-        let space = NounSpace::from_stack_ephemeral(self);
-        if self.extra_noun_ptr_ranges.is_empty() {
-            space
-        } else {
-            space.with_readonly_extra_ptr_ranges(self.extra_noun_ptr_ranges.clone())
-        }
+        NounSpace::from_stack_ephemeral(self)
     }
 
     #[inline]
@@ -844,14 +832,6 @@ impl NockStack {
             let prev_stack_ptr = *self.prev_stack_pointer_pointer();
             prev_frame_ptr.is_null() && prev_stack_ptr.is_null()
         }
-    }
-
-    #[inline]
-    pub fn replace_extra_noun_ptr_ranges(
-        &mut self,
-        ranges: Vec<(usize, usize)>,
-    ) -> Vec<(usize, usize)> {
-        std::mem::replace(&mut self.extra_noun_ptr_ranges, ranges)
     }
 
     #[inline]
@@ -936,7 +916,6 @@ impl NockStack {
                 pma: None,
                 stack_epoch: Arc::new(AtomicU64::new(0)),
                 identity: NEXT_STACK_ID.fetch_add(1, Ordering::Relaxed),
-                extra_noun_ptr_ranges: Vec::new(),
                 pc: false,
                 alloc_budget_floor: None,
             },
@@ -2816,16 +2795,16 @@ mod test {
     use crate::jets::cold::test::{make_noun_list, make_test_stack};
     use crate::jets::cold::{NounList, Nounable};
     use crate::mem::NockStack;
-    use crate::noun::{Cell, CellMemory, Noun, D};
+    use crate::noun::{CellMemory, Noun, D};
 
-    /// Foreign (extra-noun-range) nouns — e.g. slab-resident subjects under
-    /// the zero-copy mack path — are never in any stack frame: `is_in_frame`
-    /// must reject them outright (it previously tripped debug assertions on
-    /// any out-of-arena pointer), and `preserve` must reference them in place
-    /// without copying or writing forwarding pointers into them.
+    /// Foreign pointers — resolved PMA pointers and other out-of-arena
+    /// memory — are never in any stack frame: `is_in_frame` must reject
+    /// them outright rather than relying on offset arithmetic to fall
+    /// outside the frame bounds (it previously tripped debug assertions
+    /// on any out-of-arena pointer).
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn preserve_leaves_foreign_extra_range_nouns_in_place() {
+    fn is_in_frame_rejects_out_of_arena_pointers() {
         let mut stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
         unsafe {
             let foreign_ptr = Box::into_raw(Box::new(CellMemory {
@@ -2833,28 +2812,11 @@ mod test {
                 head: D(1),
                 tail: D(2),
             }));
-            let start = foreign_ptr as usize;
-            let ranges = vec![(start, start + std::mem::size_of::<CellMemory>())];
-            let foreign_noun = Cell::from_raw_pointer(foreign_ptr).as_noun();
-            let original_foreign = *foreign_ptr;
-            let previous_ranges = stack.replace_extra_noun_ptr_ranges(ranges);
 
             stack.frame_push(0);
             assert!(!stack.is_in_frame(foreign_ptr));
-
-            let mut noun = Cell::new(&mut stack, foreign_noun, D(3)).as_noun();
-            stack.preserve(&mut noun);
             stack.frame_pop();
 
-            let space = stack.noun_space();
-            let cell = noun.in_space(&space).as_cell().expect("preserved cell");
-            assert!(cell.head().noun().raw_equals(&foreign_noun));
-            assert!(cell.tail().noun().raw_equals(&D(3)));
-            assert_eq!((*foreign_ptr).head.as_raw(), original_foreign.head.as_raw());
-            assert_eq!((*foreign_ptr).tail.as_raw(), original_foreign.tail.as_raw());
-            assert_eq!((*foreign_ptr).metadata, original_foreign.metadata);
-
-            stack.replace_extra_noun_ptr_ranges(previous_ranges);
             drop(Box::from_raw(foreign_ptr));
         }
     }
