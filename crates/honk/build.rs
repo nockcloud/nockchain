@@ -11,19 +11,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     let honc_formula_asset = manifest_dir.join("assets/honc-formula-138.jam");
     let hoonc_octs_type_asset = manifest_dir.join("assets/hoonc-octs-type-138.jam");
 
-    let hoonc_octs_type_asset_path = if hoonc_octs_type_asset.exists() {
-        hoonc_octs_type_asset.clone()
-    } else {
-        let out_dir = env::var_os("OUT_DIR")
-            .map(PathBuf::from)
-            .ok_or_else(|| io::Error::other("OUT_DIR is not set"))?;
-        let placeholder = out_dir.join("hoonc-octs-type-138.missing.jam");
-        fs::write(&placeholder, [])?;
-        println!(
-            "cargo:warning=assets/hoonc-octs-type-138.jam is missing; using an empty compile-time placeholder. Data-import compilation will require `bazel build //crates/honk:hoonc_octs_type_138` or `make build-honk-assets`."
-        );
-        placeholder
-    };
+    // The canonical hoonc `$octs` type is a required parity input: data
+    // imports (`/*`) must vase their bytes with hoonc's `$octs` hold, not a
+    // local `[p=@ud q=@]` approximation. Refuse to build without it rather
+    // than embedding an empty placeholder that silently degrades `/*` output.
+    // Regenerate with `just hoonc-octs-type-138-asset` (or the Bazel target).
+    // Bootstrap builds that genuinely lack the checked-in asset may point
+    // HONK_HOONC_OCTS_TYPE_138_JAM_OVERRIDE at an alternate jam.
+    println!("cargo:rerun-if-env-changed=HONK_HOONC_OCTS_TYPE_138_JAM_OVERRIDE");
+    let hoonc_octs_type_asset_path =
+        if let Some(override_path) = env::var_os("HONK_HOONC_OCTS_TYPE_138_JAM_OVERRIDE") {
+            let path = PathBuf::from(override_path);
+            if !path.is_file() {
+                return Err(io::Error::other(format!(
+                    "HONK_HOONC_OCTS_TYPE_138_JAM_OVERRIDE points at a missing file: {}",
+                    path.display()
+                ))
+                .into());
+            }
+            path
+        } else if hoonc_octs_type_asset.is_file()
+            && fs::metadata(&hoonc_octs_type_asset)?.len() > 0
+        {
+            hoonc_octs_type_asset.clone()
+        } else {
+            return Err(io::Error::other(
+                "crates/honk/assets/hoonc-octs-type-138.jam is missing or empty; \
+                 regenerate it with `just hoonc-octs-type-138-asset` (data imports \
+                 require hoonc's canonical $octs type), or set \
+                 HONK_HOONC_OCTS_TYPE_138_JAM_OVERRIDE to an alternate path",
+            )
+            .into());
+        };
 
     for path in [&hoon_source, &honc_type_asset, &honc_formula_asset, &hoonc_octs_type_asset] {
         println!("cargo:rerun-if-changed={}", path.display());

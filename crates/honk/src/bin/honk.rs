@@ -113,9 +113,6 @@ impl CompileMode {
         }
     }
 
-    fn uses_exact_artifact_swet(self) -> bool {
-        matches!(self, Self::Arbitrary)
-    }
 }
 
 #[derive(Debug)]
@@ -604,8 +601,8 @@ async fn run(cli: Cli) -> Result<()> {
         &prelude_source,
         subject_type_jam.as_deref(),
     )?;
-    let product = builder.compile_entry(entry, cli.mode)?;
-    let mut jam = builder.jam_product(&product, cli.mode, entry, None)?;
+    let mut product = builder.compile_entry(entry)?;
+    let mut jam = builder.jam_product(&mut product, cli.mode, entry, None)?;
     pad_hoonc_jam_atom_bytes(&mut jam);
 
     if let Some(parent) = output.parent() {
@@ -905,6 +902,14 @@ fn build_context_with_shared_prelude(
         let empty_ty = empty_subject_type(&mut *ut.slab);
         ty_cell_local(&mut *ut.slab, empty_ty, prelude_vase.ty)
     };
+    // build.rs makes the embedded $octs asset mandatory, so a canonical
+    // hoon-138 build always has it; never silently fall back to the local
+    // `[p=@ud q=@]` approximation for canonical data imports.
+    assert!(
+        !canonical_hoon_138 || !EMBEDDED_HOONC_OCTS_TYPE_138_JAM.is_empty(),
+        "canonical hoon-138 build is missing the embedded hoonc $octs type; \
+         regenerate crates/honk/assets/hoonc-octs-type-138.jam"
+    );
     let canonical_data_octs_ty =
         if canonical_hoon_138 && !EMBEDDED_HOONC_OCTS_TYPE_138_JAM.is_empty() {
             Some(trace_timed("cueing canonical hoonc octs type", || {
@@ -919,13 +924,8 @@ fn build_context_with_shared_prelude(
         .directory
         .canonicalize()
         .unwrap_or_else(|_| cli.directory.clone());
-    let prelude_path = cli
-        .prelude
-        .canonicalize()
-        .unwrap_or_else(|_| cli.prelude.clone());
     let mut builder = NativeBuildContext::new(
         directory,
-        prelude_path,
         prelude_vase,
         prelude_eval_value,
         wrapper_subject_ty,
@@ -991,6 +991,14 @@ fn build_context_with_dynamic_wrapper_prelude(
         ty_cell_local(&mut *ut.slab, empty_ty, prelude_vase.ty)
     };
     let wrapper_subject_value = T(&mut eval_context.stack, &[D(0), prelude_eval.value]);
+    // build.rs makes the embedded $octs asset mandatory, so a canonical
+    // hoon-138 build always has it; never silently fall back to the local
+    // `[p=@ud q=@]` approximation for canonical data imports.
+    assert!(
+        !canonical_hoon_138 || !EMBEDDED_HOONC_OCTS_TYPE_138_JAM.is_empty(),
+        "canonical hoon-138 build is missing the embedded hoonc $octs type; \
+         regenerate crates/honk/assets/hoonc-octs-type-138.jam"
+    );
     let canonical_data_octs_ty =
         if canonical_hoon_138 && !EMBEDDED_HOONC_OCTS_TYPE_138_JAM.is_empty() {
             Some(trace_timed("cueing canonical hoonc octs type", || {
@@ -1005,12 +1013,8 @@ fn build_context_with_dynamic_wrapper_prelude(
         .directory
         .canonicalize()
         .unwrap_or_else(|_| cli.directory.clone());
-    let prelude_path = cli
-        .prelude
-        .canonicalize()
-        .unwrap_or_else(|_| cli.prelude.clone());
     let mut builder = NativeBuildContext::new(
-        directory, prelude_path, prelude_vase, prelude_eval.value, wrapper_subject_ty,
+        directory, prelude_vase, prelude_eval.value, wrapper_subject_ty,
         wrapper_subject_value, canonical_data_octs_ty, cli.dbug, cli.vet, ut, eval_context,
     );
     trace_timed("building exact hoonc wrapper traps", || {
@@ -1031,10 +1035,10 @@ async fn compile_batch_with_shared_prelude(
     for entry in entries {
         let label = format!("{}", entry.entry.display());
         trace_native(format!("batch compiling {label}"));
-        let product =
-            builder.compile_entry_with_miss_persistence(&entry.entry, entry.mode, false)?;
+        let mut product =
+            builder.compile_entry_with_miss_persistence(&entry.entry, false)?;
         let mut jam = builder.jam_product(
-            &product,
+            &mut product,
             entry.mode,
             &entry.entry,
             entry.directory_files.as_deref(),
@@ -1055,8 +1059,8 @@ struct NativeVase {
     trap: Noun,
 }
 
-type PathCacheKey = (PathBuf, bool);
-type ContentCacheKey = (blake3::Hash, bool);
+type PathCacheKey = PathBuf;
+type ContentCacheKey = blake3::Hash;
 
 struct PreludeEval {
     value: Noun,
@@ -1121,7 +1125,6 @@ struct NativeBuildProduct {
 
 struct NativeBuildContext<'a> {
     directory: PathBuf,
-    prelude_path: PathBuf,
     prelude_vase: NativeVase,
     prelude_eval_value: Noun,
     wrapper_subject_ty: Noun,
@@ -1142,7 +1145,6 @@ impl<'a> NativeBuildContext<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         directory: PathBuf,
-        prelude_path: PathBuf,
         prelude_vase: NativeVase,
         prelude_eval_value: Noun,
         wrapper_subject_ty: Noun,
@@ -1155,7 +1157,6 @@ impl<'a> NativeBuildContext<'a> {
     ) -> Self {
         Self {
             directory,
-            prelude_path,
             prelude_vase,
             prelude_eval_value,
             wrapper_subject_ty,
@@ -1638,14 +1639,13 @@ impl<'a> NativeBuildContext<'a> {
         ))
     }
 
-    fn compile_entry(&mut self, path: &Path, mode: CompileMode) -> Result<NativeBuildProduct> {
-        self.compile_entry_with_miss_persistence(path, mode, true)
+    fn compile_entry(&mut self, path: &Path) -> Result<NativeBuildProduct> {
+        self.compile_entry_with_miss_persistence(path, true)
     }
 
     fn compile_entry_with_miss_persistence(
         &mut self,
         path: &Path,
-        mode: CompileMode,
         persist_miss: bool,
     ) -> Result<NativeBuildProduct> {
         // Persisting `miss` verdicts across calls is sound for a single
@@ -1659,10 +1659,7 @@ impl<'a> NativeBuildContext<'a> {
             self.ut.set_miss_memo_persistence(true);
         }
         let canonical = path.canonicalize()?;
-        let exact_artifact_swet = mode.uses_exact_artifact_swet();
-        match self
-            .compile_path_uncached(path, true, false, false, true, true, exact_artifact_swet)?
-        {
+        match self.compile_path_uncached(path, true, false, false, true, true)? {
             NativeCompileOutput::Product(product) => Ok(product),
             NativeCompileOutput::Vase(_) => Err(format!(
                 "missing top-level native product for {}",
@@ -1680,16 +1677,11 @@ impl<'a> NativeBuildContext<'a> {
         }
     }
 
-    fn compile_path(
-        &mut self,
-        path: &Path,
-        need_eval: bool,
-        exact_artifact_swet: bool,
-    ) -> Result<SubjectVase> {
+    fn compile_path(&mut self, path: &Path, need_eval: bool) -> Result<SubjectVase> {
         let canonical = path.canonicalize()?;
         let content_key = hoon_source_content_key(path)?;
-        let cache_key = (canonical.clone(), exact_artifact_swet);
-        let content_cache_key = (content_key, exact_artifact_swet);
+        let cache_key = canonical.clone();
+        let content_cache_key = content_key;
         if let Some(cached) = self.cache.get(&cache_key) {
             let cached = cached.clone();
             if need_eval && cached.eval_value.is_none() {
@@ -1717,9 +1709,7 @@ impl<'a> NativeBuildContext<'a> {
             return Err(format!("cyclic native dependency at {}", canonical.display()).into());
         }
 
-        let result = self.compile_path_uncached(
-            path, false, need_eval, false, false, false, exact_artifact_swet,
-        );
+        let result = self.compile_path_uncached(path, false, need_eval, false, false, false);
         self.visiting.remove(&canonical);
         let subject_vase = match result? {
             NativeCompileOutput::Vase(vase) => vase,
@@ -1750,7 +1740,6 @@ impl<'a> NativeBuildContext<'a> {
         needs_subject: bool,
         canonical_entry_dbug: bool,
         absolute_entry_wer: bool,
-        exact_artifact_swet: bool,
     ) -> Result<NativeCompileOutput> {
         let _compile_log = TimedHoonPathLog::new(path, HoonLogOperation::Compile);
         trace_native(format!("compiling {}", path.display()));
@@ -1766,7 +1755,7 @@ impl<'a> NativeBuildContext<'a> {
         for import in imports {
             let imported = match import.kind {
                 NativeImportKind::Hoon => {
-                    self.compile_path(&import.path, imports_need_eval, exact_artifact_swet)?
+                    self.compile_path(&import.path, imports_need_eval)?
                 }
                 NativeImportKind::Data => self.data_vase(&import.path, imports_need_eval)?,
             };
@@ -1803,11 +1792,7 @@ impl<'a> NativeBuildContext<'a> {
             None => {
                 let subject_trap = subject_trap.expect("subject trap should be present");
                 trace_timed(format!("swetting {label}"), || {
-                    if self.should_use_exact_swet(path, exact_artifact_swet) {
-                        self.exact_swet_vase_trap(subject_ty, subject_trap, &expr, vet)
-                    } else {
-                        self.native_swet_vase_trap(subject_ty, subject_trap, &expr, vet)
-                    }
+                    self.native_swet_vase_trap(subject_ty, subject_trap, &expr, vet)
                 })?
             }
         };
@@ -1867,14 +1852,6 @@ impl<'a> NativeBuildContext<'a> {
             };
             Ok(NativeCompileOutput::Vase(vase))
         }
-    }
-
-    fn should_use_exact_swet(&self, path: &Path, exact_artifact_swet: bool) -> bool {
-        if !exact_artifact_swet {
-            return false;
-        }
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        canonical != self.prelude_path
     }
 
     fn mint_with_subject_type(&mut self, subject_ty: Noun, expr: &Hoon) -> Result<(Noun, Noun)> {
@@ -1995,16 +1972,6 @@ impl<'a> NativeBuildContext<'a> {
     fn slat_vase_trap(&mut self, hed: Noun, tal: Noun) -> Result<Noun> {
         let sample = T(&mut *self.ut.slab, &[hed, tal]);
         Ok(self.trap_from_payload(self.wrappers.slat, sample))
-    }
-
-    fn exact_swet_vase_trap(
-        &mut self,
-        subject_ty: Noun,
-        tap: Noun,
-        expr: &Hoon,
-        vet: bool,
-    ) -> Result<(Noun, Noun, Noun)> {
-        self.native_swet_vase_trap(subject_ty, tap, expr, vet)
     }
 
     fn native_swet_vase_trap(
@@ -2297,7 +2264,7 @@ impl<'a> NativeBuildContext<'a> {
 
     fn jam_product(
         &mut self,
-        product: &NativeBuildProduct,
+        product: &mut NativeBuildProduct,
         mode: CompileMode,
         entry: &Path,
         directory_files: Option<&[PathBuf]>,
@@ -2319,8 +2286,8 @@ impl<'a> NativeBuildContext<'a> {
                 self.jam_vase_trap_value(vase_trap, mode)
             }
             CompileMode::Standard => {
-                if let Some(jam) = &product.standard_jam {
-                    return Ok(jam.clone());
+                if let Some(jam) = product.standard_jam.take() {
+                    return Ok(jam);
                 }
                 let dir_hash = self.exact_directory_mug(entry, directory_files)?;
                 let vase_trap = product.vase_trap.ok_or_else(|| {
