@@ -116,7 +116,14 @@ mod arm_runner {
             native_hot_state().to_vec()
         };
         let trace_info: Option<TraceInfo> = None;
-        nockapp::utils::create_context(stack, &constant_hot_state, cold, trace_info, vec![])
+        nockapp::utils::create_context(
+            stack,
+            &constant_hot_state,
+            cold,
+            trace_info,
+            vec![],
+            nockvm::jets::JetDispatchMode::HintBlind,
+        )
     }
 }
 
@@ -201,7 +208,14 @@ fn parse_hoon_test_source_expr(rel: &str) -> Hoon {
 fn create_native_test_context() -> Context {
     let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
     let cold = Cold::new(&mut stack);
-    create_context(stack, native_hot_state(), cold, None, vec![])
+    create_context(
+        stack,
+        native_hot_state(),
+        cold,
+        None,
+        vec![],
+        nockvm::jets::JetDispatchMode::HintBlind,
+    )
 }
 
 

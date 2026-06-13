@@ -16,7 +16,7 @@ use crate::jets::cold::Cold;
 use crate::jets::hot::Hot;
 use crate::jets::list::util::weld;
 use crate::jets::warm::Warm;
-use crate::jets::{cold, JetErr};
+use crate::jets::{cold, JetDispatchMode, JetErr};
 use crate::mem::{Arena, NockStack, Preserve};
 use crate::noun::{Atom, Cell, CellHandle, IndirectAtom, Noun, NounSpace, Slots, D, T};
 use crate::trace::{write_nock_trace, TraceInfo, TraceStack};
@@ -437,6 +437,10 @@ pub struct Context {
     /// (matching hoonc's behavior of abandoning infeasible folds) without
     /// affecting any other evaluation.
     pub op_budget: Option<u64>,
+    /// How jet matching compares formulas and batteries; `Exact` for
+    /// runtimes whose cores and registrations come from the same compile
+    /// (hoonc, nockchain), `HintBlind` for honk. See [`JetDispatchMode`].
+    pub jet_dispatch: JetDispatchMode,
     pub slogger: Pin<Box<dyn Slogger + Unpin>>,
     pub cold: Cold,
     pub warm: Warm,
@@ -856,9 +860,10 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                             opcode_tick!(WORK9);
                             let formula = res.slot_atom_trusted_or_checked(kale.axis, &space);
                             if let Ok(mut formula) = formula {
+                                let dispatch = context.jet_dispatch;
                                 if let Some((jet, _path, test)) = context
                                     .warm
-                                    .find_jet(&mut context.stack, &mut res, &mut formula)
+                                    .find_jet(&mut context.stack, &mut res, &mut formula, dispatch)
                                     .next()
                                 {
                                     match jet(context, res) {
@@ -892,7 +897,10 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                                     // jetted code.
                                     if let Some((path, trace_info)) =
                                         context.trace_info.as_mut().and_then(|v| {
-                                            context.cold.matches(stack, &mut res).zip(Some(v))
+                                            context
+                                                .cold
+                                                .matches(stack, &mut res, dispatch)
+                                                .zip(Some(v))
                                         })
                                     {
                                         trace_info.append_trace(stack, path);
@@ -922,7 +930,10 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                                     // jetted code.
                                     if let Some((path, trace_info)) =
                                         context.trace_info.as_mut().and_then(|v| {
-                                            context.cold.matches(stack, &mut res).zip(Some(v))
+                                            context
+                                                .cold
+                                                .matches(stack, &mut res, dispatch)
+                                                .zip(Some(v))
                                         })
                                     {
                                         trace_info.append_trace(stack, path);
@@ -2119,6 +2130,7 @@ mod hint {
         body: Noun,
         res: Noun,
     ) -> Option<Noun> {
+        let dispatch = context.jet_dispatch;
         let stack = &mut context.stack;
         let slogger = &mut context.slogger;
         let cold = &mut context.cold;
@@ -2163,7 +2175,7 @@ mod hint {
                     let cold_res: cold::Result = {
                         if parent_formula_op.data() == 1 {
                             if parent_formula_ax.direct()?.data() == 0 {
-                                cold.register(stack, res, parent_formula_ax, chum)
+                                cold.register(stack, res, parent_formula_ax, chum, dispatch)
                             } else {
                                 //  XX: flog! is ideal, but it runs afoul of the borrow checker
                                 // flog!(context, "invalid root parent formula: {} {}", chum, parent);
@@ -2173,12 +2185,12 @@ mod hint {
                                 Ok(false)
                             }
                         } else {
-                            cold.register(stack, res, parent_formula_ax, chum)
+                            cold.register(stack, res, parent_formula_ax, chum, dispatch)
                         }
                     };
 
                     match cold_res {
-                        Ok(true) => context.warm = Warm::init(stack, cold, hot, &context.test_jets),
+                        Ok(true) => context.warm = Warm::init(stack, cold, hot, &context.test_jets, dispatch),
                         Err(cold::Error::NoParent) => {
                             let Ok(chum_atom) = chum.in_space(&space).as_atom() else {
                                 flog!(context, "serf: cold: register: cell chum");

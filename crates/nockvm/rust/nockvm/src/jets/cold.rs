@@ -5,6 +5,7 @@ use nockvm_macros::tas;
 use tracing::debug;
 
 use crate::hamt::Hamt;
+use crate::jets::JetDispatchMode;
 use crate::mem::{self, NockStack, Preserve};
 use crate::noun::{
     self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, Slots, D, T,
@@ -500,7 +501,60 @@ impl Batteries {
         Batteries(ptr)
     }
 
-    pub fn matches(self, stack: &mut NockStack, mut core: Noun, space: &NounSpace) -> bool {
+    pub fn matches(
+        self,
+        stack: &mut NockStack,
+        core: Noun,
+        space: &NounSpace,
+        dispatch: JetDispatchMode,
+    ) -> bool {
+        match dispatch {
+            JetDispatchMode::Exact => self.matches_exact(stack, core, space),
+            JetDispatchMode::HintBlind => self.matches_hint_blind(stack, core, space),
+        }
+    }
+
+    fn matches_exact(self, stack: &mut NockStack, mut core: Noun, space: &NounSpace) -> bool {
+        let mut root_found: bool = false;
+
+        for (battery, parent_axis) in self {
+            if root_found {
+                panic!("cold: core matched to root, but more data remains in path");
+            }
+
+            if let Ok(d) = parent_axis.as_direct() {
+                if d.data() == 0 {
+                    if unsafe { unifying_equality(stack, &mut core, battery) } {
+                        root_found = true;
+                        continue;
+                    } else {
+                        return false;
+                    };
+                };
+            };
+            if let Ok(mut core_battery) = core.slot(2, space) {
+                if unsafe { !unifying_equality(stack, &mut core_battery, battery) } {
+                    return false;
+                };
+                if let Ok(core_parent) = core.slot_atom(parent_axis, space) {
+                    core = core_parent;
+                    continue;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        if !root_found {
+            panic!("cold: core matched exactly, but never matched root");
+        }
+
+        true
+    }
+
+    fn matches_hint_blind(self, stack: &mut NockStack, mut core: Noun, space: &NounSpace) -> bool {
         let mut root_found: bool = false;
 
         for (battery, parent_axis) in self {
@@ -684,8 +738,9 @@ impl BatteriesList {
         stack: &mut NockStack,
         core: Noun,
         space: &NounSpace,
+        dispatch: JetDispatchMode,
     ) -> Option<Batteries> {
-        self.find(|&batteries| batteries.matches(stack, core, space))
+        self.find(|&batteries| batteries.matches(stack, core, space, dispatch))
     }
 }
 
@@ -996,7 +1051,12 @@ impl Cold {
 
     /** Try to match a core directly to the cold state, print the resulting path if found
      */
-    pub fn matches(&mut self, stack: &mut NockStack, core: &mut Noun) -> Option<Noun> {
+    pub fn matches(
+        &mut self,
+        stack: &mut NockStack,
+        core: &mut Noun,
+        dispatch: JetDispatchMode,
+    ) -> Option<Noun> {
         let space = stack.fast_noun_space();
         let mut battery = (*core).slot(2, &space).ok()?;
         unsafe {
@@ -1005,7 +1065,7 @@ impl Cold {
                 if let Some(batteries_list) =
                     (*(self.0)).path_to_batteries.lookup(stack, &mut (*path))
                 {
-                    if let Some(_batt) = batteries_list.matches(stack, *core, &space) {
+                    if let Some(_batt) = batteries_list.matches(stack, *core, &space, dispatch) {
                         return Some(*path);
                     }
                 }
@@ -1025,6 +1085,7 @@ impl Cold {
         mut core: Noun,
         parent_axis: Atom,
         mut chum: Noun,
+        dispatch: JetDispatchMode,
     ) -> Result {
         let space = stack.fast_noun_space();
         unsafe {
@@ -1100,7 +1161,7 @@ impl Cold {
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {
                                 if let Some(_batteries) =
-                                    batteries_list.matches(stack, core, &space)
+                                    batteries_list.matches(stack, core, &space, dispatch)
                                 {
                                     return Ok(false);
                                 }
@@ -1125,7 +1186,7 @@ impl Cold {
                     let battery_list = path_to_batteries
                         .lookup(stack, &mut *a_path)
                         .unwrap_or(BATTERIES_LIST_NIL);
-                    if let Some(parent_batteries) = battery_list.matches(stack, parent, &space) {
+                    if let Some(parent_batteries) = battery_list.matches(stack, parent, &space, dispatch) {
                         let mut my_path = T(stack, &[chum, *a_path]);
 
                         let batteries_mem_ptr: *mut BatteriesMem = stack.struct_alloc(1);
@@ -1174,7 +1235,7 @@ impl Cold {
                     let battery_list = path_to_batteries
                         .lookup(stack, &mut *a_path)
                         .unwrap_or(BATTERIES_LIST_NIL);
-                    if let Some(parent_batteries) = battery_list.matches(stack, parent, &space) {
+                    if let Some(parent_batteries) = battery_list.matches(stack, parent, &space, dispatch) {
                         let mut my_path = T(stack, &[chum, *a_path]);
 
                         let batteries_mem_ptr: *mut BatteriesMem = stack.struct_alloc(1);
@@ -2124,7 +2185,9 @@ pub(crate) mod test {
         let batteries = batteries_with_root(&mut stack, registered_battery, 3, root);
         let space = stack.noun_space();
 
-        assert!(batteries.matches(&mut stack, query_core, &space));
+        assert!(batteries.matches(&mut stack, query_core, &space, JetDispatchMode::HintBlind));
+        // Exact dispatch must reject the hint-divergent battery.
+        assert!(!batteries.matches(&mut stack, query_core, &space, JetDispatchMode::Exact));
     }
 
     #[test]
@@ -2139,7 +2202,7 @@ pub(crate) mod test {
         let batteries = batteries_with_root(&mut stack, registered_battery, 3, root);
         let space = stack.noun_space();
 
-        assert!(!batteries.matches(&mut stack, query_core, &space));
+        assert!(!batteries.matches(&mut stack, query_core, &space, JetDispatchMode::HintBlind));
     }
 
     #[test]

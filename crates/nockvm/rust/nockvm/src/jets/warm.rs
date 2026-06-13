@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::hamt::Hamt;
 use crate::jets::cold::{Batteries, Cold};
 use crate::jets::hot::Hot;
-use crate::jets::Jet;
+use crate::jets::{Jet, JetDispatchMode};
 use crate::mem::{NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, NounSpace, Slots, T};
 use crate::pma::{Pma, PmaCopy, PmaCopyFrom};
@@ -581,9 +581,10 @@ fn match_warm_entries(
     warm_it: WarmEntry,
     subject: Noun,
     space: &NounSpace,
+    dispatch: JetDispatchMode,
 ) -> Option<JetLookupResult> {
     for (path, batteries, jet, test) in warm_it {
-        if batteries.matches(stack, subject, space) {
+        if batteries.matches(stack, subject, space, dispatch) {
             return Some(if test {
                 JetLookupResult::Test { jet, path }
             } else {
@@ -629,7 +630,13 @@ impl Warm {
             self.insert(stack, &mut formula, entry);
         }
     }
-    pub fn init(stack: &mut NockStack, cold: &mut Cold, hot: &Hot, test_jets: &Hamt<()>) -> Self {
+    pub fn init(
+        stack: &mut NockStack,
+        cold: &mut Cold,
+        hot: &Hot,
+        test_jets: &Hamt<()>,
+        dispatch: JetDispatchMode,
+    ) -> Self {
         let mut warm = Self::new(stack);
         let space = stack.fast_noun_space();
         for (mut path, axis, jet) in *hot {
@@ -647,7 +654,12 @@ impl Warm {
                         jet,
                         test: test_path,
                     };
-                    warm.insert_with_transparent_hints(stack, &mut formula, entry, &space);
+                    match dispatch {
+                        JetDispatchMode::Exact => warm.insert(stack, &mut formula, entry),
+                        JetDispatchMode::HintBlind => {
+                            warm.insert_with_transparent_hints(stack, &mut formula, entry, &space)
+                        }
+                    }
                 } else {
                     //  XX: need NockStack allocated string interpolation
                     // eprintln!("Bad axis {} into formula {:?}", axis, battery);
@@ -666,20 +678,23 @@ impl Warm {
         stack: &mut NockStack,
         s: &mut Noun,
         f: &mut Noun,
+        dispatch: JetDispatchMode,
     ) -> JetLookupResult {
         let space = stack.fast_noun_space();
         if let Some(warm_it) = self.0.lookup(stack, f) {
-            if let Some(result) = match_warm_entries(stack, warm_it, *s, &space) {
+            if let Some(result) = match_warm_entries(stack, warm_it, *s, &space, dispatch) {
                 return result;
             }
         }
 
-        let (normalized_formula, normalized) = normalize_transparent_hints(stack, *f, &space);
-        if normalized && !raw_noun_eq(*f, normalized_formula) {
-            let mut formula = normalized_formula;
-            if let Some(warm_it) = self.0.lookup(stack, &mut formula) {
-                if let Some(result) = match_warm_entries(stack, warm_it, *s, &space) {
-                    return result;
+        if dispatch == JetDispatchMode::HintBlind {
+            let (normalized_formula, normalized) = normalize_transparent_hints(stack, *f, &space);
+            if normalized && !raw_noun_eq(*f, normalized_formula) {
+                let mut formula = normalized_formula;
+                if let Some(warm_it) = self.0.lookup(stack, &mut formula) {
+                    if let Some(result) = match_warm_entries(stack, warm_it, *s, &space, dispatch) {
+                        return result;
+                    }
                 }
             }
         }
@@ -773,7 +788,12 @@ mod test {
         let mut query = hinted_formula(&mut stack, tas!(b"spot"), D(1), mean);
         let mut subject = D(10);
 
-        match warm.find_jet(&mut stack, &mut subject, &mut query) {
+        match warm.find_jet(
+            &mut stack,
+            &mut subject,
+            &mut query,
+            JetDispatchMode::HintBlind,
+        ) {
             JetLookupResult::Run { jet, path } => {
                 assert!(std::ptr::fn_addr_eq(jet, dummy_jet as Jet));
                 assert!(unsafe { path.raw_equals(&D(1000)) });
@@ -804,7 +824,12 @@ mod test {
 
         let mut query = D(100);
         let mut subject = D(10);
-        match warm.find_jet(&mut stack, &mut subject, &mut query) {
+        match warm.find_jet(
+            &mut stack,
+            &mut subject,
+            &mut query,
+            JetDispatchMode::HintBlind,
+        ) {
             JetLookupResult::Run { jet, path } => {
                 assert!(std::ptr::fn_addr_eq(jet, dummy_jet as Jet));
                 assert!(unsafe { path.raw_equals(&D(1000)) });
@@ -836,7 +861,12 @@ mod test {
         let hinted_slot_three = hinted_formula(&mut stack, tas!(b"spot"), D(1), slot_three);
         let mut query = T(&mut stack, &[D(2), hinted_slot_three, slot_four]);
         let mut subject = D(10);
-        match warm.find_jet(&mut stack, &mut subject, &mut query) {
+        match warm.find_jet(
+            &mut stack,
+            &mut subject,
+            &mut query,
+            JetDispatchMode::HintBlind,
+        ) {
             JetLookupResult::Run { jet, path } => {
                 assert!(std::ptr::fn_addr_eq(jet, dummy_jet as Jet));
                 assert!(unsafe { path.raw_equals(&D(1000)) });
@@ -869,7 +899,12 @@ mod test {
         let mut query = T(&mut stack, &[D(1), D(100)]);
         let mut subject = D(10);
         assert!(matches!(
-            warm.find_jet(&mut stack, &mut subject, &mut query),
+            warm.find_jet(
+            &mut stack,
+            &mut subject,
+            &mut query,
+            JetDispatchMode::HintBlind,
+        ),
             JetLookupResult::NoJet
         ));
     }
@@ -894,8 +929,116 @@ mod test {
         let mut query = hinted_formula(&mut stack, tas!(b"memo"), D(0), D(100));
         let mut subject = D(10);
         assert!(matches!(
-            warm.find_jet(&mut stack, &mut subject, &mut query),
+            warm.find_jet(
+            &mut stack,
+            &mut subject,
+            &mut query,
+            JetDispatchMode::HintBlind,
+        ),
             JetLookupResult::NoJet
+        ));
+    }
+
+    #[test]
+    fn test_warm_exact_lookup_ignores_hinted_query() {
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut warm = Warm::new(&mut stack);
+        let batteries = make_simple_batteries(&mut stack, 10);
+        let mut formula = D(100);
+        warm.insert(
+            &mut stack,
+            &mut formula,
+            WarmRegistration {
+                path: D(1000),
+                batteries,
+                jet: dummy_jet,
+                test: false,
+            },
+        );
+
+        let mut query = hinted_formula(&mut stack, tas!(b"spot"), D(1), D(100));
+        let mut subject = D(10);
+
+        // Exact dispatch never strips hints: the hinted query misses.
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::Exact,
+            ),
+            JetLookupResult::NoJet
+        ));
+
+        // The same query under hint-blind dispatch hits.
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::HintBlind,
+            ),
+            JetLookupResult::Run { .. }
+        ));
+    }
+
+    #[test]
+    fn test_warm_hint_blind_matches_hint_divergent_battery() {
+        // End-to-end honk scenario at the warm level: both the arm formula
+        // and the registered root battery carry %spot hints the querying
+        // core lacks. HintBlind dispatch must match; Exact must not.
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut warm = Warm::new(&mut stack);
+        let space = stack.fast_noun_space();
+
+        let hinted_arm = hinted_formula(&mut stack, tas!(b"spot"), D(1), D(100));
+        let mut registered_root = T(&mut stack, &[hinted_arm, D(7)]);
+
+        let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
+        unsafe {
+            batteries_mem.write(BatteriesMem {
+                battery: registered_root,
+                parent_axis: D(0).as_atom().expect("0 is a valid atom"),
+                parent_batteries: NO_BATTERIES,
+            });
+        }
+        let batteries = Batteries::new(batteries_mem);
+
+        warm.insert_with_transparent_hints(
+            &mut stack,
+            &mut registered_root,
+            WarmRegistration {
+                path: D(1000),
+                batteries,
+                jet: dummy_jet,
+                test: false,
+            },
+            &space,
+        );
+
+        // The querying core: same code, no %spot wrapper.
+        let mut subject = T(&mut stack, &[D(100), D(7)]);
+        // The query formula: differently-hinted variant of the registered key.
+        let mean_arm = hinted_formula(&mut stack, tas!(b"mean"), D(2), D(100));
+        let mut query = T(&mut stack, &[mean_arm, D(7)]);
+
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::Exact,
+            ),
+            JetLookupResult::NoJet
+        ));
+        assert!(matches!(
+            warm.find_jet(
+                &mut stack,
+                &mut subject,
+                &mut query,
+                JetDispatchMode::HintBlind,
+            ),
+            JetLookupResult::Run { .. }
         ));
     }
 
