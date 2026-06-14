@@ -1,3 +1,10 @@
+# Bazel-driven equivalents of the recipes below. Invoke as `just bazel <recipe>`.
+mod bazel 'bazel.just'
+
+# List available recipes, including nested modules (default).
+default:
+    @just --list --list-submodules
+
 build:
     cargo build --release
 
