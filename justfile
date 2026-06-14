@@ -26,36 +26,46 @@ hoonc-octs-type-138-asset:
     target/release/hoonc --dynock-typed --output target/honk-assets/data-import-typed-dynock.jam hoon/probes/hoon-compiler/hoonc_octs_type_probe.hoon hoon
     target/release/extract-hoonc-octs-type target/honk-assets/data-import-typed-dynock.jam crates/honk/assets/hoonc-octs-type-138.jam
 
+# Each kernel uses a fresh `--new` data dir (target/hoonc-new) so hoonc never
+# reuses a warm cache: a clean cold build, good for timing and repeatable across
+# all six (bare `--new` aborts on a non-empty data dir).
+# Convenience for non-Bazel users; `just bazel build-assets` is canonical.
 build-kernel-assets: build dumb-jam wal-jam miner-jam peek-jam bridge-jam roswell-jam
 
 dumb-jam:
     mkdir -p assets
-    target/release/hoonc --output dumb.jam hoon/apps/dumbnet/outer.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output dumb.jam hoon/apps/dumbnet/outer.hoon hoon
     mv dumb.jam assets/dumb.jam
 
 wal-jam:
     mkdir -p assets
-    target/release/hoonc --output wal.jam hoon/apps/wallet/wallet.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output wal.jam hoon/apps/wallet/wallet.hoon hoon
     mv wal.jam assets/wal.jam
 
 miner-jam:
     mkdir -p assets
-    target/release/hoonc --output miner.jam hoon/apps/dumbnet/miner.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output miner.jam hoon/apps/dumbnet/miner.hoon hoon
     mv miner.jam assets/miner.jam
 
 peek-jam:
     mkdir -p assets
-    target/release/hoonc --output peek.jam hoon/apps/peek/peek.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output peek.jam hoon/apps/peek/peek.hoon hoon
     mv peek.jam assets/peek.jam
 
 bridge-jam:
     mkdir -p assets
-    target/release/hoonc --output bridge.jam hoon/apps/bridge/bridge.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output bridge.jam hoon/apps/bridge/bridge.hoon hoon
     mv bridge.jam assets/bridge.jam
 
 roswell-jam:
     mkdir -p assets
-    target/release/hoonc --output roswell.jam hoon/apps/roswell/roswell.hoon hoon
+    rm -rf target/hoonc-new
+    target/release/hoonc --new --data-dir target/hoonc-new --output roswell.jam hoon/apps/roswell/roswell.hoon hoon
     mv roswell.jam assets/roswell.jam
 
 honk-roswell-kernel:
