@@ -36,50 +36,30 @@ The head comparison in util::dor (reached from gor/mor mug ties and direct dor/s
 - is_in_frame now does an explicit bounds check in release builds (mem.rs) where master had only debug asserts — small constant on every preserve/copy decision.
 - Offsetting speedup: resolve_stack_ptr/classify_ptr got a release-mode identity fast path when no PMA is installed.
 
-### Standard batch output recomputes directory mug by walking and reading the tree per entry
+## honk compiler perf — status (reconciled 2026-06-15)
 
-- Evidence: batch loops entries and calls jam_product at src/bin/honk.rs:1021-1045; standard jam_product calls exact_directory_mug at src/bin/honk.rs:2320-2324; directory_mug_with_files walks deps_dir, reads target and every valid file into memory at src/bin/honk.rs:3383-3435.
-- Impact: O(entries × directory size) I/O and allocation.
-- Fix: Cache directory manifests/content hashes per batch; avoid WalkDir when manifest file list is supplied.
+### RESOLVED
+- **Cached standard JAM cloned before write** → `jam_product` now `take()`s the `Vec<u8>` (`standard_jam.take()`, H1b).
+- **Dead cool/chip cache stubs** → `cool_cache_*`/`chip_cache_*` deleted (they were no-op plumbing).
 
-### Hoon sources are read/scanned/parsed multiple times
+### OPEN — native prelude mint blows up (memory AND runtime): the headline finding
+honk's native mint of hoon-138 (`HONK_NATIVE_PARITY=1`, or `just honk-138-parity`) does NOT complete: resident memory grows ~linearly at ~4 GB/min with no plateau, and it OOMs before finishing (reproduced 2026-06-14 on a 128 GB machine; ~30–50 min to exhaustion). Application kernels are unaffected — they compile against the embedded precompiled prelude. Ranked causes (full analysis in `docs/OSS-NEXT-PLAN.md`):
+1. **Leaked, never-freed bump slab + one monolithic `ut.mint`** — `NounSlab` has no free/reset/compaction (only `Drop`, which never runs on the `Box::leak`'d Ut slab) and the whole prelude is minted in one call, so memory = cumulative allocation. This is the linear curve.
+2. **No type interning / hash-consing** — `ty_*` re-allocate structurally-equal types at fresh addresses, defeating `noun_eq`'s pointer short-circuit and collapsing every mug/raw-pointer cache → super-linear deep walks (the runtime half) and permanent duplicate bytes.
+3. **Subject-deepening** — `mint_core`/`play_core` embed the whole current subject as each core's context, so name resolution walks an O(arms-so-far) spine per reference → O(N²) over ~530 arms. hoon-138's monolithic 6-layer cumulative-subject core is the worst case.
+4. **Redundant unconditional full-prelude `ut.play`** in `seed_honc_type_with_ut` — output-neutral; inhibiting it is byte-identical and shaves ~5 s off kernel builds, but it is not the dominant cost.
+5. **Recursive molds + wet gates** (`type`/`hoon` are `$`-recursive with `%fork`/`%hold`; ~193 `|*`) hit honk's heaviest paths, amplified by (2).
+6. **Never-cleared `lazy_resolvers`/fan interners + H2 context-widened cache keys** rarely collapse on the recursive prelude → re-misses.
 
-- Evidence: content key reads bytes at src/bin/honk.rs:804-806, 1688-1691; import resolution reads source at pipeline.rs:221-224; leaf parse reads again at src/bin/honk.rs:1743-1786, 635-654.
-- Impact: Avoidable I/O and parse overhead on every cache miss.
-- Fix: Introduce SourceFile { canonical, text, hash, imports, ast } cache.
+**KEYSTONE FIX: type interning at the `ty_*` constructors** (generalize the in-tree `ty_hold_cached` pattern). It improves BOTH memory (dedup) and runtime (restores cache hits + O(1) equality), it is the precondition for a bounded arena, and it also targets the 60 s roswell gate. Then bound memory for real via a NockStack-style frame arena or chunked per-core generation. See the self-hosting plan in `OSS-NEXT-PLAN.md`.
 
-### Batch cache/slab lifetime is unbounded
+### OPEN — 60 s roswell gate
+Roswell native compile is ~71–76 s (> 60 s). Not recovered by the redundant-play shave; needs the interning keystone above plus the H4/H9 items below.
 
-- Evidence: shared NounSlab is leaked for build context at src/bin/honk.rs:848-849, 951-952; cache and content_cache store NativeVase nouns at src/bin/honk.rs:1121-1138, inserted at 1738-1739, never evicted in batch loop 1021-1048.
-- Impact: Long batch compiles retain type/trap/eval graphs for the process lifetime.
-- Fix: Split reusable prelude state from per-entry arenas; add cache budgets/eviction.
-
-### Cached standard JAM is cloned before write
-
-- Evidence: NativeBuildProduct.standard_jam: Option<Vec<u8>> at src/bin/honk.rs:1113-1118; jam_product returns jam.clone() at src/bin/honk.rs:2320-2323.
-- Impact: Large artifacts are duplicated just to write/pad.
-- Fix: Consume/take the Vec<u8> or write borrowed bytes.
-
-### Stack guard abstraction is a no-op
-
-- Evidence: redo_dext/redo_sint call with_stack_guard at ut/wet.rs:230-232, 301-309; with_stack_guard only increments a test counter and calls directly at ut/mod.rs:10035-10041; nearby comment claims stacker safety for mull but calls directly at ut/mod.rs:10055-10068.
-- Impact: Deep nested types can still overflow Rust stack.
-- Fix: Use stacker::maybe_grow in the guard or convert worst recursion to explicit stacks.
-
-### Cache surfaces are scaffolded but disabled
-
-- Evidence: cool_cache_lookup/store and chip_cache_lookup/store ignore inputs and return Ok(None)/Ok(()) at ut/mod.rs:3474-3505.
-- Impact: Maintainers may believe hot-path memoization exists; runtime still pays lookup plumbing without hits.
-- Fix: Implement bounded structural caches or delete the dead plumbing.
-
-### AST-to-noun conversion is repeatedly materialized for cache keys
-
-- Evidence: mull calls hoon_noun_for_node at ut/mod.rs:10055-10058; fallback always calls hoon_to_noun at ut/mod.rs:7743-7754; AST caching also clones AST/noun at ut/mod.rs:6734-6779.
-- Impact: Repeated recursive allocation on hot semantic paths.
-- Fix: Use stable AST signatures/pointer-guarded cache as primary keys; materialize noun once per parsed node only when required for parity.
-
-### Wing/fond recursion allocates heavily
-
-- Evidence: fund clones gen before reek at ut/find.rs:69-73; fond_name uses BigUint axes and cloned vein vectors through recursive descent at ut/find.rs:147-185, 263-299.
-- Impact: Hot wing lookup pays repeated heap allocation.
-- Fix: Keep axes as u64 until overflow, use push/pop vein stacks, and add borrowed wing extraction.
+### OPEN — incremental honk perf (H4 / H9; not yet executed)
+- **Standard batch recomputes the directory mug per entry** (`exact_directory_mug` / `directory_mug_with_files`): O(entries × dir size) I/O. Fix: cache per-batch directory manifests/content hashes; avoid `WalkDir` when a manifest file list is supplied.
+- **Hoon sources read/scanned/parsed multiple times** (content key, import resolution, leaf parse): avoidable I/O + parse. Fix: a `SourceFile { text, hash, imports, ast }` cache.
+- **Batch cache/slab lifetime unbounded** (leaked build-context slab; caches never evicted): retains type/trap/eval graphs for the process lifetime. Fix: split reusable prelude state from per-entry arenas; budgets/eviction. (Same leaked-slab root as native-mint #1 and PMA Phase 3 "un-leak the slab".)
+- **`with_stack_guard` is a no-op** (`ut/mod.rs`): deep nested types can overflow the Rust stack. Fix: `stacker::maybe_grow` (already a dep) or explicit-stack the worst recursion.
+- **AST→noun repeatedly materialized for cache keys** (`hoon_noun_for_node` / `hoon_to_noun`): repeated recursive allocation on hot paths. Fix: stable AST signatures / pointer-guarded keys; materialize once per parsed node.
+- **Wing/fond recursion allocates heavily** (`find.rs`: BigUint axes, cloned vein vectors): Fix: keep axes `u64` until overflow, push/pop vein stacks, borrowed wing extraction.
