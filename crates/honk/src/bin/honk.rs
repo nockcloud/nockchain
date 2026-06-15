@@ -2453,7 +2453,12 @@ fn seed_honc_type_with_ut(
     ut.set_vet(false);
     ut.set_miss_memo_persistence(true);
     ut.exact_hoon_ast_lookup_enabled = true;
-    let ty = ut.play(sut, prelude)?;
+    // EXPERIMENT: inhibit the redundant full-prelude play. On the embedded
+    // path prelude_vase.ty is overwritten by the cued subject type, so this
+    // result is discarded — use a placeholder and never traverse the prelude.
+    let _ = prelude;
+    let ty = sut;
+    // let ty = ut.play(sut, prelude)?;
     ut.set_miss_memo_persistence(false);
     Ok(NativeVase {
         ty,

@@ -35,37 +35,37 @@ build-kernel-assets: build dumb-jam wal-jam miner-jam peek-jam bridge-jam roswel
 dumb-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output dumb.jam hoon/apps/dumbnet/outer.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output dumb.jam hoon/apps/dumbnet/outer.hoon hoon
     mv dumb.jam assets/dumb.jam
 
 wal-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output wal.jam hoon/apps/wallet/wallet.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output wal.jam hoon/apps/wallet/wallet.hoon hoon
     mv wal.jam assets/wal.jam
 
 miner-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output miner.jam hoon/apps/dumbnet/miner.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output miner.jam hoon/apps/dumbnet/miner.hoon hoon
     mv miner.jam assets/miner.jam
 
 peek-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output peek.jam hoon/apps/peek/peek.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output peek.jam hoon/apps/peek/peek.hoon hoon
     mv peek.jam assets/peek.jam
 
 bridge-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output bridge.jam hoon/apps/bridge/bridge.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output bridge.jam hoon/apps/bridge/bridge.hoon hoon
     mv bridge.jam assets/bridge.jam
 
 roswell-jam:
     mkdir -p assets
     rm -rf target/hoonc-new
-    target/release/hoonc --new --data-dir target/hoonc-new --output roswell.jam hoon/apps/roswell/roswell.hoon hoon
+    time target/release/hoonc --new --data-dir target/hoonc-new --output roswell.jam hoon/apps/roswell/roswell.hoon hoon
     mv roswell.jam assets/roswell.jam
 
 honk-roswell-kernel:
@@ -95,6 +95,15 @@ honk-parity:
     target/release/jam-diff --kernel-parity assets/peek.jam assets/native/peek.jam
     target/release/jam-diff --kernel-parity assets/bridge.jam assets/native/bridge.jam
     target/release/jam-diff --kernel-parity assets/roswell.jam assets/native/roswell.jam
+
+# Arbitrary-build parity for the hoon-138 prelude: honk's NATIVE mint
+# (HONK_NATIVE_PARITY=1, no embedded prelude) vs hoonc's arbitrary build,
+# byte-compared. NOTE: honk's native mint of the full prelude currently
+# exhausts memory before completing (~4GB/min, no plateau), so this reports the
+# blowup under an RSS guard; it becomes a real parity gate once native mint
+# memory is bounded. Build honk + hoonc first (`just build`).
+honk-138-parity:
+    crates/honk/test-assets/honk_138_native_parity.sh
 
 # Gate: honk must compile the roswell kernel in under 60 seconds
 # (cargo build excluded). Diagnose failures with NATIVE_HOON_TRACE=1 and
