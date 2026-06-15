@@ -876,8 +876,13 @@ fn build_context_with_shared_prelude(
                 .map_err(|err| -> DynError { Box::new(err) })
         })?;
     }
+    // The seed play's only product is the returned prelude type. On the
+    // embedded / supplied-subject-type path that type is overwritten below by a
+    // cued subject type, so the full-prelude play is pure waste — skip it.
+    let skip_prelude_play =
+        subject_type_jam.is_some() || (canonical_hoon_138 && !native_parity_enabled());
     let mut prelude_vase = trace_timed("seeding shared honc type", || {
-        seed_honc_type_with_ut(&mut ut, &mut eval_context, prelude)
+        seed_honc_type_with_ut(&mut ut, &mut eval_context, prelude, skip_prelude_play)
     })?;
     if canonical_hoon_138 && !have_embedded_cold {
         trace_timed(
@@ -983,8 +988,13 @@ fn build_context_with_dynamic_wrapper_prelude(
                 .map_err(|err| -> DynError { Box::new(err) })
         })?;
     }
+    // The seed play's only product is the returned prelude type. On the
+    // embedded / supplied-subject-type path that type is overwritten below by a
+    // cued subject type, so the full-prelude play is pure waste — skip it.
+    let skip_prelude_play =
+        subject_type_jam.is_some() || (canonical_hoon_138 && !native_parity_enabled());
     let mut prelude_vase = trace_timed("seeding shared honc type", || {
-        seed_honc_type_with_ut(&mut ut, &mut eval_context, prelude)
+        seed_honc_type_with_ut(&mut ut, &mut eval_context, prelude, skip_prelude_play)
     })?;
     let use_embedded = canonical_hoon_138 && !native_parity_enabled();
     let subject_type_jam =
@@ -2448,17 +2458,22 @@ fn seed_honc_type_with_ut(
     ut: &mut Ut<'_>,
     _context: &mut Context,
     prelude: &Hoon,
+    skip_play: bool,
 ) -> Result<NativeVase> {
     let sut = empty_subject_type(&mut *ut.slab);
     ut.set_vet(false);
     ut.set_miss_memo_persistence(true);
     ut.exact_hoon_ast_lookup_enabled = true;
-    // EXPERIMENT: inhibit the redundant full-prelude play. On the embedded
-    // path prelude_vase.ty is overwritten by the cued subject type, so this
-    // result is discarded — use a placeholder and never traverse the prelude.
-    let _ = prelude;
-    let ty = sut;
-    // let ty = ut.play(sut, prelude)?;
+    // The full-prelude play is an O(N^2) traversal whose only product is the
+    // returned type. When the caller will overwrite that type with a cued
+    // subject type (embedded / --sut-jam), skip it — it is then pure waste
+    // (verified byte-identical kernel output, ~5s faster per build). The
+    // native-parity path (no override) still needs the real play.
+    let ty = if skip_play {
+        sut
+    } else {
+        ut.play(sut, prelude)?
+    };
     ut.set_miss_memo_persistence(false);
     Ok(NativeVase {
         ty,
