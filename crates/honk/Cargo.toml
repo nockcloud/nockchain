@@ -13,6 +13,7 @@ path = "src/bin/honk.rs"
 blake3 = { workspace = true }
 chumsky = "0.10"
 hatch = { path = "../hatch" }
+bytes = { workspace = true }
 honc-cold-138 = { path = "../honc-cold-138" }
 hoonc = { path = "../hoonc" }
 nockapp = { path = "../nockapp" }
