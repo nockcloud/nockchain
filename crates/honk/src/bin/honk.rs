@@ -11,6 +11,7 @@ use hatch::ast::hoon::{Hoon, Limb};
 use hatch::utils::hoon_to_noun;
 use honk::native::hot::native_hot_state;
 use honk::native::noun::term_to_noun;
+use honk::native::formula::comb;
 use honk::native::ut::{ty_noun, Ut};
 use honk::pipeline;
 use honk::pipeline::{NativeImportKind, ScopeMode};
@@ -2482,11 +2483,138 @@ fn seed_honc_type_with_ut(
     })
 }
 
+/// Chunked native mint of the canonical hoon-138 prelude (`=< ride => %138 =>
+/// |% … => |% …`), for the HONK_NATIVE_PARITY path. `=< ride stdlib` is `=>
+/// stdlib ride`; the whole-prelude goal is `%noun`, so every layer mints with
+/// goal `%noun`. Each top-level layer (and finally `ride`) is minted in its OWN
+/// cold-loaded `Ut`/working slab, carrying the subject type in a ping-ponged
+/// slab and accumulating per-layer formulas in `out_slab`, dropping each working
+/// slab — bounding peak memory to one layer + the current subject + the
+/// formulas. Composition mirrors `mint_tsgr` exactly (validated byte-exact by
+/// `chunked_tisgar_chain_matches_monolithic_mint`).
+/// Peel transparent wrappers the parser adds around the prelude (a single-
+/// element `=~`/TisSig, and `Dbug`/`Note` spot/hint wrappers) to reach the
+/// underlying compose node. NOTE: this is for NAVIGATION only — minting the
+/// peeled layers loses the outer `Dbug` location stack, so chunked output is
+/// NOT byte-exact under dbug=true yet (spot preservation is follow-on work);
+/// it is correct for measuring the memory trajectory and for dbug=false.
+fn peel_transparent(mut hoon: &Hoon) -> &Hoon {
+    loop {
+        hoon = match hoon {
+            Hoon::TisSig(list) if list.len() == 1 => &list[0],
+            Hoon::Dbug(_, inner) => inner.as_ref(),
+            Hoon::Note(_, inner) => inner.as_ref(),
+            other => return other,
+        };
+    }
+}
+
+fn prelude_variant_name(hoon: &Hoon) -> &'static str {
+    match hoon {
+        Hoon::TisGal(_, _) => "TisGal(=<)",
+        Hoon::TisGar(_, _) => "TisGar(=>)",
+        Hoon::Dbug(_, _) => "Dbug",
+        Hoon::Note(_, _) => "Note",
+        Hoon::CenDot(_, _) => "CenDot",
+        Hoon::CenHep(_, _) => "CenHep",
+        Hoon::CenCol(_, _) => "CenCol",
+        Hoon::CenSig(_, _, _) => "CenSig",
+        Hoon::KetSig(_) => "KetSig",
+        Hoon::KetBar(_) => "KetBar",
+        Hoon::KetDot(_, _) => "KetDot",
+        Hoon::BarCen(_, _) => "BarCen(|%)",
+        Hoon::TisCom(_, _) => "TisCom",
+        Hoon::TisHep(_, _) => "TisHep",
+        Hoon::TisLus(_, _) => "TisLus",
+        Hoon::Pair(_, _) => "Pair",
+        _ => "other",
+    }
+}
+
+fn mint_honc_prelude_chunked(out_slab: &mut NounSlab<NockJammer>, prelude: &Hoon) -> Result<Noun> {
+    let Hoon::TisGal(ride, stdlib) = peel_transparent(prelude) else {
+        return Err("chunked prelude mint: root is not =<".into());
+    };
+    let mut layers: Vec<&Hoon> = Vec::new();
+    let mut cur: &Hoon = peel_transparent(stdlib);
+    while let Hoon::TisGar(p, q) = cur {
+        layers.push(p.as_ref());
+        cur = peel_transparent(q);
+    }
+    layers.push(cur);
+    eprintln!(
+        "[honk] chunked prelude: {} layers + ride; layer variants = [{}]",
+        layers.len(),
+        layers
+            .iter()
+            .map(|l| prelude_variant_name(l))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut subject_slab: NounSlab<NockJammer> = NounSlab::new();
+    let mut subject = empty_subject_type(&mut subject_slab);
+    let total = layers.len() + 1; // layers + ride
+    let mut formulas: Vec<Noun> = Vec::with_capacity(total);
+
+    for (i, expr) in layers
+        .iter()
+        .copied()
+        .chain(std::iter::once(ride.as_ref()))
+        .enumerate()
+    {
+        let mut work: NounSlab<NockJammer> = NounSlab::new();
+        let mut next_subject_slab: NounSlab<NockJammer> = NounSlab::new();
+        let formula_out;
+        {
+            let mut ut = Ut::new(&mut work);
+            ut.load_musk_cold_state(EMBEDDED_HONC_COLD_138_JAM, "chunk layer")
+                .map_err(|err| -> DynError { Box::new(err) })?;
+            ut.set_vet(true);
+            ut.set_miss_memo_persistence(true);
+            let sub_in = ut.slab.copy_into(subject, &subject_slab.noun_space());
+            let goal = ty_noun(&mut *ut.slab);
+            let (ty, formula) = ut.mint(sub_in, goal, expr)?;
+            let ut_space = ut.slab.noun_space();
+            formula_out = out_slab.copy_into(formula, &ut_space);
+            if i + 1 < total {
+                subject = next_subject_slab.copy_into(ty, &ut_space);
+            }
+        }
+        formulas.push(formula_out);
+        if i + 1 < total {
+            subject_slab = next_subject_slab; // old subject slab dropped (reclaimed)
+        }
+        if env::var_os("NATIVE_HOON_TRACE").is_some() {
+            eprintln!("[honk] chunked prelude: minted layer {}/{}", i + 1, total);
+        }
+    }
+
+    // formulas = [layer0 … body, ride]. `=> stdlib ride` = comb(stdlib, ride);
+    // stdlib chain folds right: comb(l0, comb(l1, … comb(l_{k-1}, body))).
+    let ride_formula = formulas.pop().expect("ride formula");
+    let mut stdlib_formula = formulas.pop().expect("stdlib body formula");
+    while let Some(head) = formulas.pop() {
+        stdlib_formula = comb(out_slab, head, stdlib_formula)?;
+    }
+    Ok(comb(out_slab, stdlib_formula, ride_formula)?)
+}
+
 fn mint_honc_formula_with_ut(
     ut: &mut Ut<'_>,
     _context: &mut Context,
     prelude: &Hoon,
 ) -> Result<Noun> {
+    // The canonical prelude is `=< …`; mint it chunked to bound memory (Step 2).
+    let dbg = format!("{:?}", prelude);
+    eprintln!(
+        "[honk] mint_honc_formula path: prelude root = {} | debug = {}",
+        prelude_variant_name(prelude),
+        &dbg[..dbg.len().min(200)]
+    );
+    if matches!(peel_transparent(prelude), Hoon::TisGal(_, _)) {
+        return mint_honc_prelude_chunked(&mut *ut.slab, prelude);
+    }
     let sut = empty_subject_type(&mut *ut.slab);
     let gol = ty_noun(&mut *ut.slab);
     ut.clear_build_memos();
