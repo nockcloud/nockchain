@@ -243,3 +243,20 @@ Design (region-stack frame model, encapsulated in NounSlab so Ut.slab stays a si
 - H7-D Validate: synthetic mutually-recursive-core byte-exact test (mirror the validated => synthetic), then real giant-core mint; gate on jam-diff byte/dir-hash parity for all six kernels; measure RSS + wall vs honk-138-parity baseline.
 
 Risk controls: contained to slab.rs (region machinery) + a small set of Ut sites (frame brackets + gen-tag wrappers); zero-frame default preserves current behavior; every stage behind a byte-exact parity gate; WIP committed per green stage so it is reviewable and revertible.
+
+## H7 frame-arena — built, byte-exact, but does NOT bound the giant core (2026-06-16)
+
+Status after implementing the full per-arm frame arena (opt-in HONK_FRAME_ARENA):
+
+WORKS (committed):
+- NounSlab region stack + pop_frame_preserving + copy_to_base primitives (unit-tested).
+- Per-arm framing wired into build_arms_battery_from_map; cache invalidation on pop; copy_to_base for whole-compile-lifetime stores (fan-leg id tables, lazy resolvers, interned seminoun singletons, AST caches handled by clear).
+- BYTE-EXACT at real scale: the dumbnet kernel compiled framed (which natively mints prelude arms add-all/turn/etc. + the kernel's cores) is byte-identical to the default path. ut synthetic frame-arena tests (multi-arm cross-ref + recursion + fan-leg, wet/loop) green.
+
+DOES NOT MEET THE GOAL (measured):
+- Giant-core native mint (HONK_NATIVE_PARITY --arbitrary hoon-138), peak RSS @90s: unframed 6.26 GB vs framed 15.16 GB. Framing makes memory ~2.4x WORSE, and is ~3.5x slower; the full --arbitrary mint also still panics (a remaining dangling ref on a path the dumb kernel doesn't hit).
+
+WHY (root cause, now data-backed from the frame-arena direction):
+The giant-core blowup is dominated by PRESERVED cross-core structure, not reclaimable per-arm scratch. Specifically mint_core embeds the whole subject/context into each core's type (subject-deepening, the O(N^2) hypothesis). That structure is cross-arm/cross-core referenced, so it MUST survive frame pops — the frame arena copies it to base via copy_to_base, and copy_to_base has NO cross-call dedup, so the shared subject/formulas are DUPLICATED per core/arm. Net: reclaiming transient scratch saves less than the duplicated preserved structure costs. Per-arm scratch reclamation cannot bound a blowup whose mass is in preserved, shared, un-interned structure.
+
+CONCLUSION: bounding hoon-138's native mint requires STRUCTURAL SHARING (interning / hash-consing) of the embedded subject and cross-arm types/formulas — the same type-interning problem flagged earlier (and hard because mugs collide, so it needs unifying-equality-style structural dedup, which is expensive). The frame arena reclaims transient scratch correctly but is orthogonal to (and, via copy_to_base duplication, counterproductive against) the dominant subject-deepening cost. The frame-arena code is committed default-OFF (zero impact on the shipping embedded-prelude path) and left for review; it is the right substrate IF combined with subject sharing, but on its own it does not deliver the memory win.
