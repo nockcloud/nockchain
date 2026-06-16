@@ -105,6 +105,17 @@ honk-parity:
 honk-138-parity:
     crates/honk/test-assets/honk_138_native_parity.sh
 
+# Native-types migration (docs/native-compiler/NATIVE-TYPES-MIGRATION.md) Phase-0
+# harnesses. native-parity-dual: strict-cmp acceptance gate (§2.2/RT-02) — honk
+# vs hoonc reference, dir-hash-only diffs reported WAIVED. Pass kernel name(s) to
+# filter, e.g. `just native-parity-dual dumb`.
+native-parity-dual *args:
+    bash crates/honk/test-assets/native-parity/dual_run.sh {{args}}
+
+# Regenerate ("regen") or verify ("check") the emitted-formula golden corpus.
+native-goldens mode="check":
+    bash crates/honk/test-assets/native-parity/regen_goldens.sh {{mode}}
+
 # Gate: honk must compile the roswell kernel in under 60 seconds
 # (cargo build excluded). Diagnose failures with NATIVE_HOON_TRACE=1 and
 # RUST_LOG=honk=info for per-phase timing.
