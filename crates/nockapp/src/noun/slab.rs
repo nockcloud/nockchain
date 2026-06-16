@@ -26,31 +26,166 @@ const CELL_MEM_WORD_SIZE: usize = (size_of::<CellMemory>() + 7) >> 3;
 
 const CACHED_MUG_METADATA_MASK: u64 = 0x7fff_ffff;
 
-/// A self-contained arena for allocating nouns.
-pub struct NounSlab<J = NockJammer> {
-    root: Noun,
+/// A single bump-allocation region: a set of size-classed backing blocks plus
+/// the current bump frontier into the active block. A [`NounSlab`] is a stack
+/// of these — the top region (`current`) receives all allocations, and frame
+/// push/pop manipulate the stack. With no frames pushed there is exactly one
+/// region and behavior is identical to a flat bump arena.
+struct Region {
     slabs: Vec<(*mut u8, Layout)>,
     allocation_start: *mut u64,
     allocation_stop: *mut u64,
+}
+
+/// A self-contained arena for allocating nouns.
+pub struct NounSlab<J = NockJammer> {
+    root: Noun,
+    /// The active region; all allocations land here.
+    current: Region,
+    /// Senior regions, parents of `current`. A `push_frame` moves the old
+    /// `current` here; `pop_frame_preserving` copies escaping nouns down into
+    /// the top of this stack and frees the old `current`.
+    frames: Vec<Region>,
     _phantom: std::marker::PhantomData<J>,
+}
+
+/// A recorded bump-allocation frontier in a [`NounSlab`]. Pass to
+/// [`NounSlab::rewind_to`] to free everything allocated since and reclaim the
+/// memory. Only valid for the slab it was taken from.
+#[derive(Clone, Copy)]
+pub struct SlabCheckpoint {
+    slabs_len: usize,
+    allocation_start: *mut u64,
+    allocation_stop: *mut u64,
+}
+
+unsafe fn raw_alloc(new_layout: Layout) -> *mut u8 {
+    if new_layout.size() == 0 {
+        std::alloc::handle_alloc_error(new_layout);
+    }
+    assert!(new_layout.align().is_power_of_two(), "Invalid alignment");
+    let slab = std::alloc::alloc(new_layout);
+    if slab.is_null() {
+        std::alloc::handle_alloc_error(new_layout);
+    } else {
+        slab
+    }
+}
+
+impl Region {
+    fn empty() -> Self {
+        Region {
+            slabs: Vec::new(),
+            allocation_start: std::ptr::null_mut(),
+            allocation_stop: std::ptr::null_mut(),
+        }
+    }
+
+    fn contains_ptr(&self, ptr: *const u8) -> bool {
+        self.slabs.iter().any(|(base, layout)| unsafe {
+            !base.is_null() && ptr >= *base as *const u8 && ptr < base.add(layout.size())
+        })
+    }
+
+    fn ptr_ranges_into(&self, ranges: &mut Vec<(usize, usize)>) {
+        for (base, layout) in &self.slabs {
+            if base.is_null() || layout.size() == 0 {
+                continue;
+            }
+            let start = *base as usize;
+            let end = start + layout.size();
+            ranges.push((start, end));
+        }
+    }
+
+    /// Free every backing block in this region.
+    fn dealloc(&mut self) {
+        for (base, layout) in self.slabs.drain(..) {
+            if !base.is_null() {
+                unsafe { std::alloc::dealloc(base, layout) };
+            }
+        }
+        self.allocation_start = std::ptr::null_mut();
+        self.allocation_stop = std::ptr::null_mut();
+    }
+
+    /// Ensure the active block has room for `words` 8-byte words, growing with a
+    /// fresh geometrically-larger block if not.
+    unsafe fn ensure(&mut self, words: usize) {
+        if self.allocation_start.is_null() || self.allocation_start.add(words) > self.allocation_stop
+        {
+            let next_idx = std::cmp::max(self.slabs.len(), min_idx_for_size(words));
+            self.slabs
+                .resize(next_idx + 1, (std::ptr::null_mut(), Layout::new::<u8>()));
+            let new_size = idx_to_size(next_idx);
+            let new_layout = Layout::array::<u64>(new_size).unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            let new_slab = raw_alloc(new_layout);
+            let new_slab_u64 = new_slab as *mut u64;
+            self.slabs[next_idx] = (new_slab, new_layout);
+            self.allocation_start = new_slab_u64;
+            self.allocation_stop = new_slab_u64.add(new_size);
+        }
+    }
+
+    unsafe fn alloc_indirect(&mut self, words: usize) -> *mut u64 {
+        let raw_size = words + 2;
+        self.ensure(raw_size);
+        let new_indirect_ptr = self.allocation_start;
+        self.allocation_start = self.allocation_start.add(raw_size);
+        new_indirect_ptr
+    }
+
+    unsafe fn alloc_cell(&mut self) -> *mut CellMemory {
+        self.ensure(CELL_MEM_WORD_SIZE);
+        let new_cell_ptr = self.allocation_start as *mut CellMemory;
+        self.allocation_start = std::ptr::with_exposed_provenance_mut(
+            self.allocation_start.expose_provenance()
+                + (CELL_MEM_WORD_SIZE * std::mem::size_of::<u64>()),
+        );
+        new_cell_ptr
+    }
+
+    unsafe fn alloc_struct<T>(&mut self, count: usize) -> *mut T {
+        let layout = Layout::array::<T>(count).expect("Bad layout in alloc_struct");
+        let word_size = (layout.size() + 7) >> 3;
+        assert!(layout.align() <= std::mem::size_of::<u64>());
+        self.ensure(word_size);
+        let new_struct_ptr = self.allocation_start as *mut T;
+        self.allocation_start = self.allocation_start.add(word_size);
+        new_struct_ptr
+    }
+
+    unsafe fn alloc_layout(&mut self, layout: Layout) -> *mut u64 {
+        let word_size = (layout.size() + 7) >> 3;
+        self.ensure(word_size);
+        let ptr = self.allocation_start;
+        self.allocation_start = self.allocation_start.add(word_size);
+        ptr
+    }
 }
 
 impl<J> Debug for NounSlab<J> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NounSlab")
             .field("root", &self.root)
-            .field("slabs", &self.slabs)
-            .field("allocation_start", &self.allocation_start)
-            .field("allocation_stop", &self.allocation_stop)
+            .field("slabs", &self.current.slabs)
+            .field("frames", &self.frames.len())
+            .field("allocation_start", &self.current.allocation_start)
+            .field("allocation_stop", &self.current.allocation_stop)
             .finish()
     }
 }
 
 impl<J> NounSlab<J> {
     fn contains_ptr(&self, ptr: *const u8) -> bool {
-        self.slabs.iter().any(|(base, layout)| unsafe {
-            !base.is_null() && ptr >= *base as *const u8 && ptr < base.add(layout.size())
-        })
+        self.current.contains_ptr(ptr) || self.frames.iter().any(|f| f.contains_ptr(ptr))
     }
 
     fn rehome_noun(&mut self, noun: Noun) -> Noun {
@@ -121,26 +256,13 @@ impl<J> NounSlab<J> {
     }
 
     pub fn coerce_jammer<I>(mut self) -> NounSlab<I> {
-        let slabs = std::mem::take(&mut self.slabs);
+        let current = std::mem::replace(&mut self.current, Region::empty());
+        let frames = std::mem::take(&mut self.frames);
         NounSlab {
             root: self.root,
-            slabs,
-            allocation_start: self.allocation_start,
-            allocation_stop: self.allocation_stop,
+            current,
+            frames,
             _phantom: std::marker::PhantomData,
-        }
-    }
-
-    unsafe fn raw_alloc(new_layout: Layout) -> *mut u8 {
-        if new_layout.size() == 0 {
-            std::alloc::handle_alloc_error(new_layout);
-        }
-        assert!(new_layout.align().is_power_of_two(), "Invalid alignment");
-        let slab = std::alloc::alloc(new_layout);
-        if slab.is_null() {
-            std::alloc::handle_alloc_error(new_layout);
-        } else {
-            slab
         }
     }
 
@@ -205,97 +327,14 @@ impl<J> Clone for NounSlab<J> {
 
 impl<J> NounAllocator for NounSlab<J> {
     unsafe fn alloc_indirect(&mut self, words: usize) -> *mut u64 {
-        let raw_size = words + 2;
-
-        // Make sure we have enough space
-        if self.allocation_start.is_null()
-            || self.allocation_start.add(raw_size) > self.allocation_stop
-        {
-            let next_idx = std::cmp::max(self.slabs.len(), min_idx_for_size(raw_size));
-            self.slabs
-                .resize(next_idx + 1, (std::ptr::null_mut(), Layout::new::<u8>()));
-            let new_size = idx_to_size(next_idx);
-            let new_layout = Layout::array::<u64>(new_size).unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-            let new_slab = Self::raw_alloc(new_layout);
-            let new_slab_u64 = new_slab as *mut u64;
-            self.slabs[next_idx] = (new_slab, new_layout);
-            self.allocation_start = new_slab_u64;
-            self.allocation_stop = new_slab_u64.add(new_size);
-        }
-
-        let new_indirect_ptr = self.allocation_start;
-        self.allocation_start = self.allocation_start.add(raw_size);
-        new_indirect_ptr
+        self.current.alloc_indirect(words)
     }
     unsafe fn alloc_cell(&mut self) -> *mut CellMemory {
-        if self.allocation_start.is_null()
-            || self.allocation_start.add(CELL_MEM_WORD_SIZE) > self.allocation_stop
-        // || (self.allocation_start as usize) + CELL_MEM_WORD_SIZE > (self.allocation_stop as usize)
-        // || (self.allocation_start.expose_provenance()) + CELL_MEM_WORD_SIZE > (self.allocation_stop.expose_provenance())
-        // || (self.allocation_start as usize) + (CELL_MEM_WORD_SIZE * std::mem::size_of::<u64>()) > (self.allocation_stop as usize)
-        {
-            let next_idx = std::cmp::max(self.slabs.len(), min_idx_for_size(CELL_MEM_WORD_SIZE));
-            self.slabs
-                .resize(next_idx + 1, (std::ptr::null_mut(), Layout::new::<u8>()));
-            let new_size = idx_to_size(next_idx);
-            let new_layout = Layout::array::<u64>(new_size).unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-            let new_slab = Self::raw_alloc(new_layout);
-            let new_slab_u64 = new_slab as *mut u64;
-            self.slabs[next_idx] = (new_slab, new_layout);
-            self.allocation_start = new_slab_u64;
-            self.allocation_stop = new_slab_u64.add(new_size);
-        }
-        let new_cell_ptr = self.allocation_start as *mut CellMemory;
-        // self.allocation_start = ((self.allocation_start.expose_provenance()) + CELL_MEM_WORD_SIZE) as *mut u64;
-        self.allocation_start = std::ptr::with_exposed_provenance_mut(
-            self.allocation_start.expose_provenance()
-                + (CELL_MEM_WORD_SIZE * std::mem::size_of::<u64>()),
-        );
-        new_cell_ptr
+        self.current.alloc_cell()
     }
 
     unsafe fn alloc_struct<T>(&mut self, count: usize) -> *mut T {
-        let layout = Layout::array::<T>(count).expect("Bad layout in alloc_struct");
-        let word_size = (layout.size() + 7) >> 3;
-        assert!(layout.align() <= std::mem::size_of::<u64>());
-        if self.allocation_start.is_null()
-            || self.allocation_start.add(word_size) > self.allocation_stop
-        {
-            let next_idx = std::cmp::max(self.slabs.len(), min_idx_for_size(word_size));
-            self.slabs
-                .resize(next_idx + 1, (std::ptr::null_mut(), Layout::new::<u8>()));
-            let new_size = idx_to_size(next_idx);
-            let new_layout = Layout::array::<u64>(new_size).unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-            let new_slab = Self::raw_alloc(new_layout);
-            let new_slab_u64 = new_slab as *mut u64;
-            self.slabs[next_idx] = (new_slab, new_layout);
-            self.allocation_start = new_slab_u64;
-            self.allocation_stop = new_slab_u64.add(new_size);
-        }
-        let new_struct_ptr = self.allocation_start as *mut T;
-        self.allocation_start = self.allocation_start.add(word_size);
-        new_struct_ptr
+        self.current.alloc_struct(count)
     }
 
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
@@ -355,17 +394,166 @@ impl<J> NounSlab<J> {
     /// Make a new noun slab with D(0) as the root
     #[tracing::instrument]
     pub fn new() -> Self {
-        let slabs = Vec::new();
-        let allocation_start: *mut u64 = std::ptr::null_mut();
-        let allocation_stop: *mut u64 = std::ptr::null_mut();
         let root: Noun = D(0);
         NounSlab {
             root,
-            slabs,
-            allocation_start,
-            allocation_stop,
+            current: Region::empty(),
+            frames: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Record the current bump-allocation frontier so a later
+    /// [`Self::rewind_to`] can reclaim everything allocated after it. Growth
+    /// only ever appends backing blocks at index >= `slabs.len()` and never
+    /// rewrites earlier ones, so this triple fully captures the frontier.
+    ///
+    /// Operates on the active (top) region only; do not mix with
+    /// `push_frame`/`pop_frame_preserving` across a single checkpoint/rewind
+    /// pair (they manipulate the region stack independently).
+    pub fn checkpoint(&self) -> SlabCheckpoint {
+        SlabCheckpoint {
+            slabs_len: self.current.slabs.len(),
+            allocation_start: self.current.allocation_start,
+            allocation_stop: self.current.allocation_stop,
+        }
+    }
+
+    /// Free every backing block allocated since `checkpoint` and restore the
+    /// bump frontier, reclaiming that memory (the geometrically-larger later
+    /// slabs are where the bulk lives). Allocations before the checkpoint are
+    /// untouched and remain valid.
+    ///
+    /// # Safety
+    /// Every noun allocated into this slab after `checkpoint` was taken — and
+    /// `root` if it points there — is invalidated, and any cached raw pointer
+    /// into the reclaimed region dangles. The caller must guarantee nothing
+    /// live references it.
+    pub unsafe fn rewind_to(&mut self, checkpoint: SlabCheckpoint) {
+        debug_assert!(
+            checkpoint.slabs_len <= self.current.slabs.len(),
+            "checkpoint is newer than the current slab state"
+        );
+        for (base, layout) in self.current.slabs.drain(checkpoint.slabs_len..) {
+            if !base.is_null() {
+                std::alloc::dealloc(base, layout);
+            }
+        }
+        self.current.allocation_start = checkpoint.allocation_start;
+        self.current.allocation_stop = checkpoint.allocation_stop;
+    }
+
+    /// Push a new allocation frame. Subsequent allocations land in a fresh
+    /// region on top of the stack; the previous region becomes a senior parent.
+    /// Pair with [`Self::pop_frame_preserving`].
+    pub fn push_frame(&mut self) {
+        let parent = std::mem::replace(&mut self.current, Region::empty());
+        self.frames.push(parent);
+    }
+
+    /// Pop the active frame, preserving the nouns in `roots` into the parent
+    /// region, then free the active region's memory.
+    ///
+    /// Each root is rewritten in place to an equivalent noun whose
+    /// active-region-resident nodes have been copied down into the parent
+    /// (preserving structure and internal sharing), while nodes already
+    /// resident in a senior region are shared by reference (never duplicated) —
+    /// the same junior/senior discipline as NockStack's `preserve`. After this
+    /// returns, the rewritten roots are valid and the active region's scratch is
+    /// reclaimed.
+    ///
+    /// # Safety
+    /// Every noun allocated in the active region that is NOT reachable from
+    /// `roots` is invalidated, and any cached raw pointer into the active region
+    /// dangles. The caller must guarantee nothing live references active-region
+    /// memory except through `roots`.
+    pub unsafe fn pop_frame_preserving(&mut self, roots: &mut [Noun]) {
+        assert!(
+            !self.frames.is_empty(),
+            "pop_frame_preserving called without a matching push_frame"
+        );
+        // Ranges across every live region (active + all seniors) for debug-build
+        // pointer validation during traversal; release builds resolve by
+        // identity and ignore the ranges (see `noun_space`).
+        #[cfg(debug_assertions)]
+        let space = NounSpace::empty().with_extra_ptr_ranges(self.ptr_ranges());
+        #[cfg(not(debug_assertions))]
+        let space = NounSpace::empty();
+        // Make the parent the active region; `child` holds the popped region.
+        // Allocations made by the preserve copy below now land in the parent.
+        let child = std::mem::replace(&mut self.current, self.frames.pop().unwrap());
+        for root in roots.iter_mut() {
+            *root = self.preserve_one(*root, &child, &space);
+        }
+        let mut child = child;
+        child.dealloc();
+    }
+
+    /// Copy `root`'s nodes that reside in `child` into the active region,
+    /// leaving nodes resident in any senior region untouched (shared by
+    /// reference). Mirrors `copy_into`, but stops at the junior/senior boundary.
+    unsafe fn preserve_one(&mut self, root: Noun, child: &Region, space: &NounSpace) -> Noun {
+        let mut copied: IntMap<u64, Noun> = IntMap::new();
+        let mut out: Noun = D(0);
+        let mut copy_stack = vec![(root, std::ptr::addr_of_mut!(out))];
+        while let Some((noun, dest)) = copy_stack.pop() {
+            match noun.as_either_direct_allocated() {
+                Either::Left(_direct) => {
+                    *dest = noun;
+                }
+                Either::Right(allocated) => match allocated.as_either() {
+                    Either::Left(indirect) => {
+                        let indirect_ptr = indirect.as_atom().in_space(space).raw_pointer();
+                        if !child.contains_ptr(indirect_ptr as *const u8) {
+                            // Senior: already in a parent region, share it.
+                            *dest = noun;
+                            continue;
+                        }
+                        if let Some(copied_noun) = copied.get(indirect_ptr as u64) {
+                            *dest = *copied_noun;
+                            continue;
+                        }
+                        let indirect_mem_size = indirect.as_atom().in_space(space).raw_size();
+                        let indirect_new_mem = self
+                            .current
+                            .alloc_indirect(indirect.as_atom().in_space(space).size());
+                        copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size);
+                        *indirect_new_mem &= CACHED_MUG_METADATA_MASK;
+                        let copied_noun =
+                            IndirectAtom::from_raw_pointer(indirect_new_mem).as_atom().as_noun();
+                        copied.insert(indirect_ptr as u64, copied_noun);
+                        *dest = copied_noun;
+                    }
+                    Either::Right(cell) => {
+                        let cell_ptr = cell.in_space(space).raw_pointer();
+                        if !child.contains_ptr(cell_ptr as *const u8) {
+                            // Senior: already in a parent region, share it.
+                            *dest = noun;
+                            continue;
+                        }
+                        if let Some(copied_noun) = copied.get(cell_ptr as u64) {
+                            *dest = *copied_noun;
+                            continue;
+                        }
+                        let cell_new_mem = self.current.alloc_cell();
+                        copy_nonoverlapping(cell_ptr, cell_new_mem, 1);
+                        (*cell_new_mem).metadata &= CACHED_MUG_METADATA_MASK;
+                        let copied_noun = Cell::from_raw_pointer(cell_new_mem).as_noun();
+                        copied.insert(cell_ptr as u64, copied_noun);
+                        *dest = copied_noun;
+                        copy_stack.push((
+                            cell.in_space(space).tail().noun(),
+                            std::ptr::addr_of_mut!((*cell_new_mem).tail),
+                        ));
+                        copy_stack.push((
+                            cell.in_space(space).head().noun(),
+                            std::ptr::addr_of_mut!((*cell_new_mem).head),
+                        ));
+                    }
+                },
+            }
+        }
+        out
     }
 
     /// Copy the root from another slab into this slab, set this slab's root to the copied root
@@ -524,14 +712,10 @@ impl<J> NounSlab<J> {
     }
 
     pub fn ptr_ranges(&self) -> Vec<(usize, usize)> {
-        let mut ranges = Vec::with_capacity(self.slabs.len());
-        for (base, layout) in &self.slabs {
-            if base.is_null() || layout.size() == 0 {
-                continue;
-            }
-            let start = *base as usize;
-            let end = start + layout.size();
-            ranges.push((start, end));
+        let mut ranges = Vec::with_capacity(self.current.slabs.len());
+        self.current.ptr_ranges_into(&mut ranges);
+        for frame in &self.frames {
+            frame.ptr_ranges_into(&mut ranges);
         }
         ranges
     }
@@ -601,43 +785,15 @@ impl<J: Jammer> NounSlab<J> {
 
 impl<J> Stack for NounSlab<J> {
     unsafe fn alloc_layout(&mut self, layout: Layout) -> *mut u64 {
-        let word_size = (layout.size() + 7) >> 3;
-
-        // Ensure we have enough space
-        if self.allocation_start.is_null()
-            || self.allocation_start.add(word_size) > self.allocation_stop
-        {
-            let next_idx = std::cmp::max(self.slabs.len(), min_idx_for_size(word_size));
-            self.slabs
-                .resize(next_idx + 1, (std::ptr::null_mut(), Layout::new::<u8>()));
-            let new_size = idx_to_size(next_idx);
-            let new_layout = Layout::array::<u64>(new_size).unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-            let new_slab = Self::raw_alloc(new_layout);
-            let new_slab_u64 = new_slab as *mut u64;
-            self.slabs[next_idx] = (new_slab, new_layout);
-            self.allocation_start = new_slab_u64;
-            self.allocation_stop = new_slab_u64.add(new_size);
-        }
-
-        let ptr = self.allocation_start;
-        self.allocation_start = self.allocation_start.add(word_size);
-        ptr
+        self.current.alloc_layout(layout)
     }
 }
 
 impl<J> Drop for NounSlab<J> {
     fn drop(&mut self) {
-        for slab in self.slabs.drain(..) {
-            if !slab.0.is_null() {
-                unsafe { std::alloc::dealloc(slab.0, slab.1) };
-            }
+        self.current.dealloc();
+        for frame in &mut self.frames {
+            frame.dealloc();
         }
     }
 }
@@ -1043,6 +1199,110 @@ mod tests {
         let space = slab.noun_space();
         let big = atom.in_space(&space).as_ubig(&mut slab);
         assert_eq!(big, big_exp);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn checkpoint_rewind_reclaims_and_preserves_prior_nouns() {
+        let mut slab: NounSlab = NounSlab::new();
+        // A noun allocated before the checkpoint must survive the rewind.
+        let kept = T(&mut slab, &[D(5), D(23)]);
+        let cp = slab.checkpoint();
+        let len_at_cp = slab.current.slabs.len();
+        // Allocate enough after the checkpoint to force new backing blocks.
+        for i in 0..200_000u64 {
+            let _ = T(&mut slab, &[D(i), D(i.wrapping_add(1))]);
+        }
+        assert!(
+            slab.current.slabs.len() > len_at_cp,
+            "test should have forced slab growth"
+        );
+        unsafe { slab.rewind_to(cp) };
+        assert_eq!(
+            slab.current.slabs.len(),
+            len_at_cp,
+            "rewind should free every block allocated since the checkpoint"
+        );
+        // Allocation resumes (reusing the reclaimed frontier).
+        let fresh = T(&mut slab, &[D(7), D(8)]);
+        let space = slab.noun_space();
+        let kept_cell = kept.in_space(&space).as_cell().expect("kept is a cell");
+        assert_eq!(kept_cell.head().as_atom().unwrap().as_u64().unwrap(), 5);
+        assert_eq!(kept_cell.tail().as_atom().unwrap().as_u64().unwrap(), 23);
+        let fresh_cell = fresh.in_space(&space).as_cell().expect("fresh is a cell");
+        assert_eq!(fresh_cell.head().as_atom().unwrap().as_u64().unwrap(), 7);
+        assert_eq!(fresh_cell.tail().as_atom().unwrap().as_u64().unwrap(), 8);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn pop_frame_preserves_result_and_reclaims_scratch() {
+        let mut slab: NounSlab = NounSlab::new();
+        // Build a shared structure in the parent (keep) region.
+        let shared = T(&mut slab, &[D(100), D(200)]);
+        let keep_ranges_before = slab.ptr_ranges();
+
+        // Enter a frame; everything allocated here is junior scratch.
+        slab.push_frame();
+        let scratch_blocks_at_push = slab.current.slabs.len();
+        // A result that references the senior `shared` plus fresh junior nodes.
+        let junior = T(&mut slab, &[D(7), shared]);
+        let mut result = T(&mut slab, &[junior, D(9), shared]);
+        // Allocate a lot of pure scratch that nothing will reference.
+        for i in 0..200_000u64 {
+            let _ = T(&mut slab, &[D(i), D(i.wrapping_add(1))]);
+        }
+        assert!(
+            slab.current.slabs.len() > scratch_blocks_at_push,
+            "frame should have forced scratch growth"
+        );
+
+        // Pop, preserving `result` down into the parent region.
+        let mut roots = [result];
+        unsafe { slab.pop_frame_preserving(&mut roots) };
+        result = roots[0];
+        assert!(slab.frames.is_empty(), "frame stack should be empty again");
+
+        // The preserved result is fully valid and structurally correct.
+        let space = slab.noun_space();
+        let rc = result.in_space(&space).as_cell().expect("result is a cell");
+        let j = rc.head().as_cell().expect("junior is a cell");
+        assert_eq!(j.head().as_atom().unwrap().as_u64().unwrap(), 7);
+        let rest = rc.tail().as_cell().expect("rest is a cell");
+        assert_eq!(rest.head().as_atom().unwrap().as_u64().unwrap(), 9);
+
+        // The senior `shared` was NOT duplicated: the two references to it
+        // inside the preserved result are pointer-identical to each other and
+        // to the original senior noun.
+        let shared_in_junior = j.tail().noun();
+        let shared_in_rest = rest.tail().noun();
+        assert!(
+            unsafe { shared_in_junior.raw_equals(&shared) },
+            "senior noun reached via junior should be shared, not copied"
+        );
+        assert!(
+            unsafe { shared_in_rest.raw_equals(&shared) },
+            "senior noun reached via rest should be shared, not copied"
+        );
+        // The senior noun's address lies within the keep ranges captured before
+        // the frame was pushed (it was never relocated).
+        let shared_ptr = match shared.as_allocated().unwrap().as_either() {
+            Either::Right(cell) => cell.stack_memory_pointer().unwrap() as usize,
+            Either::Left(_) => unreachable!("shared is a cell"),
+        };
+        assert!(
+            keep_ranges_before
+                .iter()
+                .any(|(s, e)| shared_ptr >= *s && shared_ptr < *e),
+            "shared noun should still live in the original keep region"
+        );
+        // Values via the shared noun resolve correctly post-pop.
+        let sc = shared_in_junior
+            .in_space(&space)
+            .as_cell()
+            .expect("shared is a cell");
+        assert_eq!(sc.head().as_atom().unwrap().as_u64().unwrap(), 100);
+        assert_eq!(sc.tail().as_atom().unwrap().as_u64().unwrap(), 200);
     }
 
     #[test]
@@ -1642,7 +1902,7 @@ mod tests {
             };
             unsafe { (*cell_ptr) = cell_memory };
             i += 1;
-            println!("allocation_start: {:?}", slab.allocation_start);
+            println!("allocation_start: {:?}", slab.current.allocation_start);
         }
         // let cell_ptr = unsafe { slab.alloc_cell() };
         // // Set the cell_ptr to a value

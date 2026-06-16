@@ -101,3 +101,145 @@ Re-ran honk's NATIVE mint of the full hoon-138 prelude (HONK_NATIVE_PARITY=1, ho
 Step 0 — skip the redundant full-prelude `ut.play` on the embedded/subject-override path (conditionalized in `seed_honc_type_with_ut`; the native-parity path keeps the real play). KEPT. Output-neutral (all six kernels byte-identical to baseline) and ~5s faster (roswell 76s → 71s). In place, uncommitted.
 
 Step 1 — type interning / hash-consing at the `ty_*` constructors via a `Ut::intern_ty` table (raw fast map + mug bucket + `noun_eq` confirm, modeled on `ty_hold_cached`). IMPLEMENTED and verified BYTE-EXACT (all six kernels identical with it on), but REVERTED after measurement: wiring it into `ty_core` (the subject-embed hotspot) regressed roswell 71s → 84s. Root cause: interning a core requires an O(core-size) mug walk + `noun_eq` confirm per `mint_core` call; core size ~ subject size and `mint_core` runs O(arms) times → an added O(N²) term, and kernel cores are mostly unique (low dedup hit-rate) so the cost is never recovered. DEEPER FINDING (corrects the prior analysis): explicit post-construction interning is NOT free in honk the way the static analysis assumed. The canonical compiler gets equal-subtree sharing for free from the NockStack's `unifying_equality` (it writes one pointer over equal subtrees during normal operation); honk's bump slab has no unification, so interning must pay an explicit size-proportional mug + `noun_eq` cost. So interning is NOT the clean both-better keystone — it only pays for small, cheap-to-mug, high-dup nouns, and only if mugs are cached at construction. REFRAME: the memory fix is the bounded arena (Step 2 — NockStack frame model or chunked per-core generation), which reclaims memory with no per-construction cost; the runtime fix is reducing recompute (cache hit-rate / narrowing the H2 context keys), not post-hoc interning. Interning, if revisited, needs construction-time cached mugs + small-noun targeting + measurement.
+
+## Step 2 — bounded arena: progress (2026-06-15)
+
+LANDED (uncommitted, for review): a reclamation primitive on `NounSlab` —
+`checkpoint() -> SlabCheckpoint` and `unsafe rewind_to(checkpoint)`
+(crates/nockapp/src/noun/slab.rs). It frees every backing block allocated
+since the checkpoint (the geometrically-larger later slabs hold the bulk) and
+restores the bump frontier; pre-checkpoint nouns stay valid. This is the
+foundational reclamation NounSlab entirely lacked (it was append-only + Drop).
+Unit test `checkpoint_rewind_reclaims_and_preserves_prior_nouns` (passes):
+proves slab count returns to the checkpoint, the pre-checkpoint noun survives,
+and allocation resumes correctly. Additive; nockapp green.
+
+WHY rewind alone can't yet bound the prelude mint: the OOM is the single
+`ut.mint(sut, gol, prelude)` (mint_honc_formula_with_ut). There is no safe
+in-place rewind point inside it — the recursion never unwinds mid-mint, and
+the ~30 Noun-valued caches + `lazy_resolvers` + raw-pointer cache keys retain
+references into any region a rewind would reclaim, so an in-place rewind would
+dangle them.
+
+INTEGRATION DESIGN (the remaining substantial piece): chunk the prelude mint
+at its top-level `=>` (`TisGar`) layer chain (hoon-138 is `=< ride => %138 =>
+|% … => |% …`; six layer cores). A chunked driver in mint_honc_formula_with_ut
+would: keep a long-lived "permanent" slab for the accumulated subject; for each
+layer — checkpoint the working slab, mint the layer against the permanent
+subject, copy the layer's (type, formula) survivors into the permanent slab
+(copy_into dedupes), clear the build caches, `rewind_to` the working slab —
+then mint the next layer against the carried subject, composing formulas
+exactly as `=>` does (q-formula with p-formula as subject). Working-set memory
+then bounds to one layer + the frozen subject instead of the cumulative whole.
+
+CORRECTNESS CRUXES to validate (why this isn't just mechanical):
+1. Clearing caches at a layer boundary drops `lazy_resolvers`. mint_core builds
+   FULL batteries (semi_noun_full), and cross-layer name resolution reads the
+   battery (not the resolver), so clearing should be safe for mint-built layer
+   cores — BUT this must be proven byte-exact; any blocked-battery
+   (semi_noun_blocked) core crossing a boundary needs force-materialization
+   first.
+2. The chunked formula must be byte-identical to the monolithic mint's, or
+   honk-138-parity fails. Validate on a SMALL synthetic `=>` prelude first
+   (chunked vs monolithic byte-compare) before the full hoon-138.
+3. Only chunk at the TOP-LEVEL layers — inner `=>`s are mid-expression (no
+   unwound boundary) and must keep using the normal recursive mint.
+
+Alternative (heavier): full compaction — copy all live roots to a fresh slab
+through one shared forwarding map and rebuild the raw-pointer cache keys —
+which also works mid-process but requires enumerating + remapping every cache
+field. The chunked driver is preferred (no key remap; clean boundaries).
+
+NOT validated this session: the chunked driver itself (the OOM means there is
+no completing native-mint baseline to byte-compare against yet; the small-`=>`
+synthetic test is the way in). Primitive + design left in place for review.
+
+## Step 2 — chunked mint mechanism VALIDATED (2026-06-15)
+
+Built `mint_tisgar_chain_chunked` (crates/honk/src/native/ut/mod.rs): peels a
+`=> p1 => … => body` chain and mints each layer in its OWN fresh `Ut`/slab —
+carrying only the subject type + per-layer formulas into a result slab, dropping
+each layer's working slab — and composes formulas via `comb` exactly as
+`mint_tsgr` does. Peak working memory bounds to one layer + the carried subject.
+
+VALIDATED byte-exact: test `chunked_tisgar_chain_matches_monolithic_mint`
+(passes) mints `=> |%(a 1) => |%(b a) b` both monolithically and chunked and
+asserts identical jam. This exercises the correctness crux directly — arm `b`
+resolves `a` from the PRIOR layer's carried subject, and the body resolves `b`,
+all with the per-layer lazy resolvers DROPPED between layers. So cross-layer
+name resolution survives a fresh per-layer Ut for full-battery cores: the
+resolver-dispensability hypothesis HOLDS on this case. (Plus the checkpoint/
+rewind NounSlab primitive from earlier, also tested.)
+
+REMAINING to bound the real native prelude mint + measure honk-138-parity:
+1. Top-level structure: hoon-138 is `=< ride => %138 => |% … => |% …` — the
+   outer `=<` (TisGal, = `=> q p`) and the `%138` Kelvin hint must be peeled
+   before the `=>` layer chain (the helper currently handles a pure `=>` chain).
+2. Cold state per layer: each layer's fresh Ut needs the musk cold state loaded
+   (mack folds in the stdlib) — thread a "make a cold-loaded Ut" closure into
+   the driver. (The synthetic test needs none; the real prelude does.)
+3. Subject reclamation: `out_slab` still accumulates every carried subject copy
+   (O(N^2)); add ping-pong out-slabs or checkpoint/rewind around the subject
+   copy so only the latest survives — this is what actually bounds total memory.
+4. Then wire into mint_honc_formula_with_ut behind native-parity and run
+   honk-138-parity to confirm it completes within memory AND is byte-exact.
+
+All Step-2 work (primitive + chunked driver + tests) left in place for review;
+nothing reverted.
+
+## Step 2 — prelude wiring attempt: status + honest findings (2026-06-15)
+
+Wired a bin-level chunked driver `mint_honc_prelude_chunked` (crates/honk/src/bin/honk.rs) into the native-parity prelude mint (mint_honc_formula_with_ut), gated to that path so the embedded kernel build is untouched. It peels `=< ride => %138 => |% …` into layers, mints each in a fresh cold-loaded Ut carrying the subject in a ping-ponged slab + accumulating formulas in the main slab, and composes via comb.
+
+VALIDATED earlier: the mechanism is byte-exact on a synthetic `=>` chain that exercises cross-layer resolution (`chunked_tisgar_chain_matches_monolithic_mint`). That correctness crux holds.
+
+NOT YET WORKING on the real prelude — the wiring is INERT: the guard `matches!(prelude, Hoon::TisGal(_,_))` is FALSE because the PARSED prelude root is a wrapper variant, not bare `=<`. A diagnostic (prelude_variant_name) reports the root as "other" even after covering TisGal/TisGar/Dbug/Note/Cen*/Ket*/BarCen/Tis*/Pair — so honk's parser represents the `=<` prelude top as some other node (or wraps it) that still needs identification by reading the parser. Until the guard matches + peels that wrapper to reach the `=>` chain, the native mint falls through to the monolithic path.
+
+MEASUREMENT CAVEAT (important): the earlier "bounded ~13 GB sawtooth, 19 min, no OOM" run was therefore the MONOLITHIC path (chunking inert), NOT the chunked driver. So chunking-on-the-real-prelude is NOT yet demonstrated. That run does suggest the monolithic native prelude-SETUP mint (building dumb) climbs slowly (peak crept 10.9→13.7 GB over ~30 min) rather than blowing up fast — consistent with the H3 49-min OOM being later on the same slow curve, and distinct from the faster `--arbitrary hoon-138` entry blowup (42.5 GB at 10 min).
+
+CONCRETE NEXT STEP: read honk's parser (pipeline / hatch) to learn how the `=<` prelude top is represented after parse (and any Dbug/hint/import wrapper), make the chunk guard recurse through wrappers to the `=>` layer chain, then run the native prelude mint and measure memory + byte-exactness. All Step-2 work (primitive, chunked driver, synthetic test, wiring, diagnostics) left in place, not reverted, for review.
+
+## Step 2 — chunked prelude mint WIRED + measured: the bottleneck is one giant core (2026-06-15)
+
+Fixed the inert guard: the parsed prelude is `TisSig([Dbug(filespot, TisGal(ride, => %138 => ~% |% …))])` (dbug=true wraps every node), so a `peel_transparent` helper now strips `TisSig`/`Dbug`/`Note` to reach the `=<`/`=>` chain. The chunked driver then fires and decomposes the prelude into 7 top-level `=>` layers + `ride`.
+
+MEASURED (native-parity prelude mint, building dumb, with the layer trace):
+- Layers 1–6 mint FAST and are reclaimed — total RSS stays ~4 GB through all six (the per-layer working slab is allocated then dropped). Chunking works as designed for these.
+- Layer 7/8 — the giant stdlib `|%` core (the bulk: `++ut` and friends) — is a SINGLE monolithic mint that then climbs ~linearly (4 → 23.7 GB and rising), dominating everything. It is itself larger than the OOM budget.
+
+CONCLUSION: top-level `=>` chunking is necessary but INSUFFICIENT. The native-mint wall is NOT the cumulative layer chain (that chunks fine) — it is one giant core that top-level chunking cannot subdivide (there is no `=>` boundary inside a `|%`). Bounding it requires chunking INSIDE that core — minting its arms / sub-cores incrementally while carrying the partially-built battery + subject — a deeper change with no natural boundary, and with the same lazy-battery/cache-migration hazards at a finer grain. (Byte-exactness is also still open: the chunked layers lose the outer `Dbug` location stack, so dbug=true output won't match without spot-stack replication.)
+
+NET for self-hosting: the chunking infrastructure (reclamation primitive + per-`=>`-layer driver) is built and proven to reclaim layers, but native self-hosting of hoon-138 needs intra-core (per-arm) chunking of the one dominant stdlib core — a substantially harder piece. The pragmatic read stands: ship the hybrid (embedded prelude); native self-hosting is gated on intra-core chunking, now precisely identified as the remaining bottleneck. All Step-2 work left in place for review (primitive, driver, peel, synthetic test, diagnostics); nothing reverted.
+
+## Step 2 — intra-core chunking ruled out; the giant core needs a reclaiming arena (2026-06-15)
+
+Investigated whether the dominant stdlib core (layer 7, ~the whole compiler) could be chunked per-arm. It can't usefully: build_arms_battery_from_map mints each arm via build_arm_formula_direct against the LAZY core_type, so a reference to a sibling arm re-resolves that arm's TYPE on demand through the lazy resolver (re-play). In a densely cross-referential core like ++ut, minting any single arm pulls in (re-plays) a large fraction of the core's types — so reclaiming between arms would NOT bound the per-arm peak (it approaches the whole-core type graph) and would pile on heavy recompute (re-playing dependency types per arm). So per-arm chunking is both ineffective and slow.
+
+DEFINITIVE Step-2 conclusion:
+- Reclamation primitive (NounSlab checkpoint/rewind): built + tested.
+- Chunked-mint mechanism: byte-exact on the synthetic `=>` chain (cross-layer resolution survives fresh per-layer Uts).
+- Top-level `=>` chunking of the prelude: WIRED + measured — reclaims 6/7 layers (~4 GB through them) but the 7th (giant stdlib core) is one monolithic mint that climbs linearly (>23 GB); top-level chunking is necessary but insufficient.
+- Intra-core per-arm chunking: RULED OUT (lazy re-play pulls in a large fraction of the core per arm; no bound + heavy recompute).
+
+So the giant core fundamentally needs to be type-checked largely together, and the ONLY route that bounds it is a reclaiming ARENA within the mint — the canonical Vere model: a NockStack-style frame arena where per-arm scratch is reclaimed at frame-pop while the shared core type stays live, with cheap re-play via memoization + structural sharing. For honk that is the large H7-class refactor: run Ut over a frame-popping allocator AND re-key/stack-localize the ~200 as_raw() cache keys AND re-express lazy_resolvers as in-noun captured gates (canonical ++laze) — the same out-of-slab-reference problem flagged from the start, now confirmed as the unavoidable core of native self-hosting. Plus dbug spot-stack preservation for byte-exactness.
+
+RECOMMENDATION: ship the hybrid (embedded prelude). Native self-hosting of hoon-138 is gated on the frame-arena refactor (large, H7-class), not on chunking — chunking handles the layer chain but cannot bound the one giant core. The chunking infrastructure built here (primitive + driver + peel + synthetic test) remains useful (e.g. bounding multi-unit/batch builds and as the frame-arena substrate's checkpoint/rewind), and is left in place for review.
+
+## H7 frame-arena refactor — design locked (2026-06-15)
+
+Goal: bound honk's compile memory (giant stdlib core climbs linearly >23 GB) and recover runtime, by reclaiming per-arm scratch while keeping the shared core type + accumulated battery live. Four reconnaissance maps (cache inventory, lazy-resolver lifecycle, arm-mint escape analysis, NounSlab+NockStack APIs) produced these load-bearing facts and the design below.
+
+Load-bearing facts:
+- One arena: Ut.slab is a single &mut NounSlab; every constructor (T/D/cons/comb/ty_core/...) allocates into it. A bump allocator cannot preserve-down in place (no NockStack double-ended frame trick).
+- Per-arm frame boundary = build_arm_formula_direct (mod.rs ~7316). It returns ONLY the arm formula; the arm type is discarded scratch (prune_recursive_holds result bound to _ty). The battery is accumulated incrementally in the CALLER build_arms_battery_from_map via T(slab,[formula,...]) — so each arm's formula must be preserved into keep before its frame pops.
+- Shared anchor = core_type_lazy, built once in mint_core, held in lazy_resolvers for the whole Ut (deliberately never cleared). Must live in keep.
+- Cross-arm sharing happens through the lazy resolver: cached_formula_by_axis is keyed by integer AXIS (frame-safe key); only its value Noun is scratch-resident. Preserve that value to keep on insert and cross-arm reuse survives reclamation WITHOUT O(arms^2) re-mint. This is what makes per-arm reclamation viable (vs the ruled-out fresh-Ut chunking).
+- Cache hazard: ~20 caches are pointer-keyed and/or hold scratch-resident Noun values (mod.rs: mack_core_cache_raw, mack_cache_raw, hoon_cache_raw, decoded_hold_hoon_cache_raw/_ptr_cache, hoon_ast_ptr_cache, open_cache, burp_type_cache, hold_repo_fan_leg_raw_ids/_id_by_hold_raw; types.rs memo *_raw variants + nest/mint/mull/etc whose VALUES are minted nouns). On frame pop these dangle, and recycled scratch addresses could false-hit pointer-keyed entries (a correctness bug, not just a leak).
+
+Design (region-stack frame model, encapsulated in NounSlab so Ut.slab stays a single &mut NounSlab):
+- H7-A NounSlab becomes a stack of regions {slabs, allocation_start, allocation_stop}: current = top. push_frame() moves current onto a parents stack and starts a fresh region; allocations always target current (top). pop_frame_preserving(&mut roots): for each root, copy its TOP-REGION-resident nodes into the parent region (append at parent frontier; leave nodes already in any senior region untouched, via a junior test = "ptr in top region's slabs"), with forwarding-pointer dedup like NockStack noun_preserve; then dealloc the top region and make parent current. Reuses existing checkpoint/rewind/copy_into machinery. Zero-frame case is byte-identical to today. Synthetic test: build shared in keep, push, build result referencing shared + new junior, pop-preserve, assert result valid after pop AND shared not duplicated.
+- H7-B Frame generation: Ut gains cache_gen:u64, bumped on every frame pop (scratch addresses recycled). Caches that hold scratch-resident values store (gen,value); lookups require gen==cache_gen (stale gens are dead -> no false-hit, no dangling read). Keep-valued caches (lazy_resolvers, core_mint cache) are NOT gen-tagged.
+- H7-C Wire the per-arm frame: in build_arms_battery_from_map, bracket build_arm_formula_direct with push_frame / pop_frame_preserving([formula]); preserve the lazy resolver cached formula (mod.rs ~5016) into keep on insert; bump cache_gen on pop. Battery cons stays in caller (keep). core_type_lazy already keep (built before the walk).
+- H7-D Validate: synthetic mutually-recursive-core byte-exact test (mirror the validated => synthetic), then real giant-core mint; gate on jam-diff byte/dir-hash parity for all six kernels; measure RSS + wall vs honk-138-parity baseline.
+
+Risk controls: contained to slab.rs (region machinery) + a small set of Ut sites (frame brackets + gen-tag wrappers); zero-frame default preserves current behavior; every stage behind a byte-exact parity gate; WIP committed per green stage so it is reviewable and revertible.
