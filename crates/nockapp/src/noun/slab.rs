@@ -26,6 +26,33 @@ const CELL_MEM_WORD_SIZE: usize = (size_of::<CellMemory>() + 7) >> 3;
 
 const CACHED_MUG_METADATA_MASK: u64 = 0x7fff_ffff;
 
+// H7 frame-arena profiling (temporary): gross block bytes allocated, freed by
+// frame pops, and copied to base. Print a summary via `arena_stats_dump()`.
+pub static ARENA_ALLOC_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static ARENA_POP_FREED_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static ARENA_COPYBASE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static ARENA_PRESERVE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static ARENA_POP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn arena_stats_dump(tag: &str) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let a = ARENA_ALLOC_BYTES.load(Relaxed);
+    let f = ARENA_POP_FREED_BYTES.load(Relaxed);
+    let pb = ARENA_PRESERVE_BYTES.load(Relaxed);
+    let cc = ARENA_COPYBASE_CALLS.load(Relaxed);
+    let pc = ARENA_POP_COUNT.load(Relaxed);
+    eprintln!(
+        "[arena-stats {tag}] alloc={:.2}GB pop_freed={:.2}GB preserve_copied={:.2}GB \
+         copy_to_base_calls={cc} pops={pc}",
+        a as f64 / 1.073741824e9,
+        f as f64 / 1.073741824e9,
+        pb as f64 / 1.073741824e9,
+    );
+}
+
 /// A single bump-allocation region: a set of size-classed backing blocks plus
 /// the current bump frontier into the active block. A [`NounSlab`] is a stack
 /// of these — the top region (`current`) receives all allocations, and frame
@@ -131,7 +158,24 @@ impl Region {
             self.slabs[next_idx] = (new_slab, new_layout);
             self.allocation_start = new_slab_u64;
             self.allocation_stop = new_slab_u64.add(new_size);
+            let prev = ARENA_ALLOC_BYTES
+                .fetch_add((new_size * 8) as u64, std::sync::atomic::Ordering::Relaxed);
+            // Dump on each ~2 GiB gross-alloc boundary (pops can be rare if the
+            // mint is dominated by a few huge arms).
+            const STEP: u64 = 2 << 30;
+            if prev / STEP != (prev + (new_size * 8) as u64) / STEP
+                && std::env::var_os("HONK_ARENA_STATS").is_some()
+            {
+                arena_stats_dump("alloc-2GB");
+            }
         }
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.slabs
+            .iter()
+            .map(|(_, layout)| layout.size() as u64)
+            .sum()
     }
 
     unsafe fn alloc_indirect(&mut self, words: usize) -> *mut u64 {
@@ -183,6 +227,7 @@ unsafe fn copy_region_subset(
     is_junior: &dyn Fn(*const u8) -> bool,
 ) -> Noun {
     let mut copied: IntMap<u64, Noun> = IntMap::new();
+    let mut copied_bytes: u64 = 0;
     let mut out: Noun = D(0);
     let mut copy_stack = vec![(root, std::ptr::addr_of_mut!(out))];
     while let Some((noun, dst)) = copy_stack.pop() {
@@ -202,6 +247,7 @@ unsafe fn copy_region_subset(
                         continue;
                     }
                     let indirect_mem_size = indirect.as_atom().in_space(space).raw_size();
+                    copied_bytes += (indirect_mem_size as u64) * 8;
                     let indirect_new_mem =
                         dest.alloc_indirect(indirect.as_atom().in_space(space).size());
                     copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size);
@@ -221,6 +267,7 @@ unsafe fn copy_region_subset(
                         *dst = *copied_noun;
                         continue;
                     }
+                    copied_bytes += (CELL_MEM_WORD_SIZE as u64) * 8;
                     let cell_new_mem = dest.alloc_cell();
                     copy_nonoverlapping(cell_ptr, cell_new_mem, 1);
                     (*cell_new_mem).metadata &= CACHED_MUG_METADATA_MASK;
@@ -239,6 +286,7 @@ unsafe fn copy_region_subset(
             },
         }
     }
+    ARENA_PRESERVE_BYTES.fetch_add(copied_bytes, std::sync::atomic::Ordering::Relaxed);
     out
 }
 
@@ -558,6 +606,14 @@ impl<J> NounSlab<J> {
             *root = copy_region_subset(&mut self.current, *root, &space, &is_junior);
         }
         let mut child = child;
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            ARENA_POP_FREED_BYTES.fetch_add(child.total_bytes(), Relaxed);
+            let n = ARENA_POP_COUNT.fetch_add(1, Relaxed) + 1;
+            if n % 20_000 == 0 && std::env::var_os("HONK_ARENA_STATS").is_some() {
+                arena_stats_dump("periodic");
+            }
+        }
         child.dealloc();
     }
 
@@ -579,6 +635,7 @@ impl<J> NounSlab<J> {
             // The active region is already the base.
             return noun;
         }
+        ARENA_COPYBASE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         #[cfg(debug_assertions)]
         let space = NounSpace::empty().with_extra_ptr_ranges(self.ptr_ranges());
         #[cfg(not(debug_assertions))]
