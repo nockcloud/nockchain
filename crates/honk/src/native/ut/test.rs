@@ -2339,3 +2339,96 @@ fn musk_mack_core_cache_clears_when_runtime_is_reset() {
     ut.clear_musk_context_dependent_caches();
     assert!(ut.musk.mack_core_cache_raw.is_empty());
 }
+
+// Validates the Step-2 chunked prelude mint mechanism on a small `=>` chain:
+// `=> |%(a 1) => |%(b a) b` exercises cross-layer name resolution (arm `b`
+// resolves `a` from the prior layer's subject; the body resolves `b`). The
+// chunked driver mints each layer in a fresh Ut (dropping per-layer resolvers),
+// so a byte-identical result proves cross-layer resolution survives without the
+// per-layer lazy resolvers — the correctness crux for bounding the native mint.
+#[test]
+fn chunked_tisgar_chain_matches_monolithic_mint() {
+    use std::path::Path;
+
+    let src = "=>  |%  ++  a  1  --  =>  |%  ++  b  a  --  b";
+    let chain = crate::pipeline::parse_native_hoon_source_without_docs(
+        Path::new("synthetic.hoon"),
+        src,
+        Vec::new(),
+        false,
+    )
+    .expect("parse synthetic => chain");
+
+    let mono_jam = {
+        let mut slab: NounSlab = NounSlab::new();
+        let mut ut = Ut::new(&mut slab);
+        let sut = super::ty_noun(&mut *ut.slab);
+        let gol = super::ty_noun(&mut *ut.slab);
+        let (_ty, formula) = ut.mint(sut, gol, &chain).expect("monolithic mint");
+        drop(ut);
+        slab.set_root(formula);
+        slab.jam().to_vec()
+    };
+
+    let chunk_jam = {
+        let mut out_slab: NounSlab = NounSlab::new();
+        let sut = super::ty_noun(&mut out_slab);
+        let gol = super::ty_noun(&mut out_slab);
+        let (_ty, formula) = super::mint_tisgar_chain_chunked(&mut out_slab, sut, gol, &chain)
+            .expect("chunked mint");
+        out_slab.set_root(formula);
+        out_slab.jam().to_vec()
+    };
+
+    assert_eq!(
+        mono_jam, chunk_jam,
+        "chunked tisgar-chain mint must be byte-identical to monolithic mint"
+    );
+}
+
+// Validates the H7 frame-arena per-arm reclamation on a multi-arm core that
+// exercises the hard cases: cross-arm references (arm `b` resolves sibling `a`,
+// arm `c` resolves `a` and `b` through the lazy resolver), and a recursive trap
+// (`|-`/`$`) inside `c` that drives `%hold`/fan-leg interning. Minting with the
+// frame arena ON must be byte-identical to the default monolithic mint: the
+// per-arm formulas are preserved into keep, the shared core type stays live, and
+// the persistent fan-leg / lazy-resolver stores copy their nouns to the base
+// region so id-stability and resolution survive each frame pop.
+#[test]
+fn frame_arena_core_mint_matches_monolithic() {
+    use std::path::Path;
+
+    let src = "\
+|%
+++  a  1
+++  b  a
+++  c  =/  x  b  |-  ?:(=(x a) x $(x x))
+--";
+    let gen = crate::pipeline::parse_native_hoon_source_without_docs(
+        Path::new("synthetic-core.hoon"),
+        src,
+        Vec::new(),
+        false,
+    )
+    .expect("parse synthetic core");
+
+    let mint_jam = |frame: bool| {
+        let mut slab: NounSlab = NounSlab::new();
+        let mut ut = Ut::new(&mut slab);
+        ut.force_frame_arena = frame;
+        let sut = super::ty_noun(&mut *ut.slab);
+        let gol = super::ty_noun(&mut *ut.slab);
+        let (_ty, formula) = ut.mint(sut, gol, &gen).expect("mint synthetic core");
+        drop(ut);
+        slab.set_root(formula);
+        slab.jam().to_vec()
+    };
+
+    let mono_jam = mint_jam(false);
+    let frame_jam = mint_jam(true);
+
+    assert_eq!(
+        mono_jam, frame_jam,
+        "frame-arena core mint must be byte-identical to monolithic mint"
+    );
+}

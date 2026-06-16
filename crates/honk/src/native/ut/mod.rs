@@ -131,6 +131,17 @@ impl MuskRuntime {
         self.mack_core_cache_raw.clear();
         self.mack_core_cache_context = None;
     }
+
+    /// Drop all mack caches at frame-arena reclamation: the copied-core cache
+    /// and per-fold cache are keyed by raw noun pointers / hold scratch nouns
+    /// that the frame pop invalidates. These are pure-fold memos, so eviction
+    /// only forces a correct recompute.
+    fn clear_frame_caches(&mut self) {
+        self.mack_core_cache_raw.clear();
+        self.mack_core_cache_context = None;
+        self.mack_cache_raw.clear();
+        self.mack_cache.clear();
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct CacheContextKey {
@@ -230,6 +241,10 @@ pub struct Ut<'a> {
     pub open_cache_order: VecDeque<usize>,
     pub arm_key_term_cache: HashMap<u64, Arc<str>>,
     pub arm_key_term_cache_order: VecDeque<u64>,
+    // H7 frame-arena override: when true, per-arm minting runs in reclaimable
+    // frames regardless of the `HONK_FRAME_ARENA` env flag (used by tests to
+    // exercise the framed path deterministically).
+    pub force_frame_arena: bool,
     #[cfg(test)]
     pub skin_match_static_calls: usize,
     #[cfg(test)]
@@ -1877,6 +1892,7 @@ impl<'a> Ut<'a> {
             open_cache_order: VecDeque::new(),
             arm_key_term_cache: HashMap::new(),
             arm_key_term_cache_order: VecDeque::new(),
+            force_frame_arena: false,
             #[cfg(test)]
             skin_match_static_calls: 0,
             #[cfg(test)]
@@ -2123,10 +2139,20 @@ impl<'a> Ut<'a> {
         }
         self.hold_repo_fan_leg_raw_ids
             .insert((unsafe { inner.as_raw() }, unsafe { hoon.as_raw() }), id);
+        // The mug store is authoritative and lives for the whole compile; under
+        // the frame arena its `inner`/`hoon` nouns may have been minted in a
+        // per-arm scratch frame, so copy them to the base region (no-op when no
+        // frame is active) to keep id lookups (noun_eq) valid after the pop.
+        let inner_keep = unsafe { self.slab.copy_to_base(inner) };
+        let hoon_keep = unsafe { self.slab.copy_to_base(hoon) };
         self.hold_repo_fan_leg_ids
             .entry(key)
             .or_default()
-            .push(HoldRepoFanLegIdEntry { id, inner, hoon });
+            .push(HoldRepoFanLegIdEntry {
+                id,
+                inner: inner_keep,
+                hoon: hoon_keep,
+            });
         Ok(id)
     }
 
@@ -2204,7 +2230,13 @@ impl<'a> Ut<'a> {
         if bucket.len() >= Self::HOLD_REPO_FAN_LEG_HOLD_MUG_BUCKET_LIMIT {
             bucket.pop_front();
         }
-        bucket.push_back(HoldRepoFanHoldIdEntry { hold, id: leg_id });
+        // Under the frame arena `hold` may be scratch-resident; keep a base copy
+        // so later cross-arm lookups (noun_eq) stay valid (no-op without frames).
+        let hold_keep = unsafe { self.slab.copy_to_base(hold) };
+        bucket.push_back(HoldRepoFanHoldIdEntry {
+            hold: hold_keep,
+            id: leg_id,
+        });
         Ok(())
     }
 
@@ -4912,8 +4944,20 @@ impl<'a> Ut<'a> {
         resolver_id: u64,
         core_type: Noun,
         poly: Poly,
-        arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
+        mut arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
     ) {
+        // Lazy resolvers live for the whole compile and are resolved on demand
+        // (re-minting an arm against `core_type`). Under the frame arena a core
+        // nested inside an arm is minted in that arm's scratch frame, so its
+        // `core_type` and arm AST nouns would dangle once the frame pops. Copy
+        // them to the base region so any later resolution stays valid. No-op for
+        // the top-level core (already base-resident) and without frames.
+        let core_type = unsafe { self.slab.copy_to_base(core_type) };
+        if self.frame_arena_enabled() {
+            for entry in arms_by_axis.values_mut() {
+                entry.hoon_noun = unsafe { self.slab.copy_to_base(entry.hoon_noun) };
+            }
+        }
         self.lazy_resolvers.insert(
             resolver_id,
             LazyResolverContext {
@@ -7398,6 +7442,96 @@ impl<'a> Ut<'a> {
         Ok(formula)
     }
 
+    /// H7 frame-arena: when `HONK_FRAME_ARENA` is set, each arm's mint runs in
+    /// its own NounSlab frame. After the arm formula is produced it is preserved
+    /// down into the parent (keep) region and the frame's transient scratch —
+    /// the discarded arm type, intermediate mints, etc. — is reclaimed,
+    /// bounding peak memory on giant cores (hoon-138's stdlib core). The shared
+    /// core type and the incrementally-accumulated battery live in keep and are
+    /// untouched. Whole-compile-lifetime stores (fan-leg mug table, lazy
+    /// resolvers) copy their nouns to the base region at insert; per-arm memos
+    /// are invalidated on pop (see `invalidate_frame_caches`).
+    fn frame_arena_enabled(&self) -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        self.force_frame_arena
+            || *ENABLED.get_or_init(|| std::env::var_os("HONK_FRAME_ARENA").is_some())
+    }
+
+    /// Invalidate every per-arm memo whose cached value or key may have lived in
+    /// the just-reclaimed scratch frame. All of these are pure-function memos
+    /// (or pointer-keyed fast caches whose authoritative mug store persists), so
+    /// eviction only forces a correct recompute — the same contract the existing
+    /// key-limit eviction already relies on. Whole-compile-lifetime stores are
+    /// NOT cleared here; their nouns are copied to the base region at insert.
+    fn invalidate_frame_caches(&mut self) {
+        self.boundary_memo.clear();
+        self.lookup_memo.clear();
+        self.hold_memo.clear();
+        self.bran_semi_memo.clear();
+        self.ktsg_fold_cache.clear();
+        self.burp_type_cache.clear();
+        // Pointer-keyed fast caches; the authoritative mug-keyed stores persist.
+        self.hold_repo_fan_leg_raw_ids.clear();
+        self.hold_repo_fan_leg_id_by_hold_raw.clear();
+        self.hold_repo_fan_leg_id_by_hold_raw_order.clear();
+        // Holds decoded from type data during the arm mint (scratch-resident).
+        self.decoded_hold_hoon_cache_raw.clear();
+        self.decoded_hold_hoon_cache_order.clear();
+        self.decoded_hold_hoon_ptr_cache.clear();
+        // Bare-Noun-valued / raw-ptr-keyed AST caches that may capture scratch.
+        self.hoon_ast_ptr_cache.clear();
+        self.hoon_ast_ptr_cache_order.clear();
+        self.hoon_identity_cache_raw.clear();
+        self.hoon_identity_cache_order.clear();
+        self.hoon_identity_cache_struct.clear();
+        self.hoon_identity_cache_struct_order.clear();
+        // Interpreter-side mack caches (raw-keyed copied cores / fold memos).
+        self.musk.clear_frame_caches();
+        // Lazy-resolver arm formulas were minted in the reclaimed scratch; drop
+        // them so a sibling reference re-mints (correct) instead of reading
+        // freed memory. The resolver core types/AST are copied to base.
+        for ctx in self.lazy_resolvers.values_mut() {
+            ctx.cached_formula_by_axis.clear();
+            ctx.in_progress_axes.clear();
+        }
+    }
+
+    /// Run one arm's mint inside a reclaimable frame (when enabled), preserving
+    /// only the resulting formula into the parent region. The frame is always
+    /// balanced (popped on both the Ok and Err paths) so nested arm frames and
+    /// error propagation keep the region stack consistent.
+    #[allow(clippy::too_many_arguments)]
+    fn build_arm_formula_framed(
+        &mut self,
+        key: Arc<str>,
+        core_type: Noun,
+        poly: Poly,
+        arm_goal: Noun,
+        hoon: &Hoon,
+        hoon_noun: Noun,
+    ) -> Result<Noun> {
+        if !self.frame_arena_enabled() {
+            return self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
+        }
+        self.slab.push_frame();
+        let result =
+            self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
+        match result {
+            Ok(formula) => {
+                let mut roots = [formula];
+                unsafe { self.slab.pop_frame_preserving(&mut roots) };
+                self.invalidate_frame_caches();
+                Ok(roots[0])
+            }
+            Err(err) => {
+                let mut roots: [Noun; 0] = [];
+                unsafe { self.slab.pop_frame_preserving(&mut roots) };
+                self.invalidate_frame_caches();
+                Err(err)
+            }
+        }
+    }
+
     fn build_arms_battery_from_map(
         &mut self,
         arms_map: Noun,
@@ -7422,7 +7556,7 @@ impl<'a> Ut<'a> {
             .map_err(|err| CompilerError::Noun(format!("arm ast missing: {err}")))?;
         let arm_goal = self.goal_arm_expected_type(goal, expected_arms_map, key_noun)?;
 
-        let formula = self.build_arm_formula_direct(
+        let formula = self.build_arm_formula_framed(
             Arc::clone(&key),
             core_type,
             poly,
@@ -11783,6 +11917,66 @@ fn tend_big(vein: &[Option<BigUint>]) -> Result<BigUint> {
         axis = peg_axis_big_pair(axis, &step)?;
     }
     Ok(axis)
+}
+
+/// Chunked mint of a `=> p1 => … => body` compose chain. Mirrors `mint_tsgr`'s
+/// composition exactly — each pre-body layer minted with goal `%noun` against
+/// the carried subject, the body with the outer `gol`, formulas folded right via
+/// `comb` — but mints each layer in its OWN fresh `Ut`/slab, carrying only the
+/// subject type and per-layer formulas back into `out_slab` and dropping each
+/// layer's working slab. Peak working memory bounds to one layer + the carried
+/// subject instead of the cumulative whole — the basis for a bounded native
+/// prelude mint (Step 2).
+///
+/// Output is byte-identical to monolithic mint when each layer's cores have full
+/// batteries (so the per-layer lazy resolvers, dropped with each working slab,
+/// are unnecessary for cross-layer name resolution). The
+/// `chunked_tisgar_chain_matches_monolithic_mint` test guards that invariant.
+///
+/// NOTE: `out_slab` still accumulates each carried subject copy (only the latest
+/// is live); reclaiming the stale copies (ping-pong out-slabs or
+/// checkpoint/rewind around the subject copy) is the memory optimization to add
+/// once correctness is established.
+pub(crate) fn mint_tisgar_chain_chunked(
+    out_slab: &mut NounSlab,
+    sut: Noun,
+    gol: Noun,
+    chain: &Hoon,
+) -> Result<(Noun, Noun)> {
+    let mut layers: Vec<&Hoon> = Vec::new();
+    let mut cur = chain;
+    while let Hoon::TisGar(p, q) = cur {
+        layers.push(p.as_ref());
+        cur = q.as_ref();
+    }
+    layers.push(cur);
+
+    let mut subject = sut;
+    let mut layer_formulas: Vec<Noun> = Vec::with_capacity(layers.len());
+    let last = layers.len() - 1;
+    for (i, layer) in layers.iter().enumerate() {
+        let mut layer_slab: NounSlab = NounSlab::new();
+        {
+            let mut ut = Ut::new(&mut layer_slab);
+            let sub_in = ut.slab.copy_into(subject, &out_slab.noun_space());
+            let goal = if i == last {
+                ut.slab.copy_into(gol, &out_slab.noun_space())
+            } else {
+                ty_noun(&mut *ut.slab)
+            };
+            let (ty, formula) = ut.mint(sub_in, goal, layer)?;
+            let ut_space = ut.slab.noun_space();
+            subject = out_slab.copy_into(ty, &ut_space);
+            layer_formulas.push(out_slab.copy_into(formula, &ut_space));
+        }
+        // layer_slab dropped here, reclaiming this layer's working memory.
+    }
+
+    let mut formula = layer_formulas.pop().expect("compose chain has a body");
+    while let Some(head) = layer_formulas.pop() {
+        formula = comb(out_slab, head, formula)?;
+    }
+    Ok((subject, formula))
 }
 
 pub fn ty_noun(slab: &mut NounSlab) -> Noun {

@@ -49,6 +49,11 @@ where
         }
         self.values.insert(key, value);
     }
+
+    pub fn clear(&mut self) {
+        self.values.clear();
+        self.order.clear();
+    }
 }
 
 pub struct RawMemoSet<K> {
@@ -117,6 +122,11 @@ where
             }
         }
         self.buckets.entry(key).or_default()
+    }
+
+    pub fn clear(&mut self) {
+        self.buckets.clear();
+        self.order.clear();
     }
 }
 
@@ -188,6 +198,25 @@ impl Default for BoundaryMemoSet {
     }
 }
 
+impl BoundaryMemoSet {
+    /// Drop every memoized type-operation result. These are pure functions of
+    /// their (already context-keyed) inputs, so a cleared entry just forces a
+    /// correct recompute. Used at frame-arena reclamation to evict entries whose
+    /// minted type/formula values lived in the reclaimed per-arm scratch.
+    pub fn clear(&mut self) {
+        self.core_mint.clear();
+        self.mint.clear();
+        self.mull.clear();
+        self.redo.clear();
+        self.rest.clear();
+        self.fish.clear();
+        self.nest_raw.clear();
+        self.nest.clear();
+        self.crop.clear();
+        self.fuse.clear();
+    }
+}
+
 pub struct LookupMemoSet {
     pub find: BucketMemo<FindMemoKey, FindCacheEntry>,
     pub find_raw: BucketMemo<FindRawMemoKey, FindRawCacheEntry>,
@@ -218,6 +247,22 @@ impl Default for LookupMemoSet {
     }
 }
 
+impl LookupMemoSet {
+    /// Drop every memoized find/lookup result (see `BoundaryMemoSet::clear`).
+    pub fn clear(&mut self) {
+        self.find.clear();
+        self.find_raw.clear();
+        self.strict_term_port.clear();
+        self.strict_term_port_raw.clear();
+        self.strict_term_core_parts_raw.clear();
+        self.cool.clear();
+        self.chip.clear();
+        self.wing_axis.clear();
+        self.look.clear();
+        self.loot.clear();
+    }
+}
+
 pub struct HoldMemoSet {
     pub repo_raw: RawMemoMap<u64, Noun>,
     pub hold_type_raw: RawMemoMap<HoldTypeRawMemoKey, Noun>,
@@ -237,6 +282,18 @@ impl Default for HoldMemoSet {
             hold_repo_core_raw: Default::default(),
             hold_repo_core: Default::default(),
         }
+    }
+}
+
+impl HoldMemoSet {
+    /// Drop every memoized hold repo/type result (see `BoundaryMemoSet::clear`).
+    pub fn clear(&mut self) {
+        self.repo_raw.clear();
+        self.hold_type_raw.clear();
+        self.hold_type.clear();
+        self.hold_repo_raw.clear();
+        self.hold_repo_core_raw.clear();
+        self.hold_repo_core.clear();
     }
 }
 
