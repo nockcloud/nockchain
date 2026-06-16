@@ -39,14 +39,13 @@ impl<'a> Ut<'a> {
     // HOON138_NOTE:native primary implementation for canonical `++find`; full parity review is still in progress
     #[track_caller]
     pub(super) fn find(&mut self, sut: Noun, way: Way, wing: &WingType) -> Result<Port> {
-        let result = match self.fond(sut, way, wing)? {
+        match self.fond(sut, way, wing)? {
             Pony::Palo(palo) => Ok(Port::Palo(palo)),
             Pony::Synthetic { typ, formula } => Ok(Port::Synthetic { typ, formula }),
             Pony::Void | Pony::Unmatched(_) => Err(CompilerError::UnsupportedExpr(format!(
                 "native mint: find failed for wing {wing:?}"
             ))),
-        };
-        result
+        }
     }
 
     pub(super) fn fond_hold_inner(&mut self, sut: Noun) -> Result<Noun> {

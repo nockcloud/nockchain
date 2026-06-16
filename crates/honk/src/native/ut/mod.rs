@@ -4893,6 +4893,9 @@ impl<'a> Ut<'a> {
             return mask;
         }
         let mask = T(self.slab, &[D(SEMI_TAG_FULL), D(0)]);
+        // Interned for the whole compile; keep it base-resident so it survives
+        // frame pops if first built inside an arm frame (no-op without frames).
+        let mask = unsafe { self.slab.copy_to_base(mask) };
         self.semi_mask_full_empty = Some(mask);
         mask
     }
@@ -4907,6 +4910,7 @@ impl<'a> Ut<'a> {
             return blocks;
         }
         let blocks = T(self.slab, &[D(0), D(0), D(0)]);
+        let blocks = unsafe { self.slab.copy_to_base(blocks) };
         self.semi_root_blocked_set = Some(blocks);
         blocks
     }
@@ -4920,6 +4924,7 @@ impl<'a> Ut<'a> {
         let blocks = self.semi_blocks_root_blocked();
         let mask = self.semi_mask_full(blocks);
         let semi = self.semi_make(mask, D(0));
+        let semi = unsafe { self.slab.copy_to_base(semi) };
         self.semi_full_blocked_interned = Some(semi);
         semi
     }
@@ -4942,18 +4947,18 @@ impl<'a> Ut<'a> {
     fn lazy_resolver_register_context(
         &mut self,
         resolver_id: u64,
-        core_type: Noun,
+        mut core_type: Noun,
         poly: Poly,
         mut arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
     ) {
         // Lazy resolvers live for the whole compile and are resolved on demand
-        // (re-minting an arm against `core_type`). Under the frame arena a core
-        // nested inside an arm is minted in that arm's scratch frame, so its
-        // `core_type` and arm AST nouns would dangle once the frame pops. Copy
-        // them to the base region so any later resolution stays valid. No-op for
-        // the top-level core (already base-resident) and without frames.
-        let core_type = unsafe { self.slab.copy_to_base(core_type) };
+        // (re-minting an arm against `core_type`), including CROSS-ARM: another
+        // core's arm can reference this one long after this core's frame popped.
+        // So under the frame arena both `core_type` and the arm AST nouns must
+        // be copied to the base region or they dangle. No-op without frames /
+        // for the top-level core (already base-resident).
         if self.frame_arena_enabled() {
+            core_type = unsafe { self.slab.copy_to_base(core_type) };
             for entry in arms_by_axis.values_mut() {
                 entry.hoon_noun = unsafe { self.slab.copy_to_base(entry.hoon_noun) };
             }
@@ -5056,6 +5061,14 @@ impl<'a> Ut<'a> {
         }
         match compiled {
             Ok(formula) => {
+                // Cache the formula for the whole compile. Under the frame arena
+                // it was minted in the current scratch frame, so copy it to base
+                // — the cache is read CROSS-ARM (another core resolving this one
+                // after its frame popped), and re-minting on a cache miss is NOT
+                // safe: it would run in the caller's %hold/fan scope, not this
+                // arm's, producing a wrong type. Preserving the formula keeps the
+                // resolver a pure lookup. No-op without frames.
+                let formula = unsafe { self.slab.copy_to_base(formula) };
                 if let Some(ctx) = self.lazy_resolvers.get_mut(&resolver_id) {
                     ctx.cached_formula_by_axis.insert(fragment, formula);
                 }
@@ -7478,6 +7491,15 @@ impl<'a> Ut<'a> {
         self.decoded_hold_hoon_cache_raw.clear();
         self.decoded_hold_hoon_cache_order.clear();
         self.decoded_hold_hoon_ptr_cache.clear();
+        // AST lookup caches: keyed by the source noun (raw ptr / mug with a
+        // disambiguating Noun) which may be a frame-resident type noun produced
+        // during fire/play, so the keys/disambiguators dangle after the pop.
+        self.hoon_cache_raw.clear();
+        self.hoon_cache_raw_order.clear();
+        self.hoon_cache_struct.clear();
+        self.hoon_cache_struct_order.clear();
+        self.arm_key_term_cache.clear();
+        self.arm_key_term_cache_order.clear();
         // Bare-Noun-valued / raw-ptr-keyed AST caches that may capture scratch.
         self.hoon_ast_ptr_cache.clear();
         self.hoon_ast_ptr_cache_order.clear();
@@ -7487,13 +7509,15 @@ impl<'a> Ut<'a> {
         self.hoon_identity_cache_struct_order.clear();
         // Interpreter-side mack caches (raw-keyed copied cores / fold memos).
         self.musk.clear_frame_caches();
-        // Lazy-resolver arm formulas were minted in the reclaimed scratch; drop
-        // them so a sibling reference re-mints (correct) instead of reading
-        // freed memory. The resolver core types/AST are copied to base.
-        for ctx in self.lazy_resolvers.values_mut() {
-            ctx.cached_formula_by_axis.clear();
-            ctx.in_progress_axes.clear();
-        }
+        // NOTE: the lazy resolvers are intentionally NOT touched here.
+        // - cached_formula_by_axis values are copied to base at insert
+        //   (see lazy_resolver_compile_arm), so they survive the pop. They must
+        //   NOT be cleared: re-minting on a later cross-arm reference would run
+        //   in the wrong %hold/fan scope and produce a wrong type.
+        // - in_progress_axes is a recursion GUARD, not a cache; a nested arm
+        //   frame can pop while an outer resolution is in progress, and clearing
+        //   it would corrupt that resolution.
+        // - core_type / arm AST are copied to base at registration.
     }
 
     /// Run one arm's mint inside a reclaimable frame (when enabled), preserving

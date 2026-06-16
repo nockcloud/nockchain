@@ -2432,3 +2432,43 @@ fn frame_arena_core_mint_matches_monolithic() {
         "frame-arena core mint must be byte-identical to monolithic mint"
     );
 }
+
+// Reproduces the shape of stdlib `turn`/`add-all` that broke the frame arena at
+// scale: a wet gate (`|*`) whose sample is a function (`b`) referenced inside a
+// `|-` loop via `$(b b)`. The framed mint must locate `b` in the loop subject
+// and produce byte-identical output to the monolithic mint.
+#[test]
+fn frame_arena_wet_gate_function_sample_matches_monolithic() {
+    use std::path::Path;
+
+    let src = "\
+=/  a  1
+=/  b  2
+|-
+?:(=(a b) b $(a a, b b))";
+    let gen = crate::pipeline::parse_native_hoon_source_without_docs(
+        Path::new("synthetic-wet.hoon"),
+        src,
+        Vec::new(),
+        false,
+    )
+    .expect("parse synthetic wet gate");
+
+    let mint_jam = |frame: bool| {
+        let mut slab: NounSlab = NounSlab::new();
+        let mut ut = Ut::new(&mut slab);
+        ut.force_frame_arena = frame;
+        let sut = super::ty_noun(&mut *ut.slab);
+        let gol = super::ty_noun(&mut *ut.slab);
+        let (_ty, formula) = ut.mint(sut, gol, &gen).expect("mint synthetic wet gate");
+        drop(ut);
+        slab.set_root(formula);
+        slab.jam().to_vec()
+    };
+
+    assert_eq!(
+        mint_jam(false),
+        mint_jam(true),
+        "frame-arena wet-gate mint must be byte-identical to monolithic mint"
+    );
+}
