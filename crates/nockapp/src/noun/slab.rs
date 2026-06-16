@@ -171,6 +171,77 @@ impl Region {
     }
 }
 
+/// Deep-copy `root` into `dest`, copying only nodes for which `is_junior`
+/// returns true (the rest are shared by reference, assumed already resident in
+/// `dest` or a region that outlives it). Internal sharing is preserved via a
+/// pointer-keyed dedup map. Used by both `pop_frame_preserving` (junior = the
+/// popped region) and `copy_to_base` (junior = anything not in the base).
+unsafe fn copy_region_subset(
+    dest: &mut Region,
+    root: Noun,
+    space: &NounSpace,
+    is_junior: &dyn Fn(*const u8) -> bool,
+) -> Noun {
+    let mut copied: IntMap<u64, Noun> = IntMap::new();
+    let mut out: Noun = D(0);
+    let mut copy_stack = vec![(root, std::ptr::addr_of_mut!(out))];
+    while let Some((noun, dst)) = copy_stack.pop() {
+        match noun.as_either_direct_allocated() {
+            Either::Left(_direct) => {
+                *dst = noun;
+            }
+            Either::Right(allocated) => match allocated.as_either() {
+                Either::Left(indirect) => {
+                    let indirect_ptr = indirect.as_atom().in_space(space).raw_pointer();
+                    if !is_junior(indirect_ptr as *const u8) {
+                        *dst = noun;
+                        continue;
+                    }
+                    if let Some(copied_noun) = copied.get(indirect_ptr as u64) {
+                        *dst = *copied_noun;
+                        continue;
+                    }
+                    let indirect_mem_size = indirect.as_atom().in_space(space).raw_size();
+                    let indirect_new_mem =
+                        dest.alloc_indirect(indirect.as_atom().in_space(space).size());
+                    copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size);
+                    *indirect_new_mem &= CACHED_MUG_METADATA_MASK;
+                    let copied_noun =
+                        IndirectAtom::from_raw_pointer(indirect_new_mem).as_atom().as_noun();
+                    copied.insert(indirect_ptr as u64, copied_noun);
+                    *dst = copied_noun;
+                }
+                Either::Right(cell) => {
+                    let cell_ptr = cell.in_space(space).raw_pointer();
+                    if !is_junior(cell_ptr as *const u8) {
+                        *dst = noun;
+                        continue;
+                    }
+                    if let Some(copied_noun) = copied.get(cell_ptr as u64) {
+                        *dst = *copied_noun;
+                        continue;
+                    }
+                    let cell_new_mem = dest.alloc_cell();
+                    copy_nonoverlapping(cell_ptr, cell_new_mem, 1);
+                    (*cell_new_mem).metadata &= CACHED_MUG_METADATA_MASK;
+                    let copied_noun = Cell::from_raw_pointer(cell_new_mem).as_noun();
+                    copied.insert(cell_ptr as u64, copied_noun);
+                    *dst = copied_noun;
+                    copy_stack.push((
+                        cell.in_space(space).tail().noun(),
+                        std::ptr::addr_of_mut!((*cell_new_mem).tail),
+                    ));
+                    copy_stack.push((
+                        cell.in_space(space).head().noun(),
+                        std::ptr::addr_of_mut!((*cell_new_mem).head),
+                    ));
+                }
+            },
+        }
+    }
+    out
+}
+
 impl<J> Debug for NounSlab<J> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NounSlab")
@@ -482,78 +553,48 @@ impl<J> NounSlab<J> {
         // Make the parent the active region; `child` holds the popped region.
         // Allocations made by the preserve copy below now land in the parent.
         let child = std::mem::replace(&mut self.current, self.frames.pop().unwrap());
+        let is_junior = |ptr: *const u8| child.contains_ptr(ptr);
         for root in roots.iter_mut() {
-            *root = self.preserve_one(*root, &child, &space);
+            *root = copy_region_subset(&mut self.current, *root, &space, &is_junior);
         }
         let mut child = child;
         child.dealloc();
     }
 
-    /// Copy `root`'s nodes that reside in `child` into the active region,
-    /// leaving nodes resident in any senior region untouched (shared by
-    /// reference). Mirrors `copy_into`, but stops at the junior/senior boundary.
-    unsafe fn preserve_one(&mut self, root: Noun, child: &Region, space: &NounSpace) -> Noun {
-        let mut copied: IntMap<u64, Noun> = IntMap::new();
-        let mut out: Noun = D(0);
-        let mut copy_stack = vec![(root, std::ptr::addr_of_mut!(out))];
-        while let Some((noun, dest)) = copy_stack.pop() {
-            match noun.as_either_direct_allocated() {
-                Either::Left(_direct) => {
-                    *dest = noun;
-                }
-                Either::Right(allocated) => match allocated.as_either() {
-                    Either::Left(indirect) => {
-                        let indirect_ptr = indirect.as_atom().in_space(space).raw_pointer();
-                        if !child.contains_ptr(indirect_ptr as *const u8) {
-                            // Senior: already in a parent region, share it.
-                            *dest = noun;
-                            continue;
-                        }
-                        if let Some(copied_noun) = copied.get(indirect_ptr as u64) {
-                            *dest = *copied_noun;
-                            continue;
-                        }
-                        let indirect_mem_size = indirect.as_atom().in_space(space).raw_size();
-                        let indirect_new_mem = self
-                            .current
-                            .alloc_indirect(indirect.as_atom().in_space(space).size());
-                        copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size);
-                        *indirect_new_mem &= CACHED_MUG_METADATA_MASK;
-                        let copied_noun =
-                            IndirectAtom::from_raw_pointer(indirect_new_mem).as_atom().as_noun();
-                        copied.insert(indirect_ptr as u64, copied_noun);
-                        *dest = copied_noun;
-                    }
-                    Either::Right(cell) => {
-                        let cell_ptr = cell.in_space(space).raw_pointer();
-                        if !child.contains_ptr(cell_ptr as *const u8) {
-                            // Senior: already in a parent region, share it.
-                            *dest = noun;
-                            continue;
-                        }
-                        if let Some(copied_noun) = copied.get(cell_ptr as u64) {
-                            *dest = *copied_noun;
-                            continue;
-                        }
-                        let cell_new_mem = self.current.alloc_cell();
-                        copy_nonoverlapping(cell_ptr, cell_new_mem, 1);
-                        (*cell_new_mem).metadata &= CACHED_MUG_METADATA_MASK;
-                        let copied_noun = Cell::from_raw_pointer(cell_new_mem).as_noun();
-                        copied.insert(cell_ptr as u64, copied_noun);
-                        *dest = copied_noun;
-                        copy_stack.push((
-                            cell.in_space(space).tail().noun(),
-                            std::ptr::addr_of_mut!((*cell_new_mem).tail),
-                        ));
-                        copy_stack.push((
-                            cell.in_space(space).head().noun(),
-                            std::ptr::addr_of_mut!((*cell_new_mem).head),
-                        ));
-                    }
-                },
-            }
+    /// Copy `noun` into the base (outermost) region so it survives every frame
+    /// pop for the lifetime of this slab. Nodes already resident in the base are
+    /// shared by reference; nodes in the active frame or any intermediate frame
+    /// are copied down into the base. With no frame active this is a no-op (the
+    /// active region IS the base).
+    ///
+    /// Use for values inserted into whole-compile-lifetime stores (e.g. id
+    /// interning tables, lazy-resolver caches) from inside a frame, so they do
+    /// not dangle when the frame is popped.
+    ///
+    /// # Safety
+    /// The returned noun is valid for the lifetime of the slab. The original
+    /// `noun` (if frame-resident) is unaffected and still belongs to its frame.
+    pub unsafe fn copy_to_base(&mut self, noun: Noun) -> Noun {
+        if self.frames.is_empty() {
+            // The active region is already the base.
+            return noun;
         }
-        out
+        #[cfg(debug_assertions)]
+        let space = NounSpace::empty().with_extra_ptr_ranges(self.ptr_ranges());
+        #[cfg(not(debug_assertions))]
+        let space = NounSpace::empty();
+        // Capture the base region's ranges before copying (the copy appends to
+        // it); a source pointer in this set is senior (already in base).
+        let mut base_ranges: Vec<(usize, usize)> = Vec::new();
+        self.frames[0].ptr_ranges_into(&mut base_ranges);
+        let is_junior = |ptr: *const u8| {
+            let addr = ptr as usize;
+            !base_ranges.iter().any(|(s, e)| addr >= *s && addr < *e)
+        };
+        let mut base = std::mem::replace(&mut self.frames[0], Region::empty());
+        let result = copy_region_subset(&mut base, noun, &space, &is_junior);
+        self.frames[0] = base;
+        result
     }
 
     /// Copy the root from another slab into this slab, set this slab's root to the copied root
@@ -1303,6 +1344,44 @@ mod tests {
             .expect("shared is a cell");
         assert_eq!(sc.head().as_atom().unwrap().as_u64().unwrap(), 100);
         assert_eq!(sc.tail().as_atom().unwrap().as_u64().unwrap(), 200);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn copy_to_base_survives_frame_pop() {
+        // Mirrors a whole-compile-lifetime store interning a noun built inside a
+        // per-arm frame: copy_to_base relocates it to the base so it stays valid
+        // after the frame is popped without the noun being among the pop roots.
+        let mut slab: NounSlab = NounSlab::new();
+        let base_anchor = T(&mut slab, &[D(1), D(2)]);
+
+        slab.push_frame();
+        // A value built in the frame, referencing a senior base noun.
+        let frame_built = T(&mut slab, &[D(42), base_anchor]);
+        // Intern it into "base" (as a long-lived store would).
+        let interned = unsafe { slab.copy_to_base(frame_built) };
+        // Pop WITHOUT listing `interned`/`frame_built` as roots — only an
+        // unrelated dummy. The interned copy must still be valid.
+        let mut roots = [D(0)];
+        unsafe { slab.pop_frame_preserving(&mut roots) };
+        assert!(slab.frames.is_empty());
+
+        // Force reuse of the reclaimed frame addresses.
+        for i in 0..50_000u64 {
+            let _ = T(&mut slab, &[D(i), D(i)]);
+        }
+
+        let space = slab.noun_space();
+        let ic = interned.in_space(&space).as_cell().expect("interned is a cell");
+        assert_eq!(ic.head().as_atom().unwrap().as_u64().unwrap(), 42);
+        let anchor = ic.tail().as_cell().expect("anchor is a cell");
+        assert_eq!(anchor.head().as_atom().unwrap().as_u64().unwrap(), 1);
+        assert_eq!(anchor.tail().as_atom().unwrap().as_u64().unwrap(), 2);
+        // The senior base anchor was shared, not duplicated.
+        assert!(
+            unsafe { ic.tail().noun().raw_equals(&base_anchor) },
+            "copy_to_base should share senior base nodes, not copy them"
+        );
     }
 
     #[test]
