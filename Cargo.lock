@@ -4571,6 +4571,7 @@ name = "honk"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bytes",
  "chumsky",
  "hatch",
  "honc-cold-138",
