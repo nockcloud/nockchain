@@ -666,3 +666,34 @@ faster); A2 is the prize.
 
 Bar restated: every cell above is an ownership invariant, a byte-exact fixture, a
 cache/lifetime matrix entry, or a named boundary — not a "native makes it go away."
+
+## Phase 1 construction-port finding: no combinator-granularity seam (2026-06-17)
+
+Attempted the first construction-port slice — route honk's formula combinators
+(`cons`/`comb`/`cond`) through the native IR under a flag, bridging inputs via
+`Formula::from_noun` and emitting via `to_noun`. RESULT: **infeasible — O(n²)**.
+`from_noun` re-parses the entire (growing) sub-formula on every combinator call,
+and combinators compose, so on real formulas it blows up quadratically (a
+normally-~45s dumb compile did not finish in 6+ minutes). Reverted.
+
+Lesson (refines the Phase-1 plan): there is **no cheap incremental seam at
+combinator granularity** — per-call noun↔native bridging is quadratic. The
+correct approach is **additive native-shadow threading**: each `mint`/`play`
+formula site returns its native `Rc<Formula>` ALONGSIDE the noun formula, built
+from its CHILDREN's already-native `Rc<Formula>` (no `from_noun` re-parse → O(n)),
+with `to_noun(native) == noun_formula` asserted at the boundary as the live
+oracle. Once native shadows everywhere and validates, flip the output to native
+and drop the noun formula. This is the safe path, but it is a LARGE mechanical
+change across every formula-producing `ut` function (return-type/threading), i.e.
+a dedicated effort — not a one-turn slice.
+
+Strategic note: the formula construction port is **structural** — formulas are
+the output (~MBs), not the memory blowup. The blowup is TYPES (subject-deepening,
+un-interned subtrees), so the memory win (A2) is the Phase-2/3 TYPE port. The
+formula IR BOUNDARY is already fully proven (to_noun + from_noun round-trip the
+entire compiled prelude + all 6 kernels byte-exact). So the open decision is
+sequencing: (a) commit to the large formula-shadow construction port now
+(structural; enables a clean type port), or (b) since the boundary is proven, go
+straight at the Phase-2/3 native TYPE representation + hash-consing (the memory
+win), threading native formulas as part of that same native-mint effort (cores
+couple type+formula anyway). Recommendation: (b).
