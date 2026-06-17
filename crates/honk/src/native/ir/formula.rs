@@ -18,11 +18,13 @@ use std::rc::Rc;
 
 use nockapp::noun::slab::NounSlab;
 use nockvm::ext::AtomExt;
-use nockvm::noun::{Atom, Noun, NounAllocator, D, T};
+use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, D, T};
 use num_bigint::BigUint;
 
 use super::leaf::Leaf;
 use super::ToNoun;
+use crate::errors::{CompilerError, Result};
+use crate::native::noun::noun_pair;
 
 /// A Nock axis. Arbitrary-size (Nock 0/9/10 axes are atoms, not `u64`) — RT-08.
 #[derive(Clone, Debug)]
@@ -257,6 +259,108 @@ fn peg(a: u64, b: u64) -> u64 {
     (a << b_path_width) + (b - (1u64 << b_path_width))
 }
 
+// ---- from_noun: parse a Nock formula noun into the native IR ----------------
+//
+// Used to prove IR completeness (round-trip `from_noun(f).to_noun() == f`) on
+// real honk-emitted formulas before the construction port, and as a bridge that
+// lets the native path consume not-yet-ported noun sub-formulas. Follows Nock's
+// head-is-cell ⇒ autocons / head-is-atom ⇒ opcode rule. Hint kinds (`%fast`/
+// `%note`/`%spot`) and op-12 all decode to a representation that re-emits the
+// same `[11 …]`/`[12 …]` bytes — the semantic distinction is only needed when
+// BUILDING from mint, not for representation/round-trip.
+impl Formula {
+    pub fn from_noun(noun: Noun, space: &NounSpace) -> Result<Formula> {
+        let (head, tail) = noun_pair(noun, space)
+            .map_err(|_| CompilerError::Noun("native IR: formula is not a cell".into()))?;
+        // head is a cell ⇒ autocons [f g]
+        if head.in_space(space).as_cell().is_ok() {
+            return Ok(Formula::Cell(
+                rc(Formula::from_noun(head, space)?),
+                rc(Formula::from_noun(tail, space)?),
+            ));
+        }
+        let op = head
+            .in_space(space)
+            .as_atom()
+            .ok()
+            .and_then(|a| a.as_u64().ok())
+            .ok_or_else(|| CompilerError::Noun("native IR: opcode not a small atom".into()))?;
+        let pair = |n: Noun| {
+            noun_pair(n, space).map_err(|_| CompilerError::Noun("native IR: bad opcode args".into()))
+        };
+        Ok(match op {
+            0 => Formula::Slot(axis_from_noun(tail, space)?),
+            1 => Formula::Quote(Leaf::from_noun(tail, space)),
+            2 => {
+                let (s, f) = pair(tail)?;
+                Formula::Eval(rc(Formula::from_noun(s, space)?), rc(Formula::from_noun(f, space)?))
+            }
+            3 | 4 => Formula::Op {
+                code: op as u8,
+                args: vec![rc(Formula::from_noun(tail, space)?)],
+            },
+            5 | 7 | 8 | 12 => {
+                let (a, b) = pair(tail)?;
+                Formula::Op {
+                    code: op as u8,
+                    args: vec![rc(Formula::from_noun(a, space)?), rc(Formula::from_noun(b, space)?)],
+                }
+            }
+            6 => {
+                let (p, qr) = pair(tail)?;
+                let (q, r) = pair(qr)?;
+                Formula::Cond(
+                    rc(Formula::from_noun(p, space)?),
+                    rc(Formula::from_noun(q, space)?),
+                    rc(Formula::from_noun(r, space)?),
+                )
+            }
+            9 => {
+                let (axis, core) = pair(tail)?;
+                Formula::Kick {
+                    axis: axis_from_noun(axis, space)?,
+                    core: rc(Formula::from_noun(core, space)?),
+                }
+            }
+            10 => {
+                let (edit, target) = pair(tail)?;
+                let (axis, value) = pair(edit)?;
+                Formula::Edit {
+                    axis: axis_from_noun(axis, space)?,
+                    value: rc(Formula::from_noun(value, space)?),
+                    target: rc(Formula::from_noun(target, space)?),
+                }
+            }
+            11 => {
+                let (hint, body) = pair(tail)?;
+                // Representation-only: all [11 …] decode to Dbug (re-emits the
+                // same bytes). The jet/note/spot distinction is a build concern.
+                Formula::Dbug {
+                    spot: Leaf::from_noun(hint, space),
+                    body: rc(Formula::from_noun(body, space)?),
+                }
+            }
+            other => {
+                return Err(CompilerError::Noun(format!(
+                    "native IR: unsupported Nock opcode {other}"
+                )))
+            }
+        })
+    }
+}
+
+/// Decode a Nock axis atom into [`Axis`] (big atoms preserved as `Big`).
+fn axis_from_noun(noun: Noun, space: &NounSpace) -> Result<Axis> {
+    let atom = noun
+        .in_space(space)
+        .as_atom()
+        .map_err(|_| CompilerError::Noun("native IR: axis not an atom".into()))?;
+    match atom.as_u64() {
+        Ok(v) => Ok(Axis::Small(v)),
+        Err(_) => Ok(Axis::Big(Rc::new(BigUint::from_bytes_le(atom.as_ne_bytes())))),
+    }
+}
+
 /// Build the constant pair leaf `[h t]` for the cons-collapse case.
 fn pair_leaf(h: &Leaf, t: &Leaf) -> Leaf {
     let mut scratch: NounSlab = NounSlab::new();
@@ -445,6 +549,82 @@ mod tests {
             Formula::Quote(Leaf::Direct(v)) => Formula::Quote(Leaf::Direct(*v)),
             Formula::Slot(Axis::Small(v)) => Formula::Slot(Axis::Small(*v)),
             _ => unreachable!("test pex shapes only"),
+        }
+    }
+
+    // from_noun(f).to_noun() == f for raw Nock shapes (incl. ones the native
+    // builders don't produce: unary ops, op-12, cell-payload hints, big axis).
+    #[test]
+    fn from_noun_roundtrips_raw_nock() {
+        let builders: Vec<fn(&mut NounSlab) -> Noun> = vec![
+            |s| T(s, &[D(0), D(7)]),                            // [0 7] slot
+            |s| T(s, &[D(1), D(42)]),                           // [1 42] quote atom
+            |s| {
+                let p = T(s, &[D(1), D(9)]);
+                T(s, &[D(1), p])
+            }, // [1 [1 9]] quote-of-cell
+            |s| {
+                let a = T(s, &[D(0), D(1)]);
+                T(s, &[D(3), a])
+            }, // [3 [0 1]] unary
+            |s| {
+                let a = T(s, &[D(0), D(1)]);
+                T(s, &[D(4), a])
+            }, // [4 [0 1]] unary
+            |s| {
+                let a = T(s, &[D(0), D(2)]);
+                let b = T(s, &[D(0), D(3)]);
+                T(s, &[D(5), a, b])
+            }, // [5 a b]
+            |s| {
+                let p = T(s, &[D(0), D(2)]);
+                let q = T(s, &[D(1), D(0)]);
+                let r = T(s, &[D(1), D(1)]);
+                T(s, &[D(6), p, q, r])
+            }, // [6 p q r]
+            |s| {
+                let core = T(s, &[D(0), D(1)]);
+                T(s, &[D(9), D(2), core])
+            }, // [9 2 core]
+            |s| {
+                let val = T(s, &[D(1), D(5)]);
+                let edit = T(s, &[D(3), val]);
+                let tgt = T(s, &[D(0), D(1)]);
+                T(s, &[D(10), edit, tgt])
+            }, // [10 [3 [1 5]] [0 1]]
+            |s| {
+                let clue = T(s, &[D(1), D(2)]); // cell payload (dynamic hint)
+                let body = T(s, &[D(0), D(1)]);
+                T(s, &[D(11), clue, body])
+            }, // [11 [1 2] [0 1]]
+            |s| {
+                let body = T(s, &[D(0), D(1)]);
+                T(s, &[D(11), D(7), body])
+            }, // [11 7 [0 1]] static hint
+            |s| {
+                let a = T(s, &[D(0), D(2)]);
+                let b = T(s, &[D(0), D(3)]);
+                T(s, &[D(12), a, b])
+            }, // [12 a b]
+            |s| {
+                let l = T(s, &[D(0), D(2)]);
+                let r = T(s, &[D(0), D(3)]);
+                T(s, &[l, r])
+            }, // [[0 2] [0 3]] autocons
+        ];
+        for (i, b) in builders.iter().enumerate() {
+            let mut s: NounSlab = NounSlab::new();
+            let orig = b(&mut s);
+            let space = s.noun_space();
+            let f = Formula::from_noun(orig, &space).unwrap_or_else(|e| panic!("from_noun[{i}]: {e:?}"));
+            let mut a: NounSlab = NounSlab::new();
+            a.copy_into(orig, &space);
+            let ja = a.jam().to_vec();
+            let mut d: NounSlab = NounSlab::new();
+            let r = f.to_noun(&mut d);
+            d.set_root(r);
+            let jr = d.jam().to_vec();
+            assert_eq!(ja, jr, "round-trip case {i}");
         }
     }
 }

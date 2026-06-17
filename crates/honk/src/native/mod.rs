@@ -44,6 +44,14 @@ impl NativeCompiler {
             ut.set_vet(vet);
             let (ty, formula) = ut.mint(sut, gol, expr)?;
 
+            // Native-types migration Phase 1: flag-gated IR-completeness
+            // invariant. When HONK_IR_ROUNDTRIP is set, assert the native
+            // Formula IR can represent and re-emit every minted formula
+            // byte-for-byte. Default-off → zero impact on the shipping path.
+            if std::env::var_os("HONK_IR_ROUNDTRIP").is_some() {
+                crate::native::ir::roundtrip_check(formula, &slab.noun_space())?;
+            }
+
             let ty_noun = TypeNoun::new(ty);
             let space = slab.noun_space();
             let arm_map = ArmMap::from_type(&ty_noun, &space)?;

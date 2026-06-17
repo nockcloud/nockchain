@@ -20,7 +20,36 @@ pub mod leaf;
 pub mod ty;
 
 use nockapp::noun::slab::NounSlab;
-use nockvm::noun::Noun;
+use nockvm::noun::{Noun, NounSpace};
+
+use crate::errors::{CompilerError, Result};
+
+/// Validate that the native Formula IR can represent `formula` and re-emit it
+/// byte-for-byte: `from_noun(formula).to_noun() == formula` (jam-compared, which
+/// is structural so internal sharing is irrelevant). This is the IR-completeness
+/// invariant; wired flag-gated (`HONK_IR_ROUNDTRIP`) into the compiler so every
+/// minted formula is checked against real programs before the construction port.
+pub fn roundtrip_check(formula: Noun, space: &NounSpace) -> Result<()> {
+    let parsed = formula::Formula::from_noun(formula, space)?;
+    let mut dst: NounSlab = NounSlab::new();
+    let rebuilt = parsed.to_noun(&mut dst);
+    dst.set_root(rebuilt);
+    let rebuilt_jam = dst.jam();
+
+    let mut orig: NounSlab = NounSlab::new();
+    orig.copy_into(formula, space);
+    let orig_jam = orig.jam();
+
+    if orig_jam == rebuilt_jam {
+        Ok(())
+    } else {
+        Err(CompilerError::Noun(format!(
+            "native IR round-trip mismatch: orig={} bytes, rebuilt={} bytes",
+            orig_jam.len(),
+            rebuilt_jam.len()
+        )))
+    }
+}
 
 /// Emit a native IR node to a **byte-exact** Noun in `dst`.
 ///

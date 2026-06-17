@@ -906,6 +906,17 @@ fn build_context_with_shared_prelude(
             mint_honc_formula_with_ut(&mut ut, &mut eval_context, prelude)
         })?
     };
+    // Native-types migration Phase 1: flag-gated IR-completeness invariant on the
+    // largest real formula honk has — the entire compiled hoon-138 prelude.
+    // Asserts the native Formula IR can represent and re-emit it byte-for-byte.
+    // Default-off (HONK_IR_ROUNDTRIP) → zero impact on the shipping path.
+    if env::var_os("HONK_IR_ROUNDTRIP").is_some() {
+        let space = ut.slab.noun_space();
+        honk::native::ir::roundtrip_check(prelude_formula, &space)?;
+        if env::var_os("NATIVE_HOON_TRACE").is_some() {
+            eprintln!("[ir-roundtrip] prelude formula OK (native IR represents the compiled hoon-138 prelude byte-exact)");
+        }
+    }
     let prelude_eval_value = D(0);
     let subject_type_jam =
         subject_type_jam.or_else(|| use_embedded.then_some(EMBEDDED_HONC_TYPE_138_JAM));
@@ -1906,6 +1917,13 @@ impl<'a> NativeBuildContext<'a> {
         };
         eval_context.restore(&saved_context);
         let (ty, formula) = result?;
+        // Native-types migration Phase 1: flag-gated IR-completeness invariant on
+        // every app-level minted formula (kernel arms etc.) — distinct shapes
+        // from the prelude. Default-off (HONK_IR_ROUNDTRIP).
+        if env::var_os("HONK_IR_ROUNDTRIP").is_some() {
+            let space = self.ut.slab.noun_space();
+            honk::native::ir::roundtrip_check(formula, &space)?;
+        }
         Ok((ty, formula))
     }
 
