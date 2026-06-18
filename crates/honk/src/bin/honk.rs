@@ -929,6 +929,14 @@ fn build_context_with_shared_prelude(
     };
     if let Some(subject_ty) = subject_type_override {
         let space = ut.slab.noun_space();
+        // Native-types migration: type-IR completeness invariant on the real
+        // prelude subject type (the entire compiled hoon-138 type). Default-off.
+        if env::var_os("HONK_IR_ROUNDTRIP").is_some() {
+            honk::native::ir::type_roundtrip_check(subject_ty, &space)?;
+            if env::var_os("NATIVE_HOON_TRACE").is_some() {
+                eprintln!("[ir-roundtrip] prelude TYPE OK (native type IR represents the compiled hoon-138 subject type byte-exact)");
+            }
+        }
         prelude_vase.ty = prelude_type_from_subject_type(subject_ty, &space)?;
     }
     prelude_vase.eval_value = None;
@@ -1020,6 +1028,14 @@ fn build_context_with_dynamic_wrapper_prelude(
     };
     if let Some(subject_ty) = subject_type_override {
         let space = ut.slab.noun_space();
+        // Native-types migration: type-IR completeness invariant on the real
+        // prelude subject type (the entire compiled hoon-138 type). Default-off.
+        if env::var_os("HONK_IR_ROUNDTRIP").is_some() {
+            honk::native::ir::type_roundtrip_check(subject_ty, &space)?;
+            if env::var_os("NATIVE_HOON_TRACE").is_some() {
+                eprintln!("[ir-roundtrip] prelude TYPE OK (native type IR represents the compiled hoon-138 subject type byte-exact)");
+            }
+        }
         prelude_vase.ty = prelude_type_from_subject_type(subject_ty, &space)?;
     }
     let prelude_eval = trace_timed("evaluating shared honc", || {

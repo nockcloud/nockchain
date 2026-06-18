@@ -51,6 +51,31 @@ pub fn roundtrip_check(formula: Noun, space: &NounSpace) -> Result<()> {
     }
 }
 
+/// Type-IR completeness invariant: `from_noun(type).to_noun() == type`
+/// (jam-compared). The type analogue of [`roundtrip_check`]; wired flag-gated
+/// (`HONK_IR_ROUNDTRIP`) so real types (prelude/kernel) are checked.
+pub fn type_roundtrip_check(type_noun: Noun, space: &NounSpace) -> Result<()> {
+    let parsed = ty::Type::from_noun(type_noun, space)?;
+    let mut dst: NounSlab = NounSlab::new();
+    let rebuilt = parsed.to_noun(&mut dst);
+    dst.set_root(rebuilt);
+    let rebuilt_jam = dst.jam();
+
+    let mut orig: NounSlab = NounSlab::new();
+    orig.copy_into(type_noun, space);
+    let orig_jam = orig.jam();
+
+    if orig_jam == rebuilt_jam {
+        Ok(())
+    } else {
+        Err(CompilerError::Noun(format!(
+            "native type IR round-trip mismatch: orig={} bytes, rebuilt={} bytes",
+            orig_jam.len(),
+            rebuilt_jam.len()
+        )))
+    }
+}
+
 /// Emit a native IR node to a **byte-exact** Noun in `dst`.
 ///
 /// Implemented for [`formula::Formula`] in Phase 1 (always needed) and for
