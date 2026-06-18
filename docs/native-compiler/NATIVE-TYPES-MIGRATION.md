@@ -697,3 +697,42 @@ sequencing: (a) commit to the large formula-shadow construction port now
 straight at the Phase-2/3 native TYPE representation + hash-consing (the memory
 win), threading native formulas as part of that same native-mint effort (cores
 couple type+formula anyway). Recommendation: (b).
+
+## Phase 2 finding: hash-cons table + live native-type harness (2026-06-18)
+
+Built the memory-win keystone and the first WORKING piece of the native-mint
+construction port.
+
+KEYSTONE — `intern::TypeTable` (hash-cons): bottom-up interning returning the
+canonical `Rc<Type>`; node hash/eq shallow (children by canonical pointer, leaves
+by content) → O(1)/node. Proven by unit test to collapse a fully-duplicated
+depth-12 cell tree (8191 structural nodes) to 13 distinct — O(2^n)→O(n), exactly
+the subject-deepening fix. Plus `intern_type_noun`: a POINTER-MEMOIZED
+decode-and-intern walk — the O(n) construction primitive (one shared memo across
+the whole compile makes the noun DAG walked once; structurally-equal-but-pointer-
+distinct subtrees collapsed by the table). This is the primitive that sidesteps
+the combinator O(n²) trap (which was re-parsing with no shared memo).
+
+LIVE HARNESS (`HONK_NATIVE_TYPES`, additive): `mint_core` now builds the interned
+native type for each minted core into one persistent live table, ALONGSIDE the
+noun path. Verified: (1) it works on real mint — `core_chain` interns its core
+(1 core, 15 nodes); (2) it is byte-exactly ADDITIVE — output jam is identical
+with and without the flag (the noun path is untouched, the live oracle preserved).
+
+FINDING (the additive ceiling): the additive shadow proves the construction
+MECHANISM works live and correctly, but it **cannot measure the at-scale memory
+win**, for a fundamental reason: with the prelude EMBEDDED (normal compiles) the
+app cores embed only the 14-node prelude type, so per-core dedup is tiny; and with
+the prelude MINTED (`--native-parity`, the subject-deepening case) the NOUN side —
+which still runs, since the shadow is additive — is exactly the 32 GB OOM we are
+trying to fix, so it dies before the native table can report. An additive shadow
+runs both representations, so it can never be cheaper than the noun path it
+shadows. The at-scale win is only observable AFTER the FLIP: native interned types
+REPLACE nouns as mint's working representation (noun construction dropped). The
+keystone (table + O(n) primitive) and the live construction hook are now in place
+and validated; the remaining big-bang is the flip — thread native `Rc<Type>` (and
+`Rc<Formula>`) as the RETURN of every `mint`/`play` site (additive-native-shadow
+threading, O(n) via children-already-native), validate `to_noun == noun`
+throughout, then drop the noun path. That is the dedicated multi-week effort; all
+its prerequisites (IR boundaries, intern table, O(n) primitive, live hook) are
+proven.

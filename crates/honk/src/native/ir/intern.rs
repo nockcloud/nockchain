@@ -22,7 +22,204 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+use nockvm::noun::{Noun, NounSpace};
+
+use super::leaf::Leaf;
 use super::ty::Type;
+use crate::errors::{CompilerError, Result};
+use crate::native::noun::noun_pair;
+
+/// Decode a type noun into the native IR AND intern it in one O(n) pass, using a
+/// persistent pointer-identity `memo` so the noun DAG (and anything carried over
+/// from a prior call) is walked at most once. Structurally-equal-but-pointer-
+/// distinct subtrees — the duplicated embedded subjects of subject-deepening —
+/// are collapsed by the table to one shared `Rc`. This is the O(n) construction
+/// primitive the native-mint port is built on (the combinator O(n²) trap was
+/// re-parsing per call with no shared memo; this shares one).
+pub fn intern_type_noun(
+    table: &mut TypeTable,
+    memo: &mut HashMap<u64, Rc<Type>>,
+    noun: Noun,
+    space: &NounSpace,
+) -> Result<Rc<Type>> {
+    // %void / %noun are bare atom cords — directs, no memo needed.
+    if let Ok(atom) = noun.in_space(space).as_atom() {
+        if atom.eq_bytes(b"void") {
+            return Ok(table.intern_shallow(Type::Void));
+        }
+        if atom.eq_bytes(b"noun") {
+            return Ok(table.intern_shallow(Type::Noun));
+        }
+        return Err(CompilerError::Decode(
+            "native type IR: unknown atom type tag".into(),
+        ));
+    }
+    // SAFETY: `noun` is a live, in-`space` slab noun; `as_raw` only reads its
+    // identity word (used purely as a memo key, never dereferenced).
+    let raw = unsafe { noun.as_raw() };
+    if let Some(rc) = memo.get(&raw) {
+        return Ok(Rc::clone(rc));
+    }
+    let (tag, tail) = pair(noun, space)?;
+    let tag = tag
+        .in_space(space)
+        .as_atom()
+        .map_err(|_| CompilerError::Decode("native type IR: type tag not atom".into()))?;
+    let node = if tag.eq_bytes(b"atom") {
+        let (aura, bits) = pair(tail, space)?;
+        Type::Atom {
+            aura: Leaf::from_noun(aura, space),
+            bits: Leaf::from_noun(bits, space),
+        }
+    } else if tag.eq_bytes(b"cell") {
+        let (h, t) = pair(tail, space)?;
+        Type::Cell(
+            intern_type_noun(table, memo, h, space)?,
+            intern_type_noun(table, memo, t, space)?,
+        )
+    } else if tag.eq_bytes(b"core") {
+        let (payload, coil) = pair(tail, space)?;
+        Type::Core {
+            payload: intern_type_noun(table, memo, payload, space)?,
+            coil: Leaf::from_noun(coil, space),
+        }
+    } else if tag.eq_bytes(b"face") {
+        let (tool, inner) = pair(tail, space)?;
+        Type::Face {
+            tool: Leaf::from_noun(tool, space),
+            inner: intern_type_noun(table, memo, inner, space)?,
+        }
+    } else if tag.eq_bytes(b"hint") {
+        let (head, payload) = pair(tail, space)?;
+        Type::Hint {
+            head: Leaf::from_noun(head, space),
+            payload: intern_type_noun(table, memo, payload, space)?,
+        }
+    } else if tag.eq_bytes(b"fork") {
+        Type::Fork {
+            set: Leaf::from_noun(tail, space),
+        }
+    } else if tag.eq_bytes(b"hold") {
+        let (subject, gene) = pair(tail, space)?;
+        Type::Hold {
+            subject: intern_type_noun(table, memo, subject, space)?,
+            gene: Leaf::from_noun(gene, space),
+        }
+    } else {
+        return Err(CompilerError::Decode(
+            "native type IR: unknown type tag".into(),
+        ));
+    };
+    let interned = table.intern_shallow(node);
+    memo.insert(raw, Rc::clone(&interned));
+    Ok(interned)
+}
+
+fn pair(n: Noun, space: &NounSpace) -> Result<(Noun, Noun)> {
+    noun_pair(n, space).map_err(|_| CompilerError::Decode("native type IR: bad cell".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Live native-mint construction-port harness (flag-gated by HONK_NATIVE_TYPES).
+//
+// This is the first real step of the construction port: as `mint` builds each
+// core's type noun, we build the corresponding interned native type into one
+// PERSISTENT table (shared pointer-memo across the whole compile). It runs
+// alongside the noun path (which stays the live oracle), so it is additive and
+// safe, and it measures the thing the whole migration turns on: how much the
+// intern table collapses the mint-time type duplication (subject-deepening).
+//
+// Single-thread, single-compile harness — call `live_reset` at compile start.
+// ---------------------------------------------------------------------------
+
+struct LiveIntern {
+    table: TypeTable,
+    memo: HashMap<u64, Rc<Type>>,
+    cores: u64,
+    next_report: u64,
+}
+
+std::thread_local! {
+    static LIVE: std::cell::RefCell<Option<LiveIntern>> = const { std::cell::RefCell::new(None) };
+}
+
+static LIVE_ENABLED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
+pub fn live_enabled() -> bool {
+    use std::sync::atomic::Ordering;
+    match LIVE_ENABLED.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => {
+            let on = std::env::var_os("HONK_NATIVE_TYPES").is_some();
+            LIVE_ENABLED.store(if on { 1 } else { 2 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+/// Reset the live table (call at the start of each top-level compile so stale
+/// noun pointers from a prior compile can't alias).
+pub fn live_reset() {
+    if !live_enabled() {
+        return;
+    }
+    LIVE.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Build the interned native type for one minted core type noun.
+pub fn live_intern_core_type(noun: Noun, space: &NounSpace) {
+    if !live_enabled() {
+        return;
+    }
+    LIVE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let st = slot.get_or_insert_with(|| LiveIntern {
+            table: TypeTable::new(),
+            memo: HashMap::new(),
+            cores: 0,
+            next_report: 100_000,
+        });
+        if intern_type_noun(&mut st.table, &mut st.memo, noun, space).is_ok() {
+            st.cores += 1;
+            if st.table.interned_calls >= st.next_report {
+                let t = &st.table;
+                eprintln!(
+                    "[native-types] cores={} walked={} distinct={} hits={} ({:.1}x dedup)",
+                    st.cores,
+                    t.interned_calls,
+                    t.distinct,
+                    t.hits,
+                    t.interned_calls as f64 / t.distinct.max(1) as f64
+                );
+                st.next_report = t.interned_calls + 100_000;
+            }
+        }
+    });
+}
+
+/// Emit the final dedup summary for the compile.
+pub fn live_report_final() {
+    if !live_enabled() {
+        return;
+    }
+    LIVE.with(|cell| {
+        if let Some(st) = cell.borrow().as_ref() {
+            let t = &st.table;
+            eprintln!(
+                "[native-types] FINAL cores={} walked={} distinct={} hits={} ({:.1}x dedup)",
+                st.cores,
+                t.interned_calls,
+                t.distinct,
+                t.hits,
+                t.interned_calls as f64 / t.distinct.max(1) as f64
+            );
+        } else {
+            eprintln!("[native-types] FINAL: no cores interned (mint_core hook never fired on this thread)");
+        }
+    });
+}
 
 #[derive(Default)]
 pub struct TypeTable {
@@ -68,6 +265,13 @@ impl TypeTable {
                 gene: gene.clone(),
             },
         };
+        self.intern_node(node)
+    }
+
+    /// Intern a single node whose children are ALREADY canonical (interned).
+    /// O(1) amortized. Used by the memoized decode-and-intern walk
+    /// ([`intern_type_noun`]) which interns bottom-up itself.
+    pub fn intern_shallow(&mut self, node: Type) -> Rc<Type> {
         self.intern_node(node)
     }
 

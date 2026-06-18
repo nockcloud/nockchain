@@ -549,6 +549,7 @@ fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    honk::native::ir::intern::live_reset();
     let prelude_source = fs::read_to_string(&cli.prelude)?;
     let prelude_expr = parse_prelude_hoon(&cli.prelude, cli.dbug)?;
     let subject_type_jam = cli.sut_jam.as_ref().map(fs::read).transpose()?;
@@ -604,6 +605,9 @@ async fn run(cli: Cli) -> Result<()> {
     )?;
     let mut product = builder.compile_entry(entry)?;
     let mut jam = builder.jam_product(&mut product, cli.mode, entry, None)?;
+    // Native-types harness summary — reported here, in the worker thread that ran
+    // the mint, so the thread-local live table is the one we populated.
+    honk::native::ir::intern::live_report_final();
     pad_hoonc_jam_atom_bytes(&mut jam);
 
     if let Some(parent) = output.parent() {

@@ -6988,6 +6988,12 @@ impl<'a> Ut<'a> {
         let battery_formula = T(self.slab, &[D(1), battery]);
         let formula = cons(self.slab, battery_formula, payload_formula)?;
         let ty = self.nice(sut, gol, core_type)?;
+        // Native-types construction port (flag-gated): build the interned native
+        // type for this core alongside the noun, into the persistent live table.
+        if crate::native::ir::intern::live_enabled() {
+            let space = self.slab.noun_space();
+            crate::native::ir::intern::live_intern_core_type(ty, &space);
+        }
         self.core_mint_cache_store(sut, gol, tomes_map, prefix, poly, ty, formula)?;
         Ok((ty, formula))
     }
