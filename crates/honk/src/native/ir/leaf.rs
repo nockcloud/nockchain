@@ -17,7 +17,10 @@ use nockapp::noun::slab::NounSlab;
 use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace};
 
 /// An owned, provenance-safe noun leaf.
-#[derive(Clone)]
+///
+/// `Eq`/`Hash` are by content (`Arc<[u8]>` compares/hashes its bytes), so leaves
+/// participate directly in type/formula hash-consing.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Leaf {
     /// A direct (≤ 63-bit) atom, stored inline.
     Direct(u64),

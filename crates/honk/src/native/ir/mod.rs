@@ -51,6 +51,17 @@ pub fn roundtrip_check(formula: Noun, space: &NounSpace) -> Result<()> {
     }
 }
 
+/// Measure hash-consing dedup on a real type: parse it into the native IR, intern
+/// it bottom-up, and return `(unshared_nodes, distinct_nodes)`. The ratio shows
+/// how much structurally-equal duplication (subject-deepening) the intern table
+/// collapses — concrete evidence for the Phase-2 memory thesis.
+pub fn type_intern_stats(type_noun: Noun, space: &NounSpace) -> Result<(u64, u64)> {
+    let parsed = ty::Type::from_noun(type_noun, space)?;
+    let mut table = intern::TypeTable::new();
+    let _ = table.intern(&parsed);
+    Ok((table.interned_calls, table.distinct))
+}
+
 /// Type-IR completeness invariant: `from_noun(type).to_noun() == type`
 /// (jam-compared). The type analogue of [`roundtrip_check`]; wired flag-gated
 /// (`HONK_IR_ROUNDTRIP`) so real types (prelude/kernel) are checked.

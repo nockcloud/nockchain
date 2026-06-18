@@ -935,6 +935,10 @@ fn build_context_with_shared_prelude(
             honk::native::ir::type_roundtrip_check(subject_ty, &space)?;
             if env::var_os("NATIVE_HOON_TRACE").is_some() {
                 eprintln!("[ir-roundtrip] prelude TYPE OK (native type IR represents the compiled hoon-138 subject type byte-exact)");
+                if let Ok((total, distinct)) = honk::native::ir::type_intern_stats(subject_ty, &space) {
+                    let ratio = if distinct > 0 { total as f64 / distinct as f64 } else { 0.0 };
+                    eprintln!("[ir-intern] prelude TYPE hash-cons: {total} unshared nodes -> {distinct} distinct ({ratio:.1}x dedup)");
+                }
             }
         }
         prelude_vase.ty = prelude_type_from_subject_type(subject_ty, &space)?;
@@ -1034,6 +1038,10 @@ fn build_context_with_dynamic_wrapper_prelude(
             honk::native::ir::type_roundtrip_check(subject_ty, &space)?;
             if env::var_os("NATIVE_HOON_TRACE").is_some() {
                 eprintln!("[ir-roundtrip] prelude TYPE OK (native type IR represents the compiled hoon-138 subject type byte-exact)");
+                if let Ok((total, distinct)) = honk::native::ir::type_intern_stats(subject_ty, &space) {
+                    let ratio = if distinct > 0 { total as f64 / distinct as f64 } else { 0.0 };
+                    eprintln!("[ir-intern] prelude TYPE hash-cons: {total} unshared nodes -> {distinct} distinct ({ratio:.1}x dedup)");
+                }
             }
         }
         prelude_vase.ty = prelude_type_from_subject_type(subject_ty, &space)?;
