@@ -6985,15 +6985,20 @@ impl<'a> Ut<'a> {
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let coil = coil_from_parts(self.slab, garb, context, rest);
         let core_type = ty_core(self.slab, payload_type, coil);
+        // Native-shadow construction port (INC5, flag-gated): mint_core is THE
+        // subject-deepening site — build this core's native bottom-up via
+        // ty_core_n (Core { payload: native(sut), coil: leaf }) and assert it is
+        // byte-exact. The payload native is the (shared, interned) subject; once
+        // sut is threaded as native (next increments) the deepened subjects
+        // collapse to one Rc. Replaces the post-hoc full-walk hook.
+        if crate::native::ir::intern::live_enabled() {
+            let payload_native = native_of(payload_type, &self.slab.noun_space())?;
+            let (_n2, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
+            crate::native::ir::intern::assert_native_eq(core_type, &native, &self.slab.noun_space());
+        }
         let battery_formula = T(self.slab, &[D(1), battery]);
         let formula = cons(self.slab, battery_formula, payload_formula)?;
         let ty = self.nice(sut, gol, core_type)?;
-        // Native-types construction port (flag-gated): build the interned native
-        // type for this core alongside the noun, into the persistent live table.
-        if crate::native::ir::intern::live_enabled() {
-            let space = self.slab.noun_space();
-            crate::native::ir::intern::live_intern_core_type(ty, &space);
-        }
         self.core_mint_cache_store(sut, gol, tomes_map, prefix, poly, ty, formula)?;
         Ok((ty, formula))
     }
