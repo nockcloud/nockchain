@@ -1944,7 +1944,7 @@ impl<'a> NativeBuildContext<'a> {
             eval_context.with_transient_stack_frame(0, |_context| {
                 ut.clear_build_transients();
                 ut.set_vet(vet);
-                ut.mint(sut, gol, expr)
+                ut.mint_noun(sut, gol, expr)
             })
         };
         eval_context.restore(&saved_context);
@@ -2626,7 +2626,7 @@ fn mint_honc_prelude_chunked(out_slab: &mut NounSlab<NockJammer>, prelude: &Hoon
             ut.set_miss_memo_persistence(true);
             let sub_in = ut.slab.copy_into(subject, &subject_slab.noun_space());
             let goal = ty_noun(&mut *ut.slab);
-            let (ty, formula) = ut.mint(sub_in, goal, expr)?;
+            let (ty, formula) = ut.mint_noun(sub_in, goal, expr)?;
             let ut_space = ut.slab.noun_space();
             formula_out = out_slab.copy_into(formula, &ut_space);
             if i + 1 < total {
@@ -2672,7 +2672,7 @@ fn mint_honc_formula_with_ut(
     ut.clear_build_memos();
     ut.set_vet(true);
     ut.set_miss_memo_persistence(true);
-    let result = ut.mint(sut, gol, prelude);
+    let result = ut.mint_noun(sut, gol, prelude);
     ut.set_miss_memo_persistence(false);
     let (_ty, formula) = result?;
     Ok(formula)
@@ -2697,7 +2697,7 @@ fn evaluate_honc_isolated(
         let gol = ty_noun(&mut *ut.slab);
         ut.clear_build_memos();
         ut.set_vet(true);
-        let (_ty, formula) = ut.mint(sut, gol, prelude)?;
+        let (_ty, formula) = ut.mint_noun(sut, gol, prelude)?;
         ut.set_miss_memo_persistence(false);
         let formula_space = ut.slab.noun_space();
         let formula_copy = formula_slab.copy_into(formula, &formula_space);

@@ -274,11 +274,31 @@ steps and status:
            shadow_gate byte-parity left to the parent (per task discipline).
   C9 [DONE — see C6+C9 fused entry above] find/take/Port/Palo + fond family ->
          native (the wing-nav subsystem; gain/lose/cool/chip folded in).
-  C-final [ ] BOUNDARY CLOSE = the memory win: thread sut native (play/mint sut
-         param Noun->Rc<Type>); delete play_noun/pb/repo_noun + all transient
-         native_of/to_noun bridges; retire decoders (type_*_parts/type_tag*/coil_*)
-         + noun ty_* ctors; re-key boundary caches (nest_mug/fuse/crop/rest/hold)
-         on native identity. This stops the grow-only NounSlab accumulation.
+  C-final [IN PROGRESS] BOUNDARY CLOSE = the memory win. Decomposed:
+    1a [DONE] mint family native: mint/mint_inner + ALL mint_* helpers + nice +
+       hint_type + mint_core + mine take NRc sut/gol, return (NRc<NTy>, Noun).
+       Calls the native consumers directly (drops the *_noun bridge CALLS in mint
+       code; play still takes noun sut so mint lowers it). Caches stay noun-keyed
+       (lower sut/gol at the boundary, memoized) — so the dumb compile is still
+       O(N^2)/slow until 1b; mint_core now builds Core{payload: shared native Rc}
+       (the deepening subject is shared, not rebuilt). mint_noun bridge added
+       (self-call protected); binary/compile_expr_with_options/play/fire/tests
+       route through it. VALIDATION: shadow_gate byte-parity PASS; compiler_mint
+       69/0 single-threaded (held); lib 122/0/1; zero regressions. (dumb
+       byte-parity deferred to 1b — too slow until the cache re-key.)
+    1b [ ] re-key mint/core_mint/mull caches on native Rc identity (NEST_CACHE
+       template) -> removes the boundary sut lowering -> the O(N^2)->O(N) win.
+       VALIDATE: full dumb-kernel byte-parity vs /tmp/dumb_preflip.jam + perf +
+       NounSlab no longer grows monotonically.
+    2 [ ] play sut param Noun->NRc; update callers; delete play_noun/pb.
+    3 [ ] delete now-dead bridges (repo_noun/peek_noun/wrap_type_noun/fuse_noun/
+       crop_noun/miss_noun/nest_noun/find_noun/fend_noun/feel_noun/gain_noun/
+       lose_noun/cnts_base_port_noun/mull_noun + nest_mug_lookup/register).
+    4 [ ] re-key remaining boundary caches native (crop/fuse/redo/rest/fish/Hold/
+       Lookup) + delete dead nest_raw/nest noun caches + NestTypeInterner.
+    5 [ ] delete noun ty_* ctors + _n variants + SKELETON decoders (keep leaf
+       decoders coil_parts/garb_*/rest_tomes/fork_set_options/type_atom_parts +
+       live_leaf_to_noun — Phase-1 leaf residue). Final shadow_gate + dumb parity.
 KEY RISKS (from the map): collapse-parity (add cons_core/face/hint, never bare
 live_intern for branch rebuilds); fork RT-07 order (keep noun fork path til late);
 boundary-cache key drift (keep to_noun mug keys until C-final); NEST SCC atomicity.

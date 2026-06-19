@@ -252,7 +252,7 @@ $(b 0, c +(c))
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "trap recursion should compile: {:?}",
@@ -282,7 +282,7 @@ fn trap_recursion_sample_field_with_alias_mold_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "trap recursion with alias mold in sample should compile: {:?}",
@@ -314,7 +314,7 @@ fn trap_recursion_sample_field_with_container_molds_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "trap recursion with container molds should compile: {:?}",
@@ -348,7 +348,7 @@ fn layered_core_trap_recursion_resolves_sample_faces_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "layered core trap recursion should compile: {:?}",
@@ -1166,7 +1166,7 @@ a"#,
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let (_ty, formula) = ut.mint(sut, gol, &expr).expect("native mint failed");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &expr).expect("native mint failed");
 
     let space = slab.noun_space();
     let (clue_formula, _body) = find_first_fast_hint(formula, &space).expect("no %fast hint found");
@@ -1235,7 +1235,7 @@ fn compile_wuthep_switch_narrows_subject_for_branch_wings_native() {
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
 
-    ut.mint(sut, gol, &expr)
+    ut.mint_noun(sut, gol, &expr)
         .expect("native mint of ?- branch wing narrowing repro failed");
 }
 
@@ -2007,7 +2007,7 @@ $(c +(c))"#;
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "kethep-before-barhep should compile: {:?}",
@@ -2034,7 +2034,7 @@ a"#;
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "`|- ^+ a` should compile: {:?}",
@@ -2061,7 +2061,7 @@ a"#;
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "`|* ... |- ^+ a` should compile: {:?}",
@@ -2104,7 +2104,7 @@ fn compile_list_flop_trap_wing_a_native() {
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "list flop trap should compile: {:?}",
@@ -2155,7 +2155,7 @@ fn compile_chained_layers_fl_rou_rau_vet_true_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile chained layers fl/rou/rau: {:?}",
@@ -2190,7 +2190,7 @@ fn compile_gate_sample_null_refinement_rejected_vet_true_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     let err = result.expect_err("hoonc rejects this strict-mode sample, so native should too");
     let err_text = format!("{err:?}");
     assert!(
@@ -2217,7 +2217,7 @@ fn compile_year_wing_d_from_forward_ref_tarp_in_date_vet_true_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile `++year` accessing `d.t.det` through forward-referenced molds: {:?}",
@@ -2258,7 +2258,7 @@ fn compile_yore_yell_trap_result_wing_d_vet_true_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile `d.rip` from `(yell now)` with trap recursion: {:?}",
@@ -2290,7 +2290,7 @@ u.a
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile basic unit `?~` narrowing: {:?}",
@@ -2314,7 +2314,7 @@ $(a 1)"#,
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "minimal |- with $ recursion should compile: {:?}",
@@ -2363,7 +2363,7 @@ fn compile_set_logic_dif_local_d_recursion_vet_false_native() {
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(false);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=false should compile dif-style local d recursion: {:?}",
@@ -2397,7 +2397,7 @@ fn compile_wing_u_after_wutsig_tisbar_unit_list_make_vet_true_native() {
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile `=| a=(unit (list @))` then `?~(a ~ u.a)`: {:?}",
@@ -2441,7 +2441,7 @@ fn compile_wing_u_after_wutsig_via_tilde_get_outer_subject_has_no_u_vet_true_nat
     let sut = honk::native::ut::ty_noun(&mut slab);
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
-    let result = ut.mint(sut, gol, &expr);
+    let result = ut.mint_noun(sut, gol, &expr);
     assert!(
         result.is_ok(),
         "vet=true should compile `?~(c ~ u.c)` when `c` comes from `~(get ...)` and outer subject has no `u`: {:?}",
@@ -2466,7 +2466,7 @@ fn mint_source_with_vet(src: &str, vet: bool) -> Result<(), String> {
     let gol = honk::native::ut::ty_noun(&mut slab);
     let mut ut = honk::native::ut::Ut::new(&mut slab);
     ut.set_vet(vet);
-    ut.mint(sut, gol, &expr)
+    ut.mint_noun(sut, gol, &expr)
         .map(|_| ())
         .map_err(|e| format!("{e:?}"))
 }
@@ -2724,7 +2724,7 @@ fn invalid_sand_flag_and_null_literals_reject() {
         let gol = honk::native::ut::ty_noun(&mut slab);
         let mut ut = honk::native::ut::Ut::new(&mut slab);
         let err = ut
-            .mint(sut, gol, &expr)
+            .mint_noun(sut, gol, &expr)
             .expect_err("invalid %sand literal should reject");
         let err = format!("{err:?}");
         assert!(
@@ -2747,7 +2747,7 @@ fn zpts_inner_error_restores_strict_vet_for_later_mint() {
 !=  r.a"#,
     );
     let err = ut
-        .mint(sut, gol, &zpts_with_error)
+        .mint_noun(sut, gol, &zpts_with_error)
         .expect_err("!= inner compile error should reject");
     let err = format!("{err:?}");
     assert!(
@@ -2761,7 +2761,7 @@ fn zpts_inner_error_restores_strict_vet_for_later_mint() {
 [a a]"#,
     );
     let err = ut
-        .mint(sut, gol, &strict_rejection)
+        .mint_noun(sut, gol, &strict_rejection)
         .expect_err("vet should still be true after failed != mint");
     let err = format!("{err:?}");
     assert!(

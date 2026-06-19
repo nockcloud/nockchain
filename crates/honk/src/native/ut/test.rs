@@ -1239,7 +1239,7 @@ fn strict_ktsg_blow_collapses_done_to_constant_formula() {
     let mut ut = Ut::new(&mut slab);
 
     let (_ty, formula) = ut
-        .mint(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
+        .mint_noun(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
         .expect("^+ mint should succeed");
     let expected = T(&mut slab, &[D(1), D(41)]);
     assert!(
@@ -1267,7 +1267,7 @@ fn kttr_buccab_example_uses_referenced_value() {
     let mut ut = Ut::new(&mut slab);
 
     let (_ty, formula) = ut
-        .mint(sut, gol, &Hoon::KetTar(Box::new(spec)))
+        .mint_noun(sut, gol, &Hoon::KetTar(Box::new(spec)))
         .expect("*_zero-bpoly mint");
     let expected = T(&mut slab, &[D(1), zero_bpoly]);
     assert!(
@@ -1289,7 +1289,7 @@ fn kttr_buccab_example_folds_core_arm_value() {
     let noun_ty = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     let (core_ty, _core_formula) = ut
-        .mint(noun_ty, noun_ty, &Hoon::BarCen(None, tomes))
+        .mint_noun(noun_ty, noun_ty, &Hoon::BarCen(None, tomes))
         .expect("|% core mint");
     let spec = Spec::BucTis(
         Skin::Term("acc".to_string()),
@@ -1299,7 +1299,7 @@ fn kttr_buccab_example_folds_core_arm_value() {
     );
 
     let (_ty, formula) = ut
-        .mint(core_ty, noun_ty, &Hoon::KetTar(Box::new(spec)))
+        .mint_noun(core_ty, noun_ty, &Hoon::KetTar(Box::new(spec)))
         .expect("*_foo mint");
     let expected_value = T(&mut slab, &[D(1), D(42)]);
     let expected = T(&mut slab, &[D(1), expected_value]);
@@ -1340,7 +1340,7 @@ fn kttr_buccab_example_folds_memoized_gate_arm_call() {
     let noun_ty = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     let (core_ty, _core_formula) = ut
-        .mint(noun_ty, noun_ty, &Hoon::BarCen(None, tomes))
+        .mint_noun(noun_ty, noun_ty, &Hoon::BarCen(None, tomes))
         .expect("|% gate core mint");
     let spec = Spec::BucTis(
         Skin::Term("acc".to_string()),
@@ -1350,7 +1350,7 @@ fn kttr_buccab_example_folds_memoized_gate_arm_call() {
     );
 
     let (_ty, formula) = ut
-        .mint(core_ty, noun_ty, &Hoon::KetTar(Box::new(spec)))
+        .mint_noun(core_ty, noun_ty, &Hoon::KetTar(Box::new(spec)))
         .expect("*_foo mint");
     let expected_value = T(&mut slab, &[D(1), D(42)]);
     let expected = T(&mut slab, &[D(1), expected_value]);
@@ -1371,7 +1371,7 @@ fn mint_wthx_leaf_exact_match_collapses_to_constant_formula() {
     );
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     assert!(
         is_const_bool_formula(formula, true, &slab.noun_space()),
@@ -1387,7 +1387,7 @@ fn mint_wthx_null_exact_nonzero_remains_dynamic_formula() {
     let gen = Hoon::WutHax(Skin::Base(BaseType::Null), vec![Limb::Axis(1)]);
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     let slot = T(&mut slab, &[D(0), D(1)]);
     let zero = T(&mut slab, &[D(1), D(0)]);
@@ -1406,7 +1406,7 @@ fn mint_wthx_flag_exact_nonflag_remains_dynamic_formula() {
     let gen = Hoon::WutHax(Skin::Base(BaseType::Flag), vec![Limb::Axis(1)]);
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     let slot = T(&mut slab, &[D(0), D(1)]);
     let zero = T(&mut slab, &[D(1), D(0)]);
@@ -1429,7 +1429,7 @@ fn mint_wthx_flag_on_noun_includes_atom_guard_formula() {
     let gen = Hoon::WutHax(Skin::Base(BaseType::Flag), vec![Limb::Axis(1)]);
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     let slot = T(&mut slab, &[D(0), D(1)]);
     let is_cell = T(&mut slab, &[D(3), slot]);
@@ -1458,7 +1458,7 @@ fn mint_wthx_base_cell_on_core_collapses_to_constant_formula() {
     let gen = Hoon::WutHax(Skin::Base(BaseType::Cell), vec![Limb::Axis(1)]);
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     assert!(
         is_const_bool_formula(formula, true, &slab.noun_space()),
@@ -1477,7 +1477,7 @@ fn mint_wthx_base_atom_on_core_collapses_to_constant_formula() {
     );
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     assert!(
         is_const_bool_formula(formula, false, &slab.noun_space()),
@@ -1499,7 +1499,7 @@ fn mint_wthx_cell_skin_on_core_collapses_to_constant_formula() {
     );
     let mut ut = Ut::new(&mut slab);
 
-    let (_ty, formula) = ut.mint(sut, gol, &gen).expect("?# mint");
+    let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("?# mint");
 
     assert!(
         is_const_bool_formula(formula, true, &slab.noun_space()),
@@ -1534,7 +1534,7 @@ fn strict_ktsg_blow_preserves_formula_when_apex_waits() {
     let mut ut = Ut::new(&mut slab);
 
     let (_ty, formula) = ut
-        .mint(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
+        .mint_noun(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
         .expect("^+ mint should succeed");
     let expected = T(&mut slab, &[D(0), D(1)]);
     assert!(
@@ -1551,7 +1551,7 @@ fn strict_ktsg_blow_core_branch_uses_coil_semi() {
     let mut ut = Ut::new(&mut slab);
 
     let (_ty, formula) = ut
-        .mint(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(2))))
+        .mint_noun(sut, gol, &Hoon::KetSig(Box::new(Hoon::Axis(2))))
         .expect("^+ mint on core should succeed");
     let expected = T(&mut slab, &[D(1), D(42)]);
     assert!(
@@ -1571,7 +1571,7 @@ fn strict_ktsg_blow_fork_inputs_remain_blocked() {
     let mut ut = Ut::new(&mut slab);
 
     let (_fork_ty, fork_formula) = ut
-        .mint(fork, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
+        .mint_noun(fork, gol, &Hoon::KetSig(Box::new(Hoon::Axis(1))))
         .expect("^+ mint on fork should succeed");
     assert!(
         noun_eq(fork_formula, slot_one, &slab.noun_space()).expect("noun_eq should not fail"),
@@ -1673,8 +1673,11 @@ fn strict_mint_limb_dollar_is_not_subject_alias() {
     let gol = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
 
+    let space = ut.slab.noun_space();
+    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
     assert!(
-        ut.mint_limb(sut, gol, "$").is_err(),
+        ut.mint_limb(sut_n, gol_n, "$").is_err(),
         "strict mint_limb should not resolve `$` as current subject alias",
     );
 }
@@ -1721,8 +1724,11 @@ fn strict_mint_wing_dollar_on_non_core_is_not_subject_alias() {
     let gol = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
 
+    let space = ut.slab.noun_space();
+    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
     assert!(
-        ut.mint_wing(sut, gol, &wing).is_err(),
+        ut.mint_wing(sut_n, gol_n, &wing).is_err(),
         "strict mint_wing should not resolve `$` as subject alias on non-core subjects",
     );
 }
@@ -1754,8 +1760,11 @@ fn strict_mint_wing_dollar_prefixed_axis_is_not_subject_alias_projection() {
     let gol = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
 
+    let space = ut.slab.noun_space();
+    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
     assert!(
-        ut.mint_wing(sut, gol, &wing).is_err(),
+        ut.mint_wing(sut_n, gol_n, &wing).is_err(),
         "strict mint_wing should not resolve `$.<axis>` via subject alias",
     );
 }
@@ -1925,7 +1934,10 @@ fn strict_mint_wing_does_not_use_compat_fallback_ladders() {
     let wing = vec![Limb::Term("definitely_missing".to_string())];
     let mut ut = Ut::new(&mut slab);
 
-    assert!(ut.mint_wing(sut, gol, &wing).is_err());
+    let space = ut.slab.noun_space();
+    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    assert!(ut.mint_wing(sut_n, gol_n, &wing).is_err());
 }
 
 #[test]
@@ -2413,7 +2425,7 @@ fn chunked_tisgar_chain_matches_monolithic_mint() {
         let mut ut = Ut::new(&mut slab);
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
-        let (_ty, formula) = ut.mint(sut, gol, &chain).expect("monolithic mint");
+        let (_ty, formula) = ut.mint_noun(sut, gol, &chain).expect("monolithic mint");
         drop(ut);
         slab.set_root(formula);
         slab.jam().to_vec()
@@ -2477,7 +2489,7 @@ fn frame_arena_core_mint_matches_monolithic() {
         ut.force_frame_arena = frame;
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
-        let (_ty, formula) = ut.mint(sut, gol, &gen).expect("mint synthetic core");
+        let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic core");
         drop(ut);
         slab.set_root(formula);
         slab.jam().to_vec()
@@ -2529,7 +2541,7 @@ fn frame_arena_wet_gate_function_sample_matches_monolithic() {
         ut.force_frame_arena = frame;
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
-        let (_ty, formula) = ut.mint(sut, gol, &gen).expect("mint synthetic wet gate");
+        let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic wet gate");
         drop(ut);
         slab.set_root(formula);
         slab.jam().to_vec()

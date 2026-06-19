@@ -42,7 +42,9 @@ impl NativeCompiler {
             let gol = crate::native::ut::ty_noun(&mut slab);
             let mut ut = Ut::new(&mut slab);
             ut.set_vet(vet);
-            let (ty, formula) = ut.mint(sut, gol, expr)?;
+            // mint is native now (C-final.1a); route the noun sut/gol through the
+            // mint_noun bridge, which returns a noun type for CompiledNative/TypeNoun.
+            let (ty, formula) = ut.mint_noun(sut, gol, expr)?;
 
             // Native-types migration Phase 1: flag-gated IR-completeness
             // invariant. When HONK_IR_ROUNDTRIP is set, assert the native

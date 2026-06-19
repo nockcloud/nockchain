@@ -104,15 +104,10 @@ impl<'a> Ut<'a> {
         if let Some(wing) = reek(gen.clone()) {
             return self.find(sut, way, &wing);
         }
-        // mint still takes a noun subject + noun TYPE goal (C-final): lower.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let goal = ty_noun(self.slab);
-        let (typ, formula) = self.mint(sut_noun, goal, gen)?;
-        let typ_n = native_of(typ, &self.slab.noun_space())?;
-        Ok(Port::Synthetic {
-            typ: typ_n,
-            formula,
-        })
+        // mint is native now (C-final.1a): thread the native subject directly.
+        let goal = cons_noun();
+        let (typ, formula) = self.mint(sut, goal, gen)?;
+        Ok(Port::Synthetic { typ, formula })
     }
 
     // HOON138:arm=ut:fond lines=9311-9470 map=direct status=partial reviewed=2026-03-06
@@ -135,15 +130,13 @@ impl<'a> Ut<'a> {
             Pony::Void => Ok(Pony::Void),
             Pony::Unmatched(skip) => Ok(Pony::Unmatched(skip)),
             Pony::Synthetic { typ, formula } => {
-                // mint takes a noun subject + noun TYPE goal (C-final): lower typ.
-                let typ_noun = live_to_noun(&typ, self.slab);
-                let goal = ty_noun(self.slab);
+                // mint is native now (C-final.1a): thread the native typ directly.
+                let goal = cons_noun();
                 let (new_ty, new_formula) =
-                    self.mint(typ_noun, goal, &Hoon::Wing(vec![head.clone()]))?;
-                let new_ty_n = native_of(new_ty, &self.slab.noun_space())?;
+                    self.mint(typ, goal, &Hoon::Wing(vec![head.clone()]))?;
                 let combined = comb(self.slab, formula, new_formula)?;
                 Ok(Pony::Synthetic {
-                    typ: new_ty_n,
+                    typ: new_ty,
                     formula: combined,
                 })
             }
@@ -456,12 +449,10 @@ impl<'a> Ut<'a> {
                                     "face tune bridge expression ast missing".to_string(),
                                 )
                             })?;
-                        // mint takes a noun subject + noun TYPE goal: lower inner.
-                        let inner_noun = live_to_noun(&inner, ut.slab);
-                        let noun_goal = ty_noun(ut.slab);
-                        let (bridge_ty, bridge_formula) =
-                            ut.mint(inner_noun, noun_goal, bridge_hoon_ast.as_ref())?;
-                        let bridge_ty_n = native_of(bridge_ty, &ut.slab.noun_space())?;
+                        // mint is native now (C-final.1a): thread inner directly.
+                        let noun_goal = cons_noun();
+                        let (bridge_ty_n, bridge_formula) =
+                            ut.mint(inner.clone(), noun_goal, bridge_hoon_ast.as_ref())?;
                         let mut bridge_seen = SeenState::default();
                         let fid = go(
                             ut,
