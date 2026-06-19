@@ -110,6 +110,9 @@ steps and status:
   C4 [DONE] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
          to_noun mug keys until C-final).
   C5 [DONE] crop/crop_inner/crop_sint -> native.
+  C5b [ ] miss family (miss/miss_dext/miss_dext_uncached/miss_sint, mod.rs ~9612)
+         -> native (returns bool; type params sut/ref_ -> NRc; uses type_*_parts +
+         repo + nest — same pattern as crop; nest bridged via lowering).
   C6 [ ] gain/lose skin families (~12 fns) + cool -> native.
   C7 [ ] mull + type_test_formula_on_axis glue -> native.
   C8 [ ] NEST SCC (nest/nest_inner/nest_inner_impl/nest_sint/nest_core/nest_meet/
@@ -124,4 +127,44 @@ steps and status:
 KEY RISKS (from the map): collapse-parity (add cons_core/face/hint, never bare
 live_intern for branch rebuilds); fork RT-07 order (keep noun fork path til late);
 boundary-cache key drift (keep to_noun mug keys until C-final); NEST SCC atomicity.
+
+## RESUMPTION NOTES (2026-06-19) — read before continuing the grind
+
+BRANCH: fwd/bitemyapp/native-compiler-pma-native-compiler-types (NOT pma-hell-4;
+I mixed them up once — flip commits are here). HEAD = the latest "FLIP consumer-N"
+commit.
+
+USER DIRECTIVE: complete the ENTIRE flip (blind big-bang); do NOT ask per-step.
+The branch is intentionally perf-broken (real-kernel compiles >180s) until C-final
+removes all bridges — this is expected, not a regression to chase. Validate each
+family ONLY with the fast fixture gate; dumb byte-parity+perf is checked at
+C-final against /tmp/dumb_preflip.jam (the verified pre-flip golden, 19873112 B;
+regenerate from commit e6e653e2 if /tmp lost it).
+
+PERF (settled): the flip's slowness is the pervasive bridge machinery
+(native_of/to_noun/ty_core_n double-build/mug-keyed caches) on every algebra call;
+it vanishes only at C-final. Infra in place: Leaf carries a cached content hash
+(leaf.rs) so interning leaf-carrying types is O(1)/leaf; intern::live_to_noun
+(Type) + live_leaf_to_noun (coil/set) memoize lowering by interned/Arc pointer.
+
+WORKFLOW: a linter reformats mod.rs constantly -> the Edit tool fails "modified
+since read". Apply edits via `python3` text-replace (read current content, assert
+count==1, replace, write). Pattern per consumer family:
+  1. extract current fn text via awk to /tmp; python-replace with native body.
+  2. native body: match &*sut (and &*ref_); Rc::ptr_eq for equality; cons_cell/
+     cons_void/cons_noun/cons_core/cons_face/cons_hint for rebuilds (collapse-aware);
+     self.repo(x) native; for leaf-carried parts (coil/set/atom) lower via
+     live_leaf_to_noun + the existing noun decoder (coil_parts/fork_set_options/
+     type_atom_parts); native-pointer seen-sets (HashSet<(usize,usize)>).
+  3. not-yet-flipped callees (nest until C8) bridged by lowering args via
+     live_to_noun.
+  4. add `fn <name>_noun` bridge; python-rename `self.<name>(`/`ut.<name>(` ->
+     `<name>_noun(` in mod.rs/wet.rs/find.rs/test.rs; then fix the bridge fn's OWN
+     self-call back to native (the rename hits it).
+  5. cargo build -p honk --lib; then release build + shadow_gate.sh (timeout 120).
+     commit. mark C# DONE here.
+
+DONE so far: C1 repo, C2 peek, C3 wrap_type (+cons_core/face/hint), C4 fuse,
+C5 crop. NEXT: C5b miss, C6 gain/lose+cool, C7 mull glue, C8 NEST SCC, C9 fond,
+C-final.
 
