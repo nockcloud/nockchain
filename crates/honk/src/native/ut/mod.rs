@@ -7033,6 +7033,17 @@ impl<'a> Ut<'a> {
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let coil = coil_from_parts(self.slab, garb, context, rest);
+        // Native-shadow construction port (INC4): play_core is the simplest core
+        // producer (no nice/battery/cache), so it is the first to build + assert
+        // its native bottom-up via ty_core_n. Flag-gated: the shipping path is the
+        // unchanged ty_core. The payload native comes from the memoized fallback
+        // (sut not yet threaded); next increments thread sut native in.
+        if crate::native::ir::intern::live_enabled() {
+            let payload_native = native_of(payload_type, &self.slab.noun_space())?;
+            let (noun, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
+            crate::native::ir::intern::assert_native_eq(noun, &native, &self.slab.noun_space());
+            return Ok(noun);
+        }
         Ok(ty_core(self.slab, payload_type, coil))
     }
 
