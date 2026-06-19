@@ -12162,14 +12162,21 @@ fn ty_face_n(slab: &mut NounSlab, name: &str, inner: (Noun, NRc<NTy>)) -> (Noun,
 #[allow(dead_code)]
 fn ty_hint_n(slab: &mut NounSlab, inner: Noun, note: Noun, payload: (Noun, NRc<NTy>)) -> (Noun, NRc<NTy>) {
     let noun = ty_hint(slab, inner, note, payload.0);
-    let kind = type_tag_kind(noun, &slab.noun_space());
-    let native = match kind {
+    let space = slab.noun_space();
+    let native = match type_tag_kind(noun, &space) {
         Ok(TypeTagKind::Void) => live_intern(NTy::Void),
         Ok(TypeTagKind::Noun) => live_intern(NTy::Noun),
         _ => {
-            let head = T(slab, &[inner, note]);
+            // noun = [%hint [inner note] payload]; capture the actual [inner note]
+            // head ty_hint built (no redundant allocation).
+            let head = noun
+                .in_space(&space)
+                .as_cell()
+                .and_then(|c| c.tail().as_cell())
+                .map(|c| c.head().noun())
+                .expect("ty_hint_n: hint noun shape");
             live_intern(NTy::Hint {
-                head: NLeaf::from_noun(head, &slab.noun_space()),
+                head: NLeaf::from_noun(head, &space),
                 payload: payload.1,
             })
         }
@@ -12238,6 +12245,11 @@ mod native_ctor_tests {
         check(&slab, n, &t);
         let (n, t) = ty_atom_n(&mut slab, "f", Some(D(0)));
         check(&slab, n, &t);
+        // empty aura -> "$" (honk's ty_atom_local path); both value shapes
+        let (n, t) = ty_atom_n(&mut slab, "", None);
+        check(&slab, n, &t);
+        let (n, t) = ty_atom_n(&mut slab, "", Some(D(42)));
+        check(&slab, n, &t);
 
         // cell
         let h = ty_atom_n(&mut slab, "ud", None);
@@ -12276,6 +12288,12 @@ mod native_ctor_tests {
         let subj = ty_atom_n(&mut slab, "ud", None);
         let hoon = T(&mut slab, &[D(1), D(0)]);
         let (n, t) = ty_hold_n(&mut slab, subj, hoon);
+        check(&slab, n, &t);
+        // richer cell-leaf gene (Jammed cell leaf round-trip: jam->cue->copy)
+        let subj2 = ty_atom_n(&mut slab, "ud", None);
+        let g_inner = T(&mut slab, &[D(1), D(2)]);
+        let gene2 = T(&mut slab, &[g_inner, D(3)]);
+        let (n, t) = ty_hold_n(&mut slab, subj2, gene2);
         check(&slab, n, &t);
 
         // core non-collapse

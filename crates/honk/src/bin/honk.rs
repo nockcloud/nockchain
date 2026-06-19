@@ -1102,6 +1102,10 @@ async fn compile_batch_with_shared_prelude(
     let mut builder =
         build_context_with_shared_prelude(cli, prelude, prelude_source, subject_type_jam)?;
     for entry in entries {
+        // Native-types: reset the live type table per entry — its memo keys nouns
+        // by raw pointer, and a dropped entry's slab address can be reused by the
+        // next entry, which would otherwise alias a stale interned Rc.
+        honk::native::ir::intern::live_reset();
         let label = format!("{}", entry.entry.display());
         trace_native(format!("batch compiling {label}"));
         let mut product = builder.compile_entry(&entry.entry)?;
