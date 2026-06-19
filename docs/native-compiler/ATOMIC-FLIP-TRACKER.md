@@ -100,3 +100,28 @@ DONE producer spine: play_core, play/play_inner, mint_core, mine -> native
 dispatch remain noun (bridged) and are best flipped AFTER the consumer subsystem
 so they don't double-bridge.
 
+CONSUMER FLIP (mapped 2026-06-19 by consumer-flip-map workflow; leaves-first,
+flip-in-place + bridge; decoders become enum matches retired bottom-up). Plan
+steps and status:
+  C1 [DONE] repo/repo_hold -> native (repo_noun bridge for 27 callers).
+  C2 [ ] peek -> native (Core lowers coil leaf to coil_parts/garb_vair; Fork lowers
+         set to fork_set_options; Hold -> repo native). ~4 callers.
+  C3 [ ] wrap_type -> native (needs collapse-aware cons_core/cons_face/cons_hint).
+  C4 [ ] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
+         to_noun mug keys until C-final).
+  C5 [ ] crop/crop_inner/crop_sint -> native.
+  C6 [ ] gain/lose skin families (~12 fns) + cool -> native.
+  C7 [ ] mull + type_test_formula_on_axis glue -> native.
+  C8 [ ] NEST SCC (nest/nest_inner/nest_inner_impl/nest_sint/nest_core/nest_meet/
+         nest_deep_tomes/nest_deep_arms) — ONE atomic step (~600 lines), highest
+         risk; nest_deep_* switch play_noun -> native play.
+  C9 [ ] fond/find family -> native.
+  C-final [ ] BOUNDARY CLOSE = the memory win: thread sut native (play/mint sut
+         param Noun->Rc<Type>); delete play_noun/pb/repo_noun + all transient
+         native_of/to_noun bridges; retire decoders (type_*_parts/type_tag*/coil_*)
+         + noun ty_* ctors; re-key boundary caches (nest_mug/fuse/crop/rest/hold)
+         on native identity. This stops the grow-only NounSlab accumulation.
+KEY RISKS (from the map): collapse-parity (add cons_core/face/hint, never bare
+live_intern for branch rebuilds); fork RT-07 order (keep noun fork path til late);
+boundary-cache key drift (keep to_noun mug keys until C-final); NEST SCC atomicity.
+
