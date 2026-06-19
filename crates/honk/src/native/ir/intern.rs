@@ -174,6 +174,202 @@ std::thread_local! {
     /// (which would be O(subject) per call -> O(N^2) over the deepening chain).
     static NEST_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), bool>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `core_mint` (`mint_core`), keyed on
+    /// the interned `Rc` pointers of (sut, gol) plus the non-type semantic
+    /// fields the old noun key carried verbatim (tomes_sig = mug(tomes_map) ^
+    /// prefix_signature, vet, poly, fan, arm_epoch, placeholder). The TYPE
+    /// components (sut/gol) are now ptr-identity instead of mug, so the deepening
+    /// subject is never lowered to a noun just to build the key. VALUE is the
+    /// native result: (core type `Rc<Type>`, formula `Noun`). The formula `Noun`
+    /// lives in the one compile slab; this cache is per-compile and cleared by
+    /// `live_reset` (same lifetime contract as `NEST_CACHE` / `TO_NOUN_MEMO`), so
+    /// the stored `Noun` cannot outlive its slab.
+    #[allow(clippy::type_complexity)]
+    static CORE_MINT_CACHE: std::cell::RefCell<
+        HashMap<(usize, usize, u64, u8, u8, u64, u64, u64), (Rc<Type>, Noun)>,
+    > = std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `mint`, keyed on the interned `Rc`
+    /// pointers of (sut, gol) plus the non-type semantic fields the old noun key
+    /// carried verbatim (vet, gen_sig, fan, arm_epoch, placeholder). VALUE is the
+    /// native result: (type `Rc<Type>`, formula `Noun`). Same per-compile /
+    /// `live_reset` lifetime contract as `CORE_MINT_CACHE`.
+    #[allow(clippy::type_complexity)]
+    static MINT_CACHE: std::cell::RefCell<
+        HashMap<(usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Noun)>,
+    > = std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `mull`, keyed on the interned `Rc`
+    /// pointers of (sut, gol, dox) plus the non-type semantic fields the old noun
+    /// key carried verbatim (vet, gen_sig, fan, arm_epoch, placeholder). VALUE is
+    /// the native dual-perspective result: (p type `Rc<Type>`, q type
+    /// `Rc<Type>`). Per-compile / `live_reset` lifetime contract.
+    #[allow(clippy::type_complexity)]
+    static MULL_CACHE: std::cell::RefCell<
+        HashMap<(usize, usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Rc<Type>)>,
+    > = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Look up a native `core_mint` result by interned (sut, gol) pointers + the
+/// preserved semantic key fields (tomes_sig, vet, poly, fan, arm_epoch,
+/// placeholder). Returns the native (core type, formula) directly — no `native_of`.
+#[allow(clippy::too_many_arguments)]
+pub fn core_mint_cache_lookup(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    tomes_sig: u64,
+    vet: u8,
+    poly: u8,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+) -> Option<(Rc<Type>, Noun)> {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        tomes_sig,
+        vet,
+        poly,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    CORE_MINT_CACHE.with(|m| m.borrow().get(&key).cloned())
+}
+
+/// Store a native `core_mint` result by interned (sut, gol) pointers + semantic key.
+#[allow(clippy::too_many_arguments)]
+pub fn core_mint_cache_store(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    tomes_sig: u64,
+    vet: u8,
+    poly: u8,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+    core_type: Rc<Type>,
+    formula: Noun,
+) {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        tomes_sig,
+        vet,
+        poly,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    CORE_MINT_CACHE.with(|m| {
+        m.borrow_mut().insert(key, (core_type, formula));
+    });
+}
+
+/// Look up a native `mint` result by interned (sut, gol) pointers + the preserved
+/// semantic key fields (vet, gen_sig, fan, arm_epoch, placeholder). Returns the
+/// native (type, formula) directly — no `native_of`.
+#[allow(clippy::too_many_arguments)]
+pub fn mint_cache_lookup(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    vet: u8,
+    gen_sig: u64,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+) -> Option<(Rc<Type>, Noun)> {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        vet,
+        gen_sig,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    MINT_CACHE.with(|m| m.borrow().get(&key).cloned())
+}
+
+/// Store a native `mint` result by interned (sut, gol) pointers + semantic key.
+#[allow(clippy::too_many_arguments)]
+pub fn mint_cache_store(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    vet: u8,
+    gen_sig: u64,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+    ty: Rc<Type>,
+    formula: Noun,
+) {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        vet,
+        gen_sig,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    MINT_CACHE.with(|m| {
+        m.borrow_mut().insert(key, (ty, formula));
+    });
+}
+
+/// Look up a native `mull` result by interned (sut, gol, dox) pointers + the
+/// preserved semantic key fields (vet, gen_sig, fan, arm_epoch, placeholder).
+/// Returns the native (p type, q type) directly — no `native_of`.
+#[allow(clippy::too_many_arguments)]
+pub fn mull_cache_lookup(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    dox: &Rc<Type>,
+    vet: u8,
+    gen_sig: u64,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+) -> Option<(Rc<Type>, Rc<Type>)> {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        Rc::as_ptr(dox) as usize,
+        vet,
+        gen_sig,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    MULL_CACHE.with(|m| m.borrow().get(&key).cloned())
+}
+
+/// Store a native `mull` result by interned (sut, gol, dox) pointers + semantic key.
+#[allow(clippy::too_many_arguments)]
+pub fn mull_cache_store(
+    sut: &Rc<Type>,
+    gol: &Rc<Type>,
+    dox: &Rc<Type>,
+    vet: u8,
+    gen_sig: u64,
+    fan: u64,
+    arm_epoch: u64,
+    placeholder: u64,
+    p_ty: Rc<Type>,
+    q_ty: Rc<Type>,
+) {
+    let key = (
+        Rc::as_ptr(sut) as usize,
+        Rc::as_ptr(gol) as usize,
+        Rc::as_ptr(dox) as usize,
+        vet,
+        gen_sig,
+        fan,
+        arm_epoch,
+        placeholder,
+    );
+    MULL_CACHE.with(|m| {
+        m.borrow_mut().insert(key, (p_ty, q_ty));
+    });
 }
 
 /// Look up a native `nest` result by interned (sut, ref) pointers + context.
@@ -218,6 +414,9 @@ pub fn live_reset() {
     TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
     LEAF_MEMO.with(|m| m.borrow_mut().clear());
     NEST_CACHE.with(|m| m.borrow_mut().clear());
+    CORE_MINT_CACHE.with(|m| m.borrow_mut().clear());
+    MINT_CACHE.with(|m| m.borrow_mut().clear());
+    MULL_CACHE.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to

@@ -2885,95 +2885,70 @@ impl<'a> Ut<'a> {
         )
     }
 
+    /// C-final.1b: native-re-keyed `core_mint` boundary cache. The TYPE
+    /// components (sut/gol) are keyed on interned `Rc` pointer identity (==
+    /// structural identity for hash-consed flip types), so the deepening subject
+    /// is never lowered to a noun here. The non-type semantic fields are carried
+    /// VERBATIM from the old `core_mint_cache_key`: `tomes_sig` = mug(tomes_map)
+    /// ^ prefix_signature(prefix) (tomes_map is AST-derived, not a deepening
+    /// type, so it stays a mug), vet, poly, fan, arm_epoch, placeholder.
     fn core_mint_cache_lookup(
         &mut self,
-        sut: Noun,
-        gol: Noun,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
         tomes_map: Noun,
         prefix: &Option<String>,
         poly: Poly,
-    ) -> Result<Option<(Noun, Noun)>> {
-        let key = self.core_mint_cache_key(sut, gol, tomes_map, prefix, poly);
-        let Some(entries) = self.boundary_memo.core_mint.get(&key) else {
-            return Ok(None);
+    ) -> Result<Option<(NRc<NTy>, Noun)>> {
+        let context = self.cache_context_key();
+        let tomes_sig =
+            (self.noun_mug_cached(tomes_map) ^ Self::prefix_signature(prefix.as_deref())) as u64;
+        let poly_key = match poly {
+            Poly::Dry => 0u8,
+            Poly::Wet => 1u8,
         };
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        let tomes_raw = unsafe { tomes_map.as_raw() };
-        for entry in entries.iter().rev() {
-            if entry.poly != poly || entry.vet != self.vet || entry.prefix != *prefix {
-                continue;
-            }
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            if !sut_match {
-                continue;
-            }
-            let gol_match = unsafe { entry.gol.as_raw() } == gol_raw
-                || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            if !gol_match {
-                continue;
-            }
-            let tomes_match = unsafe { entry.tomes_map.as_raw() } == tomes_raw
-                || noun_eq(entry.tomes_map, tomes_map, &self.slab.noun_space())?;
-            if tomes_match {
-                return Ok(Some((entry.core_type, entry.formula)));
-            }
-        }
-        Ok(None)
-    }
-
-    fn core_mint_cache_store(
-        &mut self,
-        sut: Noun,
-        gol: Noun,
-        tomes_map: Noun,
-        prefix: &Option<String>,
-        poly: Poly,
-        core_type: Noun,
-        formula: Noun,
-    ) -> Result<()> {
-        let key = self.core_mint_cache_key(sut, gol, tomes_map, prefix, poly);
-        let bucket = self
-            .boundary_memo
-            .core_mint
-            .ensure_key(key, Self::CORE_MINT_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        let tomes_raw = unsafe { tomes_map.as_raw() };
-        for entry in bucket.iter() {
-            if entry.poly != poly || entry.vet != self.vet || entry.prefix != *prefix {
-                continue;
-            }
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            if !sut_match {
-                continue;
-            }
-            let gol_match = unsafe { entry.gol.as_raw() } == gol_raw
-                || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            if !gol_match {
-                continue;
-            }
-            let tomes_match = unsafe { entry.tomes_map.as_raw() } == tomes_raw
-                || noun_eq(entry.tomes_map, tomes_map, &self.slab.noun_space())?;
-            if tomes_match {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::CORE_MINT_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        bucket.push_back(CoreMintCacheEntry {
+        Ok(native_core_mint_cache_lookup(
             sut,
             gol,
-            tomes_map,
-            prefix: prefix.clone(),
-            poly,
-            vet: self.vet,
+            tomes_sig,
+            context.semantic.vet_key,
+            poly_key,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn core_mint_cache_store(
+        &mut self,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
+        tomes_map: Noun,
+        prefix: &Option<String>,
+        poly: Poly,
+        core_type: NRc<NTy>,
+        formula: Noun,
+    ) -> Result<()> {
+        let context = self.cache_context_key();
+        let tomes_sig =
+            (self.noun_mug_cached(tomes_map) ^ Self::prefix_signature(prefix.as_deref())) as u64;
+        let poly_key = match poly {
+            Poly::Dry => 0u8,
+            Poly::Wet => 1u8,
+        };
+        native_core_mint_cache_store(
+            sut,
+            gol,
+            tomes_sig,
+            context.semantic.vet_key,
+            poly_key,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
             core_type,
             formula,
-        });
+        );
         Ok(())
     }
 
@@ -3043,69 +3018,48 @@ impl<'a> Ut<'a> {
         )
     }
 
+    /// C-final.1b: native-re-keyed `mint` boundary cache. TYPE components
+    /// (sut/gol) keyed on interned `Rc` pointer identity; non-type semantic
+    /// fields carried VERBATIM from the old `mint_cache_key` (vet, gen_sig, fan,
+    /// arm_epoch, placeholder).
     fn mint_cache_lookup(
         &mut self,
-        sut: Noun,
-        gol: Noun,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
         gen_sig: u64,
-    ) -> Result<Option<(Noun, Noun)>> {
-        let key = self.mint_cache_key(sut, gol, gen_sig);
-        let Some(entries) = self.boundary_memo.mint.get(&key) else {
-            return Ok(None);
-        };
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        for entry in entries.iter().rev() {
-            let entry_sut_raw = unsafe { entry.sut.as_raw() };
-            let entry_gol_raw = unsafe { entry.gol.as_raw() };
-            let sut_match =
-                entry_sut_raw == sut_raw || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let gol_match =
-                entry_gol_raw == gol_raw || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            if sut_match && gol_match {
-                return Ok(Some((entry.ty, entry.formula)));
-            }
-        }
-        Ok(None)
+    ) -> Result<Option<(NRc<NTy>, Noun)>> {
+        let context = self.cache_context_key();
+        Ok(native_mint_cache_lookup(
+            sut,
+            gol,
+            context.semantic.vet_key,
+            gen_sig,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
+        ))
     }
 
     fn mint_cache_store(
         &mut self,
-        sut: Noun,
-        gol: Noun,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
         gen_sig: u64,
-        ty: Noun,
+        ty: NRc<NTy>,
         formula: Noun,
     ) -> Result<()> {
-        let key = self.mint_cache_key(sut, gol, gen_sig);
-        let bucket = self
-            .boundary_memo
-            .mint
-            .ensure_key(key, Self::MINT_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        for entry in bucket.iter() {
-            let entry_sut_raw = unsafe { entry.sut.as_raw() };
-            let entry_gol_raw = unsafe { entry.gol.as_raw() };
-            let sut_match =
-                entry_sut_raw == sut_raw || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let gol_match =
-                entry_gol_raw == gol_raw || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            if sut_match && gol_match {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::MINT_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        let gen = noun_u64(self.slab, gen_sig);
-        bucket.push_back(MintCacheEntry {
+        let context = self.cache_context_key();
+        native_mint_cache_store(
             sut,
             gol,
-            gen,
+            context.semantic.vet_key,
+            gen_sig,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
             ty,
             formula,
-        });
+        );
         Ok(())
     }
 
@@ -3194,77 +3148,56 @@ impl<'a> Ut<'a> {
         )
     }
 
+    /// C-final.1b: native-re-keyed `mull` boundary cache. TYPE components
+    /// (sut/gol/dox) keyed on interned `Rc` pointer identity; non-type semantic
+    /// fields carried VERBATIM from the old `mull_cache_key` (vet, gen_sig =
+    /// mug(gen), fan, arm_epoch, placeholder). gen stays a mug (it is the AST
+    /// node, not a deepening type).
     fn mull_cache_lookup(
         &mut self,
-        sut: Noun,
-        gol: Noun,
-        dox: Noun,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
+        dox: &NRc<NTy>,
         gen: Noun,
-    ) -> Result<Option<(Noun, Noun)>> {
-        let key = self.mull_cache_key(sut, gol, dox, gen);
-        let Some(entries) = self.boundary_memo.mull.get(&key) else {
-            return Ok(None);
-        };
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        let dox_raw = unsafe { dox.as_raw() };
-        for entry in entries.iter().rev() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let gol_match = unsafe { entry.gol.as_raw() } == gol_raw
-                || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            let dox_match = unsafe { entry.dox.as_raw() } == dox_raw
-                || noun_eq(entry.dox, dox, &self.slab.noun_space())?;
-            let gen_match = unsafe { entry.gen.raw_equals(&gen) }
-                || noun_eq(entry.gen, gen, &self.slab.noun_space())?;
-            if sut_match && gol_match && dox_match && gen_match {
-                return Ok(Some((entry.p_ty, entry.q_ty)));
-            }
-        }
-        Ok(None)
-    }
-
-    fn mull_cache_store(
-        &mut self,
-        sut: Noun,
-        gol: Noun,
-        dox: Noun,
-        gen: Noun,
-        p_ty: Noun,
-        q_ty: Noun,
-    ) -> Result<()> {
-        let key = self.mull_cache_key(sut, gol, dox, gen);
-        let bucket = self
-            .boundary_memo
-            .mull
-            .ensure_key(key, Self::MULL_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        let gol_raw = unsafe { gol.as_raw() };
-        let dox_raw = unsafe { dox.as_raw() };
-        for entry in bucket.iter() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let gol_match = unsafe { entry.gol.as_raw() } == gol_raw
-                || noun_eq(entry.gol, gol, &self.slab.noun_space())?;
-            let dox_match = unsafe { entry.dox.as_raw() } == dox_raw
-                || noun_eq(entry.dox, dox, &self.slab.noun_space())?;
-            let gen_match = unsafe { entry.gen.raw_equals(&gen) }
-                || noun_eq(entry.gen, gen, &self.slab.noun_space())?;
-            if sut_match && gol_match && dox_match && gen_match {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::MULL_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        bucket.push_back(MullCacheEntry {
+    ) -> Result<Option<(NRc<NTy>, NRc<NTy>)>> {
+        let context = self.cache_context_key();
+        let gen_sig = self.noun_mug_cached(gen) as u64;
+        Ok(native_mull_cache_lookup(
             sut,
             gol,
             dox,
-            gen,
+            context.semantic.vet_key,
+            gen_sig,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mull_cache_store(
+        &mut self,
+        sut: &NRc<NTy>,
+        gol: &NRc<NTy>,
+        dox: &NRc<NTy>,
+        gen: Noun,
+        p_ty: NRc<NTy>,
+        q_ty: NRc<NTy>,
+    ) -> Result<()> {
+        let context = self.cache_context_key();
+        let gen_sig = self.noun_mug_cached(gen) as u64;
+        native_mull_cache_store(
+            sut,
+            gol,
+            dox,
+            context.semantic.vet_key,
+            gen_sig,
+            context.semantic.fan_context_key,
+            context.memo.arm_epoch_key,
+            context.memo.placeholder_context_key,
             p_ty,
             q_ty,
-        });
+        );
         Ok(())
     }
 
@@ -3622,16 +3555,15 @@ impl<'a> Ut<'a> {
         gen: &Hoon,
     ) -> Result<(NRc<NTy>, Noun)> {
         // ATOMIC FLIP (C-final.1a): mint reads/returns the native enum (type slot;
-        // the formula slot stays Noun). The mint boundary cache stays noun/mug-keyed
-        // (lower sut/gol once here for the key, native_of the cached type on a hit)
-        // until step 1b. play still takes a noun subject (lowered per call).
+        // the formula slot stays Noun). C-final.1b: the mint boundary cache is now
+        // native-re-keyed on the interned (sut, gol) `Rc` pointers, so we no
+        // longer lower sut/gol just to compute the cache key. `sut_noun` is still
+        // lowered below because `play` takes a noun subject (NOT flipped here).
         let cache_sig = Self::mint_cache_signature(gen);
         let sut_noun = live_to_noun(&sut, self.slab);
-        let gol_noun = live_to_noun(&gol, self.slab);
         if let Some(gen_sig) = cache_sig {
-            if let Some(cached) = self.mint_cache_lookup(sut_noun, gol_noun, gen_sig)? {
-                let ty = native_of(cached.0, &self.slab.noun_space())?;
-                return Ok((ty, cached.1));
+            if let Some(cached) = self.mint_cache_lookup(&sut, &gol, gen_sig)? {
+                return Ok(cached);
             }
         }
 
@@ -3653,6 +3585,11 @@ impl<'a> Ut<'a> {
             return Ok((cons_void(), slot_formula_axis(self.slab, 0)));
         }
 
+        // Retain the native (sut, gol) `Rc`s for the post-match cache store; the
+        // match below moves `sut`/`gol` into the per-arm recursion (Rc clone is
+        // cheap — a refcount bump, NOT a structural copy).
+        let cache_sut = sut.clone();
+        let cache_gol = gol.clone();
         let result = match gen {
             Hoon::Pair(p, q) => {
                 let gol_head = cons_noun();
@@ -3857,8 +3794,8 @@ impl<'a> Ut<'a> {
         }?;
 
         if let Some(gen_sig) = cache_sig {
-            let ty_noun = live_to_noun(&result.0, self.slab);
-            self.mint_cache_store(sut_noun, gol_noun, gen_sig, ty_noun, result.1)?;
+            // C-final.1b: store the native type directly (no lowering).
+            self.mint_cache_store(&cache_sut, &cache_gol, gen_sig, result.0.clone(), result.1)?;
         }
 
         Ok(result)
@@ -7155,11 +7092,10 @@ impl<'a> Ut<'a> {
         let gol_noun = live_to_noun(&gol, self.slab);
         let tomes_map = self.tomes_map_from_ast(tomes)?;
         if let Some((cached_ty, cached_formula)) =
-            self.core_mint_cache_lookup(sut_noun, gol_noun, tomes_map, prefix, poly)?
+            self.core_mint_cache_lookup(&sut, &gol, tomes_map, prefix, poly)?
         {
-            // Cache still holds a noun type (Phase 1); bridge to native on hit.
-            let native = native_of(cached_ty, &self.slab.noun_space())?;
-            return Ok((native, cached_formula));
+            // C-final.1b: native-re-keyed cache returns the native type directly.
+            return Ok((cached_ty, cached_formula));
         }
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
         // Match hoon-138/hoonc layered-core payload layout and formula shape.
@@ -7222,9 +7158,10 @@ impl<'a> Ut<'a> {
         let battery_formula = T(self.slab, &[D(1), battery]);
         let formula = cons(self.slab, battery_formula, payload_formula)?;
         // nice is native now (C-final.1a); validate the native core type.
-        let ty = self.nice(sut, gol, core_native.clone())?;
-        let ty_noun = live_to_noun(&ty, self.slab);
-        self.core_mint_cache_store(sut_noun, gol_noun, tomes_map, prefix, poly, ty_noun, formula)?;
+        // nice is identity-on-success, so `ty` == `core_native`; cache the
+        // validated native type directly (C-final.1b: no lowering to a noun).
+        let ty = self.nice(sut.clone(), gol.clone(), core_native.clone())?;
+        self.core_mint_cache_store(&sut, &gol, tomes_map, prefix, poly, ty, formula)?;
         Ok((core_native, formula))
     }
 
@@ -10791,18 +10728,13 @@ impl<'a> Ut<'a> {
         dox: NRc<NTy>,
         gen: &Hoon,
     ) -> Result<(NRc<NTy>, NRc<NTy>)> {
-        // ATOMIC FLIP (consumer C7): mull reads/returns the native enum. The mull
-        // boundary cache stays noun/mug-keyed (lower sut/gol/dox once here for the
-        // key, native_of the cached types on a hit) until C-final.
+        // ATOMIC FLIP (consumer C7): mull reads/returns the native enum.
+        // C-final.1b: the mull boundary cache is native-re-keyed on the interned
+        // (sut, gol, dox) `Rc` pointers, so sut/gol/dox are no longer lowered to
+        // nouns to build the cache key. gen stays a noun (mug-keyed AST node).
         let gen_noun = self.hoon_noun_for_node(gen);
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let gol_noun = live_to_noun(&gol, self.slab);
-        let dox_noun = live_to_noun(&dox, self.slab);
-        if let Some(cached) = self.mull_cache_lookup(sut_noun, gol_noun, dox_noun, gen_noun)? {
-            let space = self.slab.noun_space();
-            let p_ty = native_of(cached.0, &space)?;
-            let q_ty = native_of(cached.1, &space)?;
-            return Ok((p_ty, q_ty));
+        if let Some(cached) = self.mull_cache_lookup(&sut, &gol, &dox, gen_noun)? {
+            return Ok(cached);
         }
         // hoon-138 pre-check: mull-none if sut is void
         if matches!(&*sut, NTy::Void) {
@@ -10812,9 +10744,8 @@ impl<'a> Ut<'a> {
         // Grow the native stack for deep recursion safety (matches mint/play).
         let result =
             self.with_stack_guard(|ut| ut.mull_inner(sut.clone(), gol.clone(), dox.clone(), gen))?;
-        let p_noun = live_to_noun(&result.0, self.slab);
-        let q_noun = live_to_noun(&result.1, self.slab);
-        self.mull_cache_store(sut_noun, gol_noun, dox_noun, gen_noun, p_noun, q_noun)?;
+        // C-final.1b: store the native (p, q) types directly (no lowering).
+        self.mull_cache_store(&sut, &gol, &dox, gen_noun, result.0.clone(), result.1.clone())?;
         Ok(result)
     }
 
@@ -12831,8 +12762,12 @@ fn coil_from_parts(slab: &mut NounSlab, garb: Noun, context: Noun, rest: Noun) -
 use std::rc::Rc as NRc;
 
 use crate::native::ir::intern::{
-    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, live_leaf_to_noun,
-    live_to_noun, native_of, nest_cache_lookup, nest_cache_store,
+    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void,
+    core_mint_cache_lookup as native_core_mint_cache_lookup,
+    core_mint_cache_store as native_core_mint_cache_store, live_intern, live_leaf_to_noun,
+    live_to_noun, mint_cache_lookup as native_mint_cache_lookup,
+    mint_cache_store as native_mint_cache_store, mull_cache_lookup as native_mull_cache_lookup,
+    mull_cache_store as native_mull_cache_store, native_of, nest_cache_lookup, nest_cache_store,
 };
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;
