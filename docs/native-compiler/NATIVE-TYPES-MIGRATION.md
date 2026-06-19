@@ -768,3 +768,41 @@ slot of each return and `sut` native as an input, with `to_noun==noun` asserted
 live. This is the cascade; it pays off cumulatively (the memory win lands only once
 `sut` native flows through the whole chain and the noun path is dropped at the
 flip, INC13).
+
+## INC4-6 + the flip inflection (2026-06-18)
+
+Wired flag-gated build+assert native construction at the three meaningful node
+producers, validated live by `shadow_gate.sh` (4 fixtures, flag on/off
+byte-identical, no assert trip):
+
+- INC4 `play_core`, INC5 `mint_core` (the subject-deepening site), INC6
+  `cell_type` — each builds its native bottom-up via `ty_*_n`/`cell_type_n` from
+  the payload/child natives and asserts byte-exact. Shipping path unchanged.
+
+This COMPLETES the meaningful incremental validation: native *construction* at the
+node constructors (core, cell) is proven on real types, and the leaf constructors
+(atom/face/hint/hold/fork) are unit-tested + covered by the IR-boundary
+round-trip. Going further with flag-gated build+assert is tautological (it reduces
+to `native_of(result)` = the already-proven IR-boundary round-trip).
+
+THE INFLECTION: the remaining work is the FLIP, and it cannot be done as a
+shipping-safe incremental. Return-threading native through `mint`/`play` forces
+native to be built on EVERY compile (a function can't conditionally return a
+different type), so the not-yet-threaded `native_of` fallbacks run O(N²) on the
+shipping path for the entire (multi-hundred-edit) duration of the migration. The
+only ways out are (a) flag-gated DUPLICATION of the whole mint/play dispatch
+(`_n` family alongside the noun family — ~600 lines of throwaway dispatch, deleted
+at the flip), or (b) an atomic REPLACE big-bang (swap noun construction for native
+throughout, drop nouns, non-compiling intermediate on this branch, validated
+end-to-end by the kernel/fixture parity harness).
+
+Recommendation: (b), the atomic replace, executed as a focused effort on this
+branch. It reaches the clean end state directly (native-only internals, O(n), no
+double-build, no dup to later delete) — the fastest route to "native types
+completely". The build+assert work (INC4-6) has de-risked it: native construction
+is proven correct at the constructors the replace will route through. Validation:
+`shadow_gate.sh` (fast) during; full kernel byte-parity vs the current output at
+completion. Scope of the replace: the type slot of mint/mint_inner/mint_core/mine,
+play/play_inner/play_core, nice, wrap_type + the mint_*/play_* helper fleet
+(returns), the type consumers (nest/fond/repo/type_*_parts → read `Rc<Type>`), and
+emit nouns only at the output boundary (`to_noun`) + typed-Dynock.
