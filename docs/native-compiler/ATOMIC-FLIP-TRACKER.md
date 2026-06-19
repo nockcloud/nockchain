@@ -110,7 +110,7 @@ steps and status:
   C4 [DONE] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
          to_noun mug keys until C-final).
   C5 [DONE] crop/crop_inner/crop_sint -> native.
-  C5b [ ] miss family (miss/miss_dext/miss_dext_uncached/miss_sint, mod.rs ~9612)
+  C5b [DONE] miss family (miss/miss_dext/miss_dext_uncached/miss_sint, mod.rs ~9612)
          -> native (returns bool; type params sut/ref_ -> NRc; uses type_*_parts +
          repo + nest — same pattern as crop; nest bridged via lowering).
   C6 [ ] gain/lose skin families (~12 fns) + cool -> native.

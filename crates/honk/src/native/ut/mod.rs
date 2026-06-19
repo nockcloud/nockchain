@@ -9624,15 +9624,9 @@ impl<'a> Ut<'a> {
         Ok(live_to_noun(&r, self.slab))
     }
 
-    fn miss(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
-        let mut seen: Vec<(Noun, Noun)> = Vec::new();
-        // Cross-call persistence is only sound while compiling the isolated
-        // prelude: a single deterministic source in a fresh Ut, where the
-        // mutable compile state `miss` transitively reads (rest/redo caches)
-        // does not drift between outer calls in ways that flip verdicts —
-        // the configuration the parity corpus validates. Entry compiles
-        // (especially batches) do drift, so they get a per-call memo only;
-        // see miss_dext for the failure mode.
+    fn miss(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<bool> {
+        // ATOMIC FLIP (consumer C5b): native. seen/memo keyed by native pointer.
+        let mut seen: Vec<(u64, u64)> = Vec::new();
         if let Some(mut memo) = self.miss_memo_persist.take() {
             let result = self.miss_dext(sut, ref_, &mut seen, &mut memo);
             self.miss_memo_persist = Some(memo);
@@ -9642,6 +9636,12 @@ impl<'a> Ut<'a> {
         self.miss_dext(sut, ref_, &mut seen, &mut memo)
     }
 
+    /// Noun-bridged `miss` for not-yet-flipped callers (C5b). Drops at C-final.
+    fn miss_noun(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
+        let sn = native_of(sut, &self.slab.noun_space())?;
+        let rn = native_of(ref_, &self.slab.noun_space())?;
+        self.miss(sn, rn)
+    }
     /// Enable or disable cross-call `miss` memo persistence (prelude mint
     /// only); returns the previous state so callers can restore it.
     pub fn set_miss_memo_persistence(&mut self, enabled: bool) -> bool {
@@ -9655,14 +9655,14 @@ impl<'a> Ut<'a> {
     }
 
     #[inline]
-    fn miss_memo_key(&self, sut: Noun, ref_: Noun) -> (u64, u64, u8) {
+    #[inline]
+    fn miss_memo_key(&self, sut: &NRc<NTy>, ref_: &NRc<NTy>) -> (u64, u64, u8) {
         (
-            unsafe { sut.as_raw() },
-            unsafe { ref_.as_raw() },
+            NRc::as_ptr(sut) as u64,
+            NRc::as_ptr(ref_) as u64,
             u8::from(self.vet),
         )
     }
-
     /// Memo over raw (sut, ref_, vet, rest-context) keys, scoped to one
     /// outer `miss` call. Without it, sibling fork branches re-explore
     /// identical hold expansions and a single outer `miss` over hoon-138
@@ -9675,12 +9675,12 @@ impl<'a> Ut<'a> {
     /// consistent and unconditional reuse is validated by the parity corpus.
     fn miss_dext(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
-        seen: &mut Vec<(Noun, Noun)>,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
+        seen: &mut Vec<(u64, u64)>,
         memo: &mut FastHashMap<(u64, u64, u8), bool>,
     ) -> Result<bool> {
-        let key = self.miss_memo_key(sut, ref_);
+        let key = self.miss_memo_key(&sut, &ref_);
         if let Some(&cached) = memo.get(&key) {
             return Ok(cached);
         }
@@ -9688,92 +9688,84 @@ impl<'a> Ut<'a> {
         memo.insert(key, result);
         Ok(result)
     }
-
     fn miss_dext_uncached(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
-        seen: &mut Vec<(Noun, Noun)>,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
+        seen: &mut Vec<(u64, u64)>,
         memo: &mut FastHashMap<(u64, u64, u8), bool>,
     ) -> Result<bool> {
-        if noun_eq(sut, ref_, &self.slab.noun_space())? {
+        if NRc::ptr_eq(&sut, &ref_) {
             let void = ty_void(self.slab);
-            return self.nest(void, sut);
+            let sut_noun = live_to_noun(&sut, self.slab);
+            return self.nest(void, sut_noun);
         }
-        if matches!(
-            type_tag_kind(ref_, &self.slab.noun_space())?,
-            TypeTagKind::Void
-        ) {
+        if matches!(&*ref_, NTy::Void) {
             return Ok(true);
         }
-        match type_tag_kind(sut, &self.slab.noun_space())? {
-            TypeTagKind::Void => Ok(true),
-            TypeTagKind::Noun => {
+        match &*sut {
+            NTy::Void => Ok(true),
+            NTy::Noun => {
                 let void = ty_void(self.slab);
-                self.nest(void, ref_)
+                let ref_noun = live_to_noun(&ref_, self.slab);
+                self.nest(void, ref_noun)
             }
-            TypeTagKind::Atom | TypeTagKind::Cell => self.miss_sint(sut, ref_, seen, memo),
-            TypeTagKind::Core => {
-                let noun = ty_noun(self.slab);
-                let cell = ty_cell(self.slab, noun, noun);
+            NTy::Atom { .. } | NTy::Cell(..) => self.miss_sint(sut, ref_, seen, memo),
+            NTy::Core { .. } => {
+                let cell = cons_cell(cons_noun(), cons_noun());
                 self.miss_sint(cell, ref_, seen, memo)
             }
-            TypeTagKind::Fork => {
-                for option in type_fork_options(sut, &self.slab.noun_space())? {
-                    if !self.miss_dext(option, ref_, seen, memo)? {
+            NTy::Fork { set } => {
+                let set_noun = live_leaf_to_noun(set, self.slab);
+                for option in fork_set_options(set_noun, &self.slab.noun_space())? {
+                    let opt = native_of(option, &self.slab.noun_space())?;
+                    if !self.miss_dext(opt, ref_.clone(), seen, memo)? {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
-            TypeTagKind::Face => self.miss_dext(
-                type_face_inner(sut, &self.slab.noun_space())?,
-                ref_,
-                seen,
-                memo,
-            ),
-            TypeTagKind::Hint => self.miss_dext(
-                type_hint_inner(sut, &self.slab.noun_space())?,
-                ref_,
-                seen,
-                memo,
-            ),
-            TypeTagKind::Hold => {
+            NTy::Face { inner, .. } => {
+                let inner = inner.clone();
+                self.miss_dext(inner, ref_, seen, memo)
+            }
+            NTy::Hint { payload, .. } => {
+                let payload = payload.clone();
+                self.miss_dext(payload, ref_, seen, memo)
+            }
+            NTy::Hold { .. } => {
+                let sp = NRc::as_ptr(&sut) as u64;
+                let rp = NRc::as_ptr(&ref_) as u64;
                 for (a, b) in seen.iter() {
-                    if (noun_eq(*a, sut, &self.slab.noun_space())?
-                        && noun_eq(*b, ref_, &self.slab.noun_space())?)
-                        || (noun_eq(*a, ref_, &self.slab.noun_space())?
-                            && noun_eq(*b, sut, &self.slab.noun_space())?)
-                    {
+                    if (*a == sp && *b == rp) || (*a == rp && *b == sp) {
                         return Ok(true);
                     }
                 }
-                seen.push((sut, ref_));
-                let repo = self.repo_noun(sut)?;
+                seen.push((sp, rp));
+                let repo = self.repo(sut.clone())?;
                 let result = self.miss_dext(repo, ref_, seen, memo);
                 seen.pop();
                 result
             }
         }
     }
-
     fn miss_sint(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
-        seen: &mut Vec<(Noun, Noun)>,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
+        seen: &mut Vec<(u64, u64)>,
         memo: &mut FastHashMap<(u64, u64, u8), bool>,
     ) -> Result<bool> {
-        match type_tag_kind(ref_, &self.slab.noun_space())? {
-            TypeTagKind::Atom => {
-                if !matches!(
-                    type_tag_kind(sut, &self.slab.noun_space())?,
-                    TypeTagKind::Atom
-                ) {
+        match &*ref_ {
+            NTy::Atom { .. } => {
+                if !matches!(&*sut, NTy::Atom { .. }) {
                     return Ok(true);
                 }
-                let (_sut_aura, sut_val) = type_atom_parts(sut, &self.slab.noun_space())?;
-                let (_ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())?;
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let ref_noun = live_to_noun(&ref_, self.slab);
+                let space = self.slab.noun_space();
+                let (_sut_aura, sut_val) = type_atom_parts(sut_noun, &space)?;
+                let (_ref_aura, ref_val) = type_atom_parts(ref_noun, &space)?;
                 match (sut_val, ref_val) {
                     (Some(sut_val), Some(ref_val)) => {
                         Ok(!noun_eq(sut_val, ref_val, &self.slab.noun_space())?)
@@ -9781,23 +9773,20 @@ impl<'a> Ut<'a> {
                     _ => Ok(false),
                 }
             }
-            TypeTagKind::Cell => {
-                if !matches!(
-                    type_tag_kind(sut, &self.slab.noun_space())?,
-                    TypeTagKind::Cell
-                ) {
-                    return Ok(true);
-                }
-                let (sut_head, sut_tail) = type_cell_parts(sut, &self.slab.noun_space())?;
-                let (ref_head, ref_tail) = type_cell_parts(ref_, &self.slab.noun_space())?;
-                let head_miss = self.miss_dext(sut_head, ref_head, seen, memo)?;
-                let tail_miss = self.miss_dext(sut_tail, ref_tail, seen, memo)?;
+            NTy::Cell(rh, rt) => {
+                let (sh, st) = match &*sut {
+                    NTy::Cell(sh, st) => (sh.clone(), st.clone()),
+                    _ => return Ok(true),
+                };
+                let rh = rh.clone();
+                let rt = rt.clone();
+                let head_miss = self.miss_dext(sh, rh, seen, memo)?;
+                let tail_miss = self.miss_dext(st, rt, seen, memo)?;
                 Ok(head_miss || tail_miss)
             }
             _ => self.miss_dext(ref_, sut, seen, memo),
         }
     }
-
     fn fuse_inner(
         &mut self,
         sut: NRc<NTy>,

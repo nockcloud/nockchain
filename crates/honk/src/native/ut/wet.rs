@@ -333,7 +333,7 @@ impl<'a> Ut<'a> {
                 let mut merged_wec = Vec::new();
                 let mut reduced_options = Vec::new();
                 for option in options.iter().copied() {
-                    if self.miss(sut, option)? {
+                    if self.miss_noun(sut, option)? {
                         continue;
                     }
                     let (reduced_option, branch_state) =

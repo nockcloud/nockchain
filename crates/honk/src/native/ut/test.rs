@@ -552,7 +552,7 @@ fn type_algebra_fuse_and_crop_preserve_subtyping_and_exact_crop_disjointness() {
             // for exact broad partitions whose complement is representable.
             if matches!(*right_name, "noun" | "void" | "atom" | "cell_noun_noun") {
                 assert!(
-                    ut.miss(cropped, *right).expect("crop disjoint"),
+                    ut.miss_noun(cropped, *right).expect("crop disjoint"),
                     "crop({left_name}, {right_name}) should not overlap right"
                 );
             }
@@ -592,7 +592,7 @@ fn type_algebra_gain_and_lose_partition_base_skins() {
             // Base noun/void/atom/cell skins form exact representable partitions.
             if matches!(*skin_name, "noun" | "void" | "atom" | "cell") {
                 assert!(
-                    ut.miss(gained, lost).expect("gain/lose disjoint"),
+                    ut.miss_noun(gained, lost).expect("gain/lose disjoint"),
                     "gain({type_name}, {skin_name}) and lose({type_name}, {skin_name}) should be disjoint"
                 );
             }
@@ -1488,7 +1488,7 @@ fn miss_noun_with_hold_that_expands_to_void_uses_nest() {
         "test setup should produce a hold that nests in %void"
     );
     assert!(
-        ut.miss(noun, hold).expect("miss noun hold"),
+        ut.miss_noun(noun, hold).expect("miss noun hold"),
         "canonical ++miss treats %noun as disjoint from any ref that nests in %void"
     );
 }
@@ -2070,7 +2070,7 @@ fn miss_strips_matching_faces_before_hold_comparison() {
 
     let mut ut = Ut::new(&mut slab);
     assert!(
-        !ut.miss(left, right).expect("miss"),
+        !ut.miss_noun(left, right).expect("miss"),
         "matching faces around equal hold generators with overlapping inners should not be pruned"
     );
 }
@@ -2114,8 +2114,8 @@ fn redo_fork_prunes_held_atom_and_keeps_matching_held_cell_face() {
     let expected = ty_face(&mut slab, "i", payload);
 
     let mut ut = Ut::new(&mut slab);
-    assert!(ut.miss(payload, atom_option).expect("atom miss"));
-    assert!(!ut.miss(payload, cell_option).expect("cell miss"));
+    assert!(ut.miss_noun(payload, atom_option).expect("atom miss"));
+    assert!(!ut.miss_noun(payload, cell_option).expect("cell miss"));
     let actual = ut.redo_wet_payload(payload, reference).expect("redo");
     assert!(noun_eq(actual, expected, &ut.slab.noun_space()).expect("noun_eq"));
 }
