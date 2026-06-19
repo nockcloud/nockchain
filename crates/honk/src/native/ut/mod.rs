@@ -3800,7 +3800,7 @@ impl<'a> Ut<'a> {
                 }
             },
             Hoon::Axis(axis) => {
-                let ty = self.peek(sut, Way::Free, *axis)?;
+                let ty = self.peek_noun(sut, Way::Free, *axis)?;
                 let ty = self.nice(sut, gol, ty)?;
                 let formula = slot_formula_axis(self.slab, *axis);
                 Ok((ty, formula))
@@ -4251,7 +4251,7 @@ impl<'a> Ut<'a> {
                     }
                 },
                 Hoon::Axis(axis) => {
-                    let n = self.peek(sut, Way::Free, *axis)?;
+                    let n = self.peek_noun(sut, Way::Free, *axis)?;
                     self.pb(n)
                 }
                 Hoon::BarCen(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Dry),
@@ -4612,8 +4612,8 @@ impl<'a> Ut<'a> {
         let cell_ty = ty_cell(self.slab, cell_head, cell_tail);
         let known_cell = self.nest(cell_ty, ty)?;
 
-        let head_ty = self.peek(ty, Way::Free, 2)?;
-        let tail_ty = self.peek(ty, Way::Free, 3)?;
+        let head_ty = self.peek_noun(ty, Way::Free, 2)?;
+        let tail_ty = self.peek_noun(ty, Way::Free, 3)?;
         let head_match = self.skin_match_static(head_ty, head)?;
         let tail_match = self.skin_match_static(tail_ty, tail)?;
 
@@ -4771,7 +4771,7 @@ impl<'a> Ut<'a> {
     }
 
     fn skin_test_formula(&mut self, sut: Noun, axis: u64, skin: &Skin) -> Result<Noun> {
-        let ref_type = self.peek(sut, Way::Free, axis)?;
+        let ref_type = self.peek_noun(sut, Way::Free, axis)?;
         if let Some(matches) = self.skin_match_static(ref_type, skin)? {
             return Ok(const_bool_formula(self.slab, matches));
         }
@@ -4813,7 +4813,7 @@ impl<'a> Ut<'a> {
                 self.skin_test_formula(sut, axis, inner)
             }
             Skin::Spec(spec, inner) => {
-                let ref_type = self.peek(sut, Way::Free, axis)?;
+                let ref_type = self.peek_noun(sut, Way::Free, axis)?;
                 let example = self.spec_example_cached(spec);
                 let hit = self.play_noun(sut, example.as_ref())?;
                 if !self.nest(hit, ref_type)? {
@@ -8456,15 +8456,15 @@ impl<'a> Ut<'a> {
             ),
             Vair::Iron => {
                 // Bootstrap `+nest` compares `%iron` in this orientation.
-                let sut_peek = self.peek(ref_ctx, Way::Rite, 2)?;
-                let ref_peek = self.peek(sut_ctx, Way::Rite, 2)?;
+                let sut_peek = self.peek_noun(ref_ctx, Way::Rite, 2)?;
+                let ref_peek = self.peek_noun(sut_ctx, Way::Rite, 2)?;
                 self.nest_inner(
                     sut_peek, ref_peek, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
                 )
             }
             Vair::Zinc => {
-                let sut_peek = self.peek(sut_ctx, Way::Read, 2)?;
-                let ref_peek = self.peek(ref_ctx, Way::Read, 2)?;
+                let sut_peek = self.peek_noun(sut_ctx, Way::Read, 2)?;
+                let ref_peek = self.peek_noun(ref_ctx, Way::Read, 2)?;
                 self.nest_inner(
                     sut_peek, ref_peek, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
                 )
@@ -10185,7 +10185,10 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn peek(&mut self, sut: Noun, way: Way, axis: u64) -> Result<Noun> {
+    fn peek(&mut self, sut: NRc<NTy>, way: Way, axis: u64) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP (consumer C2): peek reads the native enum directly. The
+        // seen-hold dedup, the core coil, and the fork set stay noun-keyed in
+        // Phase 1 (lowered via to_noun); repo is native (C1).
         fn seen_hold(
             ut: &mut Ut<'_>,
             seen: &mut HashMap<u32, Vec<(Noun, u64)>>,
@@ -10207,35 +10210,31 @@ impl<'a> Ut<'a> {
 
         fn go(
             ut: &mut Ut<'_>,
-            sut: Noun,
+            sut: NRc<NTy>,
             way: Way,
             axis: u64,
             seen_holds: &mut HashMap<u32, Vec<(Noun, u64)>>,
-        ) -> Result<Noun> {
+        ) -> Result<NRc<NTy>> {
             if axis == 1 {
                 return Ok(sut);
             }
-            let tag = type_tag(sut, &ut.slab.noun_space())?;
-            match tag.as_str() {
-                "noun" => Ok(ty_noun(ut.slab)),
-                "void" => Ok(ty_void(ut.slab)),
-                "atom" => Ok(ty_void(ut.slab)),
-                "cell" => {
-                    let (head, tail) = type_cell_parts(sut, &ut.slab.noun_space())?;
+            match &*sut {
+                NTy::Noun => Ok(cons_noun()),
+                NTy::Void => Ok(cons_void()),
+                NTy::Atom { .. } => Ok(cons_void()),
+                NTy::Cell(head, tail) => {
                     let (cap, mas) = axis_cap_mas(axis)?;
-                    if cap == 2 {
-                        go(ut, head, way, mas, seen_holds)
-                    } else {
-                        go(ut, tail, way, mas, seen_holds)
-                    }
+                    let child = if cap == 2 { head.clone() } else { tail.clone() };
+                    go(ut, child, way, mas, seen_holds)
                 }
-                "core" => {
-                    let (payload, coil) = type_core_parts(sut, &ut.slab.noun_space())?;
+                NTy::Core { payload, coil } => {
                     let (cap, mas) = axis_cap_mas(axis)?;
                     if cap != 3 {
-                        return Ok(ty_noun(ut.slab));
+                        return Ok(cons_noun());
                     }
-                    let (garb, _context, _rest) = coil_parts(coil, &ut.slab.noun_space())?;
+                    let payload = payload.clone();
+                    let coil_noun = coil.to_noun(ut.slab);
+                    let (garb, _context, _rest) = coil_parts(coil_noun, &ut.slab.noun_space())?;
                     let vair = garb_vair(garb, &ut.slab.noun_space())?;
                     let (sam, con) = peel(way, vair);
                     let tow = if mas == 1 { 1 } else { axis_cap_mas(mas)?.0 };
@@ -10246,47 +10245,61 @@ impl<'a> Ut<'a> {
                         return Err(CompilerError::Noun("payload-block".to_string()));
                     }
                     let sam_type = if sam {
-                        go(ut, payload, way, 2, seen_holds)?
+                        go(ut, payload.clone(), way, 2, seen_holds)?
                     } else {
-                        ty_noun(ut.slab)
+                        cons_noun()
                     };
                     let con_type = if con {
-                        go(ut, payload, way, 3, seen_holds)?
+                        go(ut, payload.clone(), way, 3, seen_holds)?
                     } else {
-                        ty_noun(ut.slab)
+                        cons_noun()
                     };
-                    let blocked = ty_cell(ut.slab, sam_type, con_type);
+                    let blocked = cons_cell(sam_type, con_type);
                     go(ut, blocked, way, mas, seen_holds)
                 }
-                "face" => {
-                    let inner = type_face_inner(sut, &ut.slab.noun_space())?;
+                NTy::Face { inner, .. } => {
+                    let inner = inner.clone();
                     go(ut, inner, way, axis, seen_holds)
                 }
-                "hint" => {
-                    let inner = type_hint_inner(sut, &ut.slab.noun_space())?;
-                    go(ut, inner, way, axis, seen_holds)
+                NTy::Hint { payload, .. } => {
+                    let payload = payload.clone();
+                    go(ut, payload, way, axis, seen_holds)
                 }
-                "hold" => {
-                    if seen_hold(ut, seen_holds, sut, axis)? {
-                        return Ok(ty_void(ut.slab));
+                NTy::Hold { .. } => {
+                    let hold_noun = sut.to_noun(ut.slab);
+                    if seen_hold(ut, seen_holds, hold_noun, axis)? {
+                        return Ok(cons_void());
                     }
-                    let expanded = ut.repo_noun(sut)?;
+                    let expanded = ut.repo(sut.clone())?;
                     go(ut, expanded, way, axis, seen_holds)
                 }
-                "fork" => {
-                    let options = type_fork_options(sut, &ut.slab.noun_space())?;
+                NTy::Fork { set } => {
+                    let set_noun = set.to_noun(ut.slab);
+                    let options = fork_set_options(set_noun, &ut.slab.noun_space())?;
                     let mut peeks = Vec::with_capacity(options.len());
                     for option in options {
-                        peeks.push(go(ut, option, way, axis, seen_holds)?);
+                        let opt = native_of(option, &ut.slab.noun_space())?;
+                        peeks.push(go(ut, opt, way, axis, seen_holds)?);
                     }
-                    ut.fork_from_options(peeks)
+                    let mut peek_nouns = Vec::with_capacity(peeks.len());
+                    for p in &peeks {
+                        peek_nouns.push(p.to_noun(ut.slab));
+                    }
+                    let fork_noun = ut.fork_from_options(peek_nouns)?;
+                    native_of(fork_noun, &ut.slab.noun_space())
                 }
-                _ => Ok(ty_noun(ut.slab)),
             }
         }
 
         let mut seen_holds: HashMap<u32, Vec<(Noun, u64)>> = HashMap::new();
         go(self, sut, way, axis, &mut seen_holds)
+    }
+
+    /// Noun-bridged `peek` for not-yet-flipped callers (C2): lift sut, run native
+    /// peek, lower the result. Drops as callers flip.
+    fn peek_noun(&mut self, sut: Noun, way: Way, axis: u64) -> Result<Noun> {
+        let native = native_of(sut, &self.slab.noun_space())?;
+        Ok(self.peek(native, way, axis)?.to_noun(self.slab))
     }
 
     /// Grow the native stack before recursing into deep type operations

@@ -119,7 +119,7 @@ impl<'a> Ut<'a> {
                 let lon = palo.vein;
                 match head {
                     Limb::Axis(step) => {
-                        let typ = self.peek(current_sut, way, *step)?;
+                        let typ = self.peek_noun(current_sut, way, *step)?;
                         let vein = prepend_vein(&lon, Some(axis_from_u64(*step)));
                         Ok(Pony::Palo(Palo {
                             vein,
@@ -525,7 +525,7 @@ impl<'a> Ut<'a> {
                                 seen,
                             )
                         } else {
-                            let peeked = ut.peek(payload, way, 2)?;
+                            let peeked = ut.peek_noun(payload, way, 2)?;
                             go(
                                 ut,
                                 peeked,

@@ -251,8 +251,8 @@ impl<'a> Ut<'a> {
                 let (reduced_ref, next_state) = self.redo_sint(sut, reference, true, state)?;
                 let (sut_head, sut_tail) = type_cell_parts(sut, &space)?;
                 let descend_state = next_state.for_cell_descent();
-                let ref_head = self.peek(reduced_ref, Way::Free, 2)?;
-                let ref_tail = self.peek(reduced_ref, Way::Free, 3)?;
+                let ref_head = self.peek_noun(reduced_ref, Way::Free, 2)?;
+                let ref_tail = self.peek_noun(reduced_ref, Way::Free, 3)?;
                 let new_head = self.redo_dext(sut_head, ref_head, descend_state.clone())?;
                 let new_tail = self.redo_dext(sut_tail, ref_tail, descend_state)?;
                 let rebuilt = ty_cell(self.slab, new_head, new_tail);

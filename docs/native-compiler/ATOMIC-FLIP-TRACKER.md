@@ -104,7 +104,7 @@ CONSUMER FLIP (mapped 2026-06-19 by consumer-flip-map workflow; leaves-first,
 flip-in-place + bridge; decoders become enum matches retired bottom-up). Plan
 steps and status:
   C1 [DONE] repo/repo_hold -> native (repo_noun bridge for 27 callers).
-  C2 [ ] peek -> native (Core lowers coil leaf to coil_parts/garb_vair; Fork lowers
+  C2 [DONE] peek -> native (Core lowers coil leaf to coil_parts/garb_vair; Fork lowers
          set to fork_set_options; Hold -> repo native). ~4 callers.
   C3 [ ] wrap_type -> native (needs collapse-aware cons_core/cons_face/cons_hint).
   C4 [ ] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep

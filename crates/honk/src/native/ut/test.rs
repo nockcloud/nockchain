@@ -612,13 +612,13 @@ fn type_algebra_peek_distributes_over_forks() {
     let fork = ty_fork(&mut slab, vec![left, right]);
     let mut ut = Ut::new(&mut slab);
 
-    let head = ut.peek(fork, Way::Free, 2).expect("peek fork head");
+    let head = ut.peek_noun(fork, Way::Free, 2).expect("peek fork head");
     let expected_head = ut
         .fork_from_options(vec![left_head, right_head])
         .expect("expected head fork");
     assert!(noun_eq(head, expected_head, &ut.slab.noun_space()).expect("head noun_eq"));
 
-    let tail = ut.peek(fork, Way::Free, 3).expect("peek fork tail");
+    let tail = ut.peek_noun(fork, Way::Free, 3).expect("peek fork tail");
     let expected_tail = ut
         .fork_from_options(vec![left_tail, right_tail])
         .expect("expected tail fork");
