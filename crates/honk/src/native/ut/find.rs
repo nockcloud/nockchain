@@ -49,7 +49,7 @@ impl<'a> Ut<'a> {
     }
 
     pub(super) fn fond_hold_inner(&mut self, sut: Noun) -> Result<Noun> {
-        self.repo(sut)
+        self.repo_noun(sut)
     }
 
     // HOON138:arm=ut:fend lines=9486-9492 map=direct status=partial reviewed=2026-03-06

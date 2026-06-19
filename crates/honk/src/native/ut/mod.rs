@@ -4759,7 +4759,7 @@ impl<'a> Ut<'a> {
                     }
                 }
                 seen_holds.push(typ);
-                let repo = self.repo(typ)?;
+                let repo = self.repo_noun(typ)?;
                 let out = self.type_test_formula_on_axis_inner(repo, axis, seen_holds);
                 seen_holds.pop();
                 out
@@ -6234,7 +6234,7 @@ impl<'a> Ut<'a> {
                 let _ = self.semi_parts(coil_semi)?;
                 self.semi_combine(coil_semi, payload_semi)
             }
-            "face" | "hint" => match self.repo(sut) {
+            "face" | "hint" => match self.repo_noun(sut) {
                 Ok(inner) => self.bran_canonical_semi_inner(inner, seen_holds, seen_raw),
                 Err(_) => Ok(self.semi_full_blocked()),
             },
@@ -6248,7 +6248,7 @@ impl<'a> Ut<'a> {
                     }
                 }
                 seen_holds.push(sut);
-                let out = match self.repo(sut) {
+                let out = match self.repo_noun(sut) {
                     Ok(inner) => self.bran_canonical_semi_inner(inner, seen_holds, seen_raw),
                     Err(_) => Ok(self.semi_full_blocked()),
                 };
@@ -7258,7 +7258,7 @@ impl<'a> Ut<'a> {
                 if !self.noun_seen_insert_structural(seen_holds, goal)? {
                     return Ok(());
                 }
-                let expanded = self.repo(goal)?;
+                let expanded = self.repo_noun(goal)?;
                 self.check_goal_core_chapter_counts(expanded, actual_count, seen_holds)
             }
             _ => Ok(()),
@@ -7290,7 +7290,7 @@ impl<'a> Ut<'a> {
                     if !self.noun_seen_insert_structural(&mut seen_holds, current)? {
                         return Ok(None);
                     }
-                    current = self.repo(current)?;
+                    current = self.repo_noun(current)?;
                 }
                 _ => return Ok(None),
             }
@@ -8281,7 +8281,7 @@ impl<'a> Ut<'a> {
                         return Ok(true);
                     }
                     let result = (|| -> Result<bool> {
-                        let inner = self.repo(sut)?;
+                        let inner = self.repo_noun(sut)?;
                         self.nest_inner(
                             inner, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
                             memo,
@@ -8314,7 +8314,7 @@ impl<'a> Ut<'a> {
             TypeTagKind::Void => Ok(true),
             TypeTagKind::Noun | TypeTagKind::Atom | TypeTagKind::Cell => Ok(false),
             TypeTagKind::Core => {
-                let repo_ref = self.repo(ref_)?;
+                let repo_ref = self.repo_noun(ref_)?;
                 self.nest_inner(
                     sut, repo_ref, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
                 )
@@ -8351,7 +8351,7 @@ impl<'a> Ut<'a> {
                     return Ok(true);
                 }
                 let result = (|| -> Result<bool> {
-                    let repo_ref = self.repo(ref_)?;
+                    let repo_ref = self.repo_noun(ref_)?;
                     self.nest_inner(
                         sut, repo_ref, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
                     )
@@ -8663,7 +8663,7 @@ impl<'a> Ut<'a> {
                 Ok(ty_hint(self.slab, inner, note, payload))
             }
             "hold" => {
-                let repo = self.repo(typ)?;
+                let repo = self.repo_noun(typ)?;
                 self.wrap_type(repo, vair)
             }
             _ => Ok(typ),
@@ -8854,7 +8854,7 @@ impl<'a> Ut<'a> {
                         self.fork_from_options(out)
                     }
                     "hold" => {
-                        let inner = self.repo(sut)?;
+                        let inner = self.repo_noun(sut)?;
                         self.take_inner_head_tail(inner, None, tail, duz)
                     }
                     _ => self.take_inner(sut, tail, duz),
@@ -8903,7 +8903,7 @@ impl<'a> Ut<'a> {
             }
             "core" => {
                 if cap == 2 {
-                    let repo = self.repo(sut)?;
+                    let repo = self.repo_noun(sut)?;
                     self.take_axis(repo, step, tail, duz, vil)
                 } else {
                     let (payload, coil) = type_core_parts(sut, &self.slab.noun_space())?;
@@ -8934,7 +8934,7 @@ impl<'a> Ut<'a> {
                     return Ok(ty_void(self.slab));
                 }
                 let result = (|| -> Result<Noun> {
-                    let inner = self.repo(sut)?;
+                    let inner = self.repo_noun(sut)?;
                     self.take_axis(inner, step, tail, duz, vil)
                 })();
                 let removed = vil.remove(self, sut)?;
@@ -9180,7 +9180,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.gain_atom_skin(sut, inner, aura, seen)
             }
             _ => Ok(ty_void(self.slab)),
@@ -9254,7 +9254,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.gain_cell_skin(sut, inner, head, tail, seen)
             }
             _ => Ok(ty_void(self.slab)),
@@ -9329,7 +9329,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.gain_leaf_skin(sut, inner, aura, atom, seen)
             }
             _ => Ok(ty_void(self.slab)),
@@ -9447,7 +9447,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.lose_atom_skin(sut, inner, _aura, seen)
             }
             _ => Ok(ref_),
@@ -9521,7 +9521,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.lose_cell_skin(sut, inner, head, tail, seen)
             }
             _ => Ok(ref_),
@@ -9574,7 +9574,7 @@ impl<'a> Ut<'a> {
                 if !seen.insert(self, ref_)? {
                     return Ok(ty_void(self.slab));
                 }
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.lose_leaf_skin(sut, inner, _aura, atom, seen)
             }
             _ => Ok(ref_),
@@ -9717,7 +9717,7 @@ impl<'a> Ut<'a> {
                     }
                 }
                 seen.push((sut, ref_));
-                let repo = self.repo(sut)?;
+                let repo = self.repo_noun(sut)?;
                 let result = self.miss_dext(repo, ref_, seen, memo);
                 seen.pop();
                 result
@@ -9830,7 +9830,7 @@ impl<'a> Ut<'a> {
                 _ => self.fuse_inner(ref_, sut, seen),
             },
             "core" => {
-                let inner = self.repo(sut)?;
+                let inner = self.repo_noun(sut)?;
                 self.fuse_inner(inner, ref_, seen)
             }
             "face" => {
@@ -9865,7 +9865,7 @@ impl<'a> Ut<'a> {
                     }
                 }
                 seen.entry(key).or_default().push((sut, ref_));
-                let inner = self.repo(sut)?;
+                let inner = self.repo_noun(sut)?;
                 let result = self.fuse_inner(inner, ref_, seen);
                 if let Some(bucket) = seen.get_mut(&key) {
                     bucket.pop();
@@ -9985,7 +9985,7 @@ impl<'a> Ut<'a> {
                     }
                 }
                 seen.entry(key).or_default().push((sut, ref_));
-                let inner = self.repo(sut)?;
+                let inner = self.repo_noun(sut)?;
                 let result = self.crop_inner(inner, ref_, seen);
                 if let Some(bucket) = seen.get_mut(&key) {
                     bucket.pop();
@@ -9996,7 +9996,7 @@ impl<'a> Ut<'a> {
                 result
             }
             "noun" => {
-                let repo = self.repo(sut)?;
+                let repo = self.repo_noun(sut)?;
                 self.crop_inner(repo, ref_, seen)
             }
             "void" => Ok(ty_void(self.slab)),
@@ -10014,7 +10014,7 @@ impl<'a> Ut<'a> {
         match tag.as_str() {
             "core" => Ok(sut),
             "face" | "hint" | "hold" => {
-                let inner = self.repo(ref_)?;
+                let inner = self.repo_noun(ref_)?;
                 self.crop_inner(sut, inner, seen)
             }
             "fork" => {
@@ -10270,7 +10270,7 @@ impl<'a> Ut<'a> {
                     if seen_hold(ut, seen_holds, sut, axis)? {
                         return Ok(ty_void(ut.slab));
                     }
-                    let expanded = ut.repo(sut)?;
+                    let expanded = ut.repo_noun(sut)?;
                     go(ut, expanded, way, axis, seen_holds)
                 }
                 "fork" => {

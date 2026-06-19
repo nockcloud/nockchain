@@ -40,7 +40,7 @@ impl<'a> Ut<'a> {
                 TypeTagKind::Face => unwrapped_tag(ut, type_face_inner(typ, &space)?, hod),
                 TypeTagKind::Hint => unwrapped_tag(ut, type_hint_inner(typ, &space)?, hod),
                 TypeTagKind::Hold if hod => {
-                    let repo = ut.repo(typ)?;
+                    let repo = ut.repo_noun(typ)?;
                     unwrapped_tag(ut, repo, hod)
                 }
                 kind => Ok(kind),
@@ -285,7 +285,7 @@ impl<'a> Ut<'a> {
                 if self.redo_gil_contains(&next_state.gil, sut, reduced_ref)? {
                     return self.redo_done(sut, &next_state);
                 }
-                let repo = self.repo(sut)?;
+                let repo = self.repo_noun(sut)?;
                 let mut recurse_state = next_state;
                 recurse_state.gil.push((sut, reduced_ref));
                 let redone = self.redo_dext(repo, reduced_ref, recurse_state)?;
@@ -361,7 +361,7 @@ impl<'a> Ut<'a> {
                 Ok((self.fork_from_options(reduced_options)?, next_state))
             }
             TypeTagKind::Hold if hod => {
-                let repo_ref = self.repo(reference)?;
+                let repo_ref = self.repo_noun(reference)?;
                 self.redo_sint(sut, repo_ref, hod, state)
             }
             _ => Ok((reference, state)),

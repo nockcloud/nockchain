@@ -937,7 +937,7 @@ fn repo_noncanonical_cell_errors_with_repo_fltt() {
     let mut ut = Ut::new(&mut slab);
 
     let err = ut
-        .repo(sut)
+        .repo_noun(sut)
         .expect_err("cell input should not pass canonical repo");
     assert!(
         matches!(err, CompilerError::Noun(ref message) if message == "repo-fltt"),
@@ -960,7 +960,7 @@ fn repo_hold_matches_rest_singleton_leg() {
 
     let actual = {
         let mut ut = Ut::new(&mut slab);
-        ut.repo(hold).expect("repo hold should succeed")
+        ut.repo_noun(hold).expect("repo hold should succeed")
     };
 
     assert!(

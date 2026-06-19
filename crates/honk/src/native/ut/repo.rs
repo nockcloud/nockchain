@@ -108,18 +108,22 @@ impl<'a> Ut<'a> {
         self.with_rest_legs(&leg, body)
     }
 
-    fn repo_hold(&mut self, typ: Noun, inner: Noun, hoon_noun: Noun) -> Result<Noun> {
+    fn repo_hold(&mut self, typ: Noun, inner: Noun, hoon_noun: Noun) -> Result<NRc<NTy>> {
         let legs = [(inner, hoon_noun)];
         let leg_id = self.hold_repo_fan_leg_id_for_hold_type(typ, inner, hoon_noun)?;
         let legs_noun = self.rest_legs_noun(&legs);
-        self.with_rest_leg_id(leg_id, |ut| {
+        // ATOMIC FLIP (consumer): repo_hold returns native. Its rest_inner/play
+        // back-edge + the rest_boundary cache stay noun-keyed (Phase 1); the noun
+        // result is lifted to native at the boundary.
+        let result_noun = self.with_rest_leg_id(leg_id, |ut| {
             if let Some(cached) = ut.rest_boundary_lookup(typ, legs_noun)? {
                 return Ok(cached);
             }
             let result = ut.rest_inner(&legs)?;
             ut.rest_boundary_store(typ, legs_noun, result)?;
             Ok(result)
-        })
+        })?;
+        native_of(result_noun, &self.slab.noun_space())
     }
 
     pub(super) fn ty_hold_cached(&mut self, inner: Noun, hoon: Noun) -> Result<Noun> {
@@ -173,34 +177,39 @@ impl<'a> Ut<'a> {
 
     // HOON138:arm=ut:repo lines=10754-10763 map=direct status=partial reviewed=2026-03-06
     // HOON138_NOTE:native primary implementation for canonical `++repo`; full parity review is still in progress
-    pub(super) fn repo(&mut self, typ: Noun) -> Result<Noun> {
-        let space = self.slab.noun_space();
-        let tag = type_tag_kind(typ, &space)?;
-        match tag {
-            TypeTagKind::Face => {
-                let inner = type_face_inner(typ, &space)?;
-                Ok(inner)
+    pub(super) fn repo(&mut self, typ: NRc<NTy>) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP (consumer, STEP 1): repo reads the native enum directly
+        // instead of decoding a type noun. cons_cell mirrors the noun cell_type
+        // void-collapse. Hold still routes through the noun rest_inner/play path
+        // (gene/subject lowered to noun); the fork rebuild stays on the noun
+        // fork_from_options path (RT-07 ordering), lifted back to native.
+        match &*typ {
+            NTy::Face { inner, .. } => Ok(inner.clone()),
+            NTy::Hint { payload, .. } => Ok(payload.clone()),
+            NTy::Core { payload, .. } => Ok(cons_cell(cons_noun(), payload.clone())),
+            NTy::Hold { subject, gene } => {
+                let subject = subject.clone();
+                let gene = gene.clone();
+                let inner = subject.to_noun(self.slab);
+                let hoon = gene.to_noun(self.slab);
+                let typ_noun = typ.to_noun(self.slab);
+                self.repo_hold(typ_noun, inner, hoon)
             }
-            TypeTagKind::Hint => {
-                let inner = type_hint_inner(typ, &space)?;
-                Ok(inner)
-            }
-            TypeTagKind::Core => {
-                let (payload, _coil) = type_core_parts(typ, &space)?;
-                let noun = ty_noun(self.slab);
-                cell_type(self.slab, noun, payload)
-            }
-            TypeTagKind::Hold => {
-                let (inner, hoon_noun) = type_hold_parts(typ, &space)?;
-                self.repo_hold(typ, inner, hoon_noun)
-            }
-            TypeTagKind::Noun => {
+            NTy::Noun => {
                 let atom = ty_atom(self.slab, "$", None);
                 let noun = ty_noun(self.slab);
                 let cell = ty_cell(self.slab, noun, noun);
-                self.fork_from_options(vec![atom, cell])
+                let fork_noun = self.fork_from_options(vec![atom, cell])?;
+                native_of(fork_noun, &self.slab.noun_space())
             }
             _ => Err(CompilerError::Noun("repo-fltt".to_string())),
         }
+    }
+
+    /// Noun-bridged `repo` for not-yet-flipped callers (STEP 1): lift the noun
+    /// type to native, run native repo, lower the result. Drops as callers flip.
+    pub(super) fn repo_noun(&mut self, typ: Noun) -> Result<Noun> {
+        let native = native_of(typ, &self.slab.noun_space())?;
+        Ok(self.repo(native)?.to_noun(self.slab))
     }
 }
