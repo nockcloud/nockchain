@@ -8639,7 +8639,7 @@ impl<'a> Ut<'a> {
             }
             NTy::Core { payload, coil } => {
                 let payload = payload.clone();
-                let coil_noun = coil.to_noun(self.slab);
+                let coil_noun = live_leaf_to_noun(coil, self.slab);
                 let (garb, context, rest) = coil_parts(coil_noun, &self.slab.noun_space())?;
                 let current_vair = garb_vair(garb, &self.slab.noun_space())?;
                 if current_vair != Vair::Gold && vair != Vair::Lead {
@@ -8657,7 +8657,7 @@ impl<'a> Ut<'a> {
                 Ok(cons_face(tool, inner))
             }
             NTy::Fork { set } => {
-                let set_noun = set.to_noun(self.slab);
+                let set_noun = live_leaf_to_noun(set, self.slab);
                 let options = fork_set_options(set_noun, &self.slab.noun_space())?;
                 let mut wrapped = Vec::with_capacity(options.len());
                 for option in options {
@@ -10253,7 +10253,7 @@ impl<'a> Ut<'a> {
                         return Ok(cons_noun());
                     }
                     let payload = payload.clone();
-                    let coil_noun = coil.to_noun(ut.slab);
+                    let coil_noun = live_leaf_to_noun(coil, ut.slab);
                     let (garb, _context, _rest) = coil_parts(coil_noun, &ut.slab.noun_space())?;
                     let vair = garb_vair(garb, &ut.slab.noun_space())?;
                     let (sam, con) = peel(way, vair);
@@ -10294,7 +10294,7 @@ impl<'a> Ut<'a> {
                     go(ut, expanded, way, axis, seen_holds)
                 }
                 NTy::Fork { set } => {
-                    let set_noun = set.to_noun(ut.slab);
+                    let set_noun = live_leaf_to_noun(set, ut.slab);
                     let options = fork_set_options(set_noun, &ut.slab.noun_space())?;
                     let mut peeks = Vec::with_capacity(options.len());
                     for option in options {
@@ -12292,8 +12292,8 @@ fn coil_from_parts(slab: &mut NounSlab, garb: Noun, context: Noun, rest: Noun) -
 use std::rc::Rc as NRc;
 
 use crate::native::ir::intern::{
-    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, live_to_noun,
-    native_of,
+    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, live_leaf_to_noun,
+    live_to_noun, native_of,
 };
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;

@@ -190,9 +190,9 @@ impl<'a> Ut<'a> {
             NTy::Hold { subject, gene } => {
                 let subject = subject.clone();
                 let gene = gene.clone();
-                let inner = subject.to_noun(self.slab);
-                let hoon = gene.to_noun(self.slab);
-                let typ_noun = typ.to_noun(self.slab);
+                let inner = live_to_noun(&subject, self.slab);
+                let hoon = live_leaf_to_noun(&gene, self.slab);
+                let typ_noun = live_to_noun(&typ, self.slab);
                 self.repo_hold(typ_noun, inner, hoon)
             }
             NTy::Noun => {

@@ -163,6 +163,9 @@ std::thread_local! {
     /// lowering O(1) amortized instead of O(type) per call.
     static TO_NOUN_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Per-compile memo for `live_leaf_to_noun`: Jammed-leaf Arc pointer -> noun.
+    static LEAF_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
@@ -186,6 +189,7 @@ pub fn live_enabled() -> bool {
 pub fn live_reset() {
     LIVE.with(|cell| *cell.borrow_mut() = None);
     TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
+    LEAF_MEMO.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
@@ -270,6 +274,26 @@ pub fn native_of(noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
         let st = slot.get_or_insert_with(LiveIntern::new);
         intern_type_noun(&mut st.table, &mut st.memo, noun, space)
     })
+}
+
+/// Memoized leaf lowering for the flipped consumers: lower a carried `Leaf`
+/// (core coil, fork set, hold gene, atom aura/bits, face tool, hint head) to a
+/// noun for the still-noun leaf helpers (coil_parts/fork_set_options/garb_*/fitz),
+/// caching `Jammed` leaves by their `Arc` pointer so repeated lowerings on the hot
+/// recursive paths are O(1). Reset per compile via `live_reset`.
+pub fn live_leaf_to_noun(leaf: &Leaf, dst: &mut NounSlab) -> Noun {
+    match leaf {
+        Leaf::Direct(_) => leaf.to_noun(dst),
+        Leaf::Jammed(arc, _) => {
+            let ptr = std::sync::Arc::as_ptr(arc) as *const u8 as usize;
+            if let Some(noun) = LEAF_MEMO.with(|m| m.borrow().get(&ptr).copied()) {
+                return noun;
+            }
+            let noun = leaf.to_noun(dst);
+            LEAF_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
+            noun
+        }
+    }
 }
 
 /// Live byte-exact oracle: panic unless `to_noun(native)` jams identically to the
