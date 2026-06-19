@@ -13183,6 +13183,18 @@ fn crash_formula(slab: &mut NounSlab) -> Noun {
 }
 
 fn cell_type(slab: &mut NounSlab, head: Noun, tail: Noun) -> Result<Noun> {
+    // Native-shadow (INC6, flag-gated): cells are the most common structural type
+    // and thread head/tail natives. Under the flag, build via cell_type_n (which
+    // mirrors the cell(void,_)/cell(_,void)->void collapse) and assert byte-exact;
+    // the shipping path is the unchanged noun-only logic below.
+    if crate::native::ir::intern::live_enabled() {
+        let space = slab.noun_space();
+        let hn = native_of(head, &space)?;
+        let tn = native_of(tail, &space)?;
+        let (noun, native) = cell_type_n(slab, (head, hn), (tail, tn))?;
+        crate::native::ir::intern::assert_native_eq(noun, &native, &slab.noun_space());
+        return Ok(noun);
+    }
     let space = slab.noun_space();
     if type_tag(head, &space)? == "void" {
         return Ok(ty_void(slab));
