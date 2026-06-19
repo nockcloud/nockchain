@@ -70,10 +70,24 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
   `cons_cell`/`cons_void`/`cons_noun` (native leaf ctors), `pb` (helper noun ->
   native), `play_noun` (native play -> noun for not-yet-flipped callers). Byte
   parity PASS, native tests green, lib + bin compile.
+- Steps 4-5 DONE: `mint_core` + `mine` return `(Rc<Type>, Noun)`; nice/cache stay
+  noun (bridged), callers (mint_inner BarCen/BarPat) to_noun the type slot.
 - Compiles: YES.
-- NEXT: step 4 — `mint_core` -> `(Rc<Type>, Noun)` (the subject-deepening site;
-  the real memory win). Then `mine`/`mint_inner`/`mint` (78 self.mint callers,
-  same `mint_noun`-bridge pattern) and `nice`/`wrap_type`. Step 3 (flip play_*
-  helpers to drop `pb`/`play_noun`) is perf cleanup, lower priority than the mint
-  win. After producers: flip consumers (nest/fond/type_*_parts read Rc<Type>),
-  then the boundary + delete bridges/noun ty_* ctors.
+
+KEY INSIGHT (2026-06-19): the producer-OUTPUT flips (play/mint_core/mine) build
+native then `to_noun` it straight back at each not-yet-flipped boundary — correct
++ compiling, but no memory win yet. Two things actually deliver the win and should
+drive the remaining order:
+  (a) flip `nice` to native FIRST (it is called by nearly every mint arm; native
+      nice = nest-check via one internal to_noun, return typ native). This removes
+      per-arm nice bridging and unblocks a clean mint_inner/mint output flip.
+  (b) the memory win specifically needs the `sut` INPUT threaded as native through
+      mint/mint_core (so the deepened subject is ONE shared Rc, not a noun rebuilt
+      per core). Output-only flips don't share the subject. Plan: after nice +
+      the mint output flip, thread `sut: Rc<Type>` through mint/mint_inner/
+      mint_core/mine (+ the 78 callers pass native sut), which is where the
+      O(N^2)->O(N) subject collapse lands.
+Revised next order: nice->native; mint_inner/mint output->native (+ mint_noun
+scoped rename, ~40 mint_* helper arms bridged or flipped); then sut->native input
+threading; then consumers (nest/fond/type_*_parts) read Rc<Type>; then drop nouns.
+
