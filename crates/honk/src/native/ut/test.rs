@@ -2220,7 +2220,7 @@ fn crop_hold_seen_is_scoped_to_branch() {
     let sut = ty_fork(&mut slab, vec![hold, hold]);
     let ref_ = ty_atom(&mut slab, "ud", None);
     let mut ut = Ut::new(&mut slab);
-    let result = ut.crop(sut, ref_);
+    let result = ut.crop_noun(sut, ref_);
     assert!(
         result.is_ok(),
         "crop should not loop across sibling branches"

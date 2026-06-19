@@ -9034,7 +9034,7 @@ impl<'a> Ut<'a> {
             if pol {
                 ut.fuse_noun(a, ref_type)
             } else {
-                ut.crop(a, ref_type)
+                ut.crop_noun(a, ref_type)
             }
         };
         let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
@@ -9422,7 +9422,7 @@ impl<'a> Ut<'a> {
                 if !self.nest(hit, inner_ty)? {
                     return Err(CompilerError::Noun("native mint: lose spec".to_string()));
                 }
-                self.crop(ref_, hit)
+                self.crop_noun(ref_, hit)
             }
             Skin::Wash(_) => Ok(ref_),
         }
@@ -9901,154 +9901,157 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn crop(&mut self, sut: Noun, ref_: Noun) -> Result<Noun> {
-        if let Some(cached) = self.crop_boundary_lookup(sut, ref_)? {
-            return Ok(cached);
+    fn crop(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP (consumer C5): native. crop_boundary stays noun-keyed
+        // (memoized live_to_noun) until C-final.
+        let sut_noun = live_to_noun(&sut, self.slab);
+        let ref_noun = live_to_noun(&ref_, self.slab);
+        if let Some(cached) = self.crop_boundary_lookup(sut_noun, ref_noun)? {
+            return native_of(cached, &self.slab.noun_space());
         }
-        // Structural recursion guard (matches hoon-138 `ut:crop` using `bix` set).
-        let mut seen: HashMap<(u32, u32), Vec<(Noun, Noun)>> = HashMap::new();
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
         let result = self.crop_inner(sut, ref_, &mut seen)?;
-        self.crop_boundary_store(sut, ref_, result)?;
+        let result_noun = live_to_noun(&result, self.slab);
+        self.crop_boundary_store(sut_noun, ref_noun, result_noun)?;
         Ok(result)
+    }
+
+    /// Noun-bridged `crop` for not-yet-flipped callers (C5). Drops at C-final.
+    fn crop_noun(&mut self, sut: Noun, ref_: Noun) -> Result<Noun> {
+        let sn = native_of(sut, &self.slab.noun_space())?;
+        let rn = native_of(ref_, &self.slab.noun_space())?;
+        let r = self.crop(sn, rn)?;
+        Ok(live_to_noun(&r, self.slab))
     }
 
     fn crop_inner(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
-        seen: &mut HashMap<(u32, u32), Vec<(Noun, Noun)>>,
-    ) -> Result<Noun> {
-        if noun_eq(sut, ref_, &self.slab.noun_space())?
-            || type_tag(ref_, &self.slab.noun_space())? == "noun"
-        {
-            return Ok(ty_void(self.slab));
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
+        seen: &mut HashSet<(usize, usize)>,
+    ) -> Result<NRc<NTy>> {
+        if NRc::ptr_eq(&sut, &ref_) || matches!(&*ref_, NTy::Noun) {
+            return Ok(cons_void());
         }
-        if type_tag(ref_, &self.slab.noun_space())? == "void" {
+        if matches!(&*ref_, NTy::Void) {
             return Ok(sut);
         }
-        let tag = type_tag(sut, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "atom" => match type_tag(ref_, &self.slab.noun_space())?.as_str() {
-                "atom" => {
-                    let (_sut_aura, sut_val) = type_atom_parts(sut, &self.slab.noun_space())?;
-                    let (_ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())?;
+        match &*sut {
+            NTy::Atom { .. } => match &*ref_ {
+                NTy::Atom { .. } => {
+                    let sut_noun = live_to_noun(&sut, self.slab);
+                    let ref_noun = live_to_noun(&ref_, self.slab);
+                    let space = self.slab.noun_space();
+                    let (_sut_aura, sut_val) = type_atom_parts(sut_noun, &space)?;
+                    let (_ref_aura, ref_val) = type_atom_parts(ref_noun, &space)?;
                     let out = match (sut_val, ref_val) {
-                        (Some(sut_val), Some(ref_val)) => {
-                            if noun_eq(sut_val, ref_val, &self.slab.noun_space())? {
-                                ty_void(self.slab)
+                        (Some(sv), Some(rv)) => {
+                            if noun_eq(sv, rv, &self.slab.noun_space())? {
+                                cons_void()
                             } else {
                                 sut
                             }
                         }
-                        (Some(_), None) => ty_void(self.slab),
+                        (Some(_), None) => cons_void(),
                         (None, Some(_)) => sut,
-                        (None, None) => ty_void(self.slab),
+                        (None, None) => cons_void(),
                     };
                     Ok(out)
                 }
-                "cell" => Ok(sut),
+                NTy::Cell(..) => Ok(sut),
                 _ => self.crop_sint(sut, ref_, seen),
             },
-            "cell" => match type_tag(ref_, &self.slab.noun_space())?.as_str() {
-                "atom" => Ok(sut),
-                "cell" => {
-                    let (sut_head, sut_tail) = type_cell_parts(sut, &self.slab.noun_space())?;
-                    let (ref_head, ref_tail) = type_cell_parts(ref_, &self.slab.noun_space())?;
-                    // hoon-138: `?.  (nest(sut p.ref) | p.sut)  sut`
-                    // Here the nested call runs with subject=`p.ref` and
-                    // argument `ref=p.sut`, so this maps to `nest(ref_head, sut_head)`.
-                    if !self.nest(ref_head, sut_head)? {
-                        return Ok(sut);
+            NTy::Cell(sh, st) => match &*ref_ {
+                NTy::Atom { .. } => Ok(sut),
+                NTy::Cell(rh, rt) => {
+                    let sh = sh.clone();
+                    let st = st.clone();
+                    let rh = rh.clone();
+                    let rt = rt.clone();
+                    // hoon-138 nest(ref_head, sut_head); nest still noun (C8) -> lower.
+                    let rh_noun = live_to_noun(&rh, self.slab);
+                    let sh_noun = live_to_noun(&sh, self.slab);
+                    if !self.nest(rh_noun, sh_noun)? {
+                        return Ok(cons_cell(sh, st));
                     }
-                    let tail = self.crop_inner(sut_tail, ref_tail, seen)?;
-                    cell_type(self.slab, sut_head, tail)
+                    let tail = self.crop_inner(st, rt, seen)?;
+                    Ok(cons_cell(sh, tail))
                 }
                 _ => self.crop_sint(sut, ref_, seen),
             },
-            "core" => {
-                let ref_tag = type_tag(ref_, &self.slab.noun_space())?;
-                if ref_tag == "atom" || ref_tag == "cell" {
-                    Ok(sut)
-                } else {
-                    self.crop_sint(sut, ref_, seen)
-                }
-            }
-            "face" => {
-                let inner = type_face_inner(sut, &self.slab.noun_space())?;
+            NTy::Core { .. } => match &*ref_ {
+                NTy::Atom { .. } | NTy::Cell(..) => Ok(sut),
+                _ => self.crop_sint(sut, ref_, seen),
+            },
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let cropped = self.crop_inner(inner, ref_, seen)?;
-                type_face_with_inner(self.slab, sut, cropped)
+                Ok(cons_face(tool, cropped))
             }
-            "fork" => {
-                let options = type_fork_options(sut, &self.slab.noun_space())?;
+            NTy::Fork { set } => {
+                let set_noun = live_leaf_to_noun(set, self.slab);
+                let options = fork_set_options(set_noun, &self.slab.noun_space())?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.crop_inner(option, ref_, seen)?);
+                    let opt = native_of(option, &self.slab.noun_space())?;
+                    let c = self.crop_inner(opt, ref_.clone(), seen)?;
+                    out.push(live_to_noun(&c, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork_noun = self.fork_from_options(out)?;
+                native_of(fork_noun, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(sut, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let cropped = self.crop_inner(payload, ref_, seen)?;
-                Ok(ty_hint(self.slab, inner, note, cropped))
+                Ok(cons_hint(head, cropped))
             }
-            "hold" => {
-                let key = (self.noun_mug_cached(sut), self.noun_mug_cached(ref_));
-                if let Some(bucket) = seen.get(&key) {
-                    for (cached_sut, cached_ref) in bucket {
-                        if noun_eq(*cached_sut, sut, &self.slab.noun_space())?
-                            && noun_eq(*cached_ref, ref_, &self.slab.noun_space())?
-                        {
-                            return Err(CompilerError::UnsupportedExpr(
-                                "native mint: crop-loop".to_string(),
-                            ));
-                        }
-                    }
+            NTy::Hold { .. } => {
+                let key = (NRc::as_ptr(&sut) as usize, NRc::as_ptr(&ref_) as usize);
+                if seen.contains(&key) {
+                    return Err(CompilerError::UnsupportedExpr(
+                        "native mint: crop-loop".to_string(),
+                    ));
                 }
-                seen.entry(key).or_default().push((sut, ref_));
-                let inner = self.repo_noun(sut)?;
-                let result = self.crop_inner(inner, ref_, seen);
-                if let Some(bucket) = seen.get_mut(&key) {
-                    bucket.pop();
-                    if bucket.is_empty() {
-                        seen.remove(&key);
-                    }
-                }
+                seen.insert(key);
+                let inner = self.repo(sut.clone())?;
+                let result = self.crop_inner(inner, ref_.clone(), seen);
+                seen.remove(&key);
                 result
             }
-            "noun" => {
-                let repo = self.repo_noun(sut)?;
+            NTy::Noun => {
+                let repo = self.repo(sut.clone())?;
                 self.crop_inner(repo, ref_, seen)
             }
-            "void" => Ok(ty_void(self.slab)),
-            _ => Ok(sut),
+            NTy::Void => Ok(cons_void()),
         }
     }
-
     fn crop_sint(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
-        seen: &mut HashMap<(u32, u32), Vec<(Noun, Noun)>>,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "core" => Ok(sut),
-            "face" | "hint" | "hold" => {
-                let inner = self.repo_noun(ref_)?;
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
+        seen: &mut HashSet<(usize, usize)>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Core { .. } => Ok(sut),
+            NTy::Face { .. } | NTy::Hint { .. } | NTy::Hold { .. } => {
+                let inner = self.repo(ref_.clone())?;
                 self.crop_inner(sut, inner, seen)
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { set } => {
+                let set_noun = live_leaf_to_noun(set, self.slab);
+                let options = fork_set_options(set_noun, &self.slab.noun_space())?;
                 let mut acc = sut;
                 for option in options {
-                    acc = self.crop_inner(acc, option, seen)?;
+                    let opt = native_of(option, &self.slab.noun_space())?;
+                    acc = self.crop_inner(acc, opt, seen)?;
                 }
                 Ok(acc)
             }
             _ => Ok(sut),
         }
     }
-
     fn fitz(&mut self, yaz: Noun, wix: Noun) -> Result<bool> {
         fn trim_bytes(bytes: &[u8]) -> Vec<u8> {
             let mut out = bytes.to_vec();

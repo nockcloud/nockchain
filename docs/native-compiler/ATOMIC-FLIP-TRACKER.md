@@ -109,7 +109,7 @@ steps and status:
   C3 [DONE] wrap_type -> native (needs collapse-aware cons_core/cons_face/cons_hint).
   C4 [DONE] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
          to_noun mug keys until C-final).
-  C5 [ ] crop/crop_inner/crop_sint -> native.
+  C5 [DONE] crop/crop_inner/crop_sint -> native.
   C6 [ ] gain/lose skin families (~12 fns) + cool -> native.
   C7 [ ] mull + type_test_formula_on_axis glue -> native.
   C8 [ ] NEST SCC (nest/nest_inner/nest_inner_impl/nest_sint/nest_core/nest_meet/
