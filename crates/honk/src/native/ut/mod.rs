@@ -7804,6 +7804,22 @@ impl<'a> Ut<'a> {
         Ok(ty_hint(self.slab, inner, note, payload))
     }
 
+    /// Native-shadow `hint_type` (INC2): on the void/noun collapse hoon-138
+    /// returns `payload` itself, so the native is the payload's own native.
+    #[allow(dead_code)]
+    fn hint_type_n(
+        &mut self,
+        inner: Noun,
+        note: Noun,
+        payload: (Noun, NRc<NTy>),
+    ) -> Result<(Noun, NRc<NTy>)> {
+        let tag = type_tag(payload.0, &self.slab.noun_space())?;
+        if tag == "void" || tag == "noun" {
+            return Ok(payload);
+        }
+        Ok(ty_hint_n(self.slab, inner, note, payload))
+    }
+
     fn hoon_ast_lookup_cached(&mut self, hoon_noun: Noun) -> Option<Arc<Hoon>> {
         if !self.exact_hoon_ast_lookup_enabled {
             return None;
@@ -10016,6 +10032,17 @@ impl<'a> Ut<'a> {
         }
         let tag = term_to_noun(self.slab, "fork");
         Ok(T(self.slab, &[tag, set]))
+    }
+
+    /// Native-shadow `fork_from_options` (INC2). The boundary fork carries the
+    /// mug-ordered set as one opaque leaf (RT-07), and the empty/single collapses
+    /// yield void/the single member — `native_of` on the result captures all
+    /// three cases byte-exactly without reordering the set.
+    #[allow(dead_code)]
+    fn fork_from_options_n(&mut self, options: Vec<Noun>) -> Result<(Noun, NRc<NTy>)> {
+        let noun = self.fork_from_options(options)?;
+        let native = native_of(noun, &self.slab.noun_space())?;
+        Ok((noun, native))
     }
 
     fn atom_nest(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
@@ -12316,6 +12343,57 @@ mod native_ctor_tests {
         check(&slab, n, &t);
         let (n, t) = ty_bool_n(&mut slab);
         check(&slab, n, &t);
+
+        // cell_type_n: non-collapse + cell(void,_)->void + cell(_,void)->void
+        let h = ty_atom_n(&mut slab, "ud", None);
+        let tl = ty_atom_n(&mut slab, "f", Some(D(0)));
+        let (n, t) = cell_type_n(&mut slab, h, tl).unwrap();
+        check(&slab, n, &t);
+        let hv = ty_void_n(&mut slab);
+        let tl2 = ty_noun_n(&mut slab);
+        let (n, t) = cell_type_n(&mut slab, hv, tl2).unwrap();
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Void), "cell(void,_) must collapse to Void");
+        let h2 = ty_noun_n(&mut slab);
+        let tv = ty_void_n(&mut slab);
+        let (n, t) = cell_type_n(&mut slab, h2, tv).unwrap();
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Void), "cell(_,void) must collapse to Void");
+    }
+
+    #[test]
+    fn native_method_wrappers_byte_exact() {
+        live_reset();
+        let mut slab: NounSlab = NounSlab::new();
+        let mut ut = Ut::new(&mut slab);
+
+        // hint_type_n: non-collapse + void/noun collapse (returns payload native)
+        let payload = ty_atom_n(ut.slab, "ud", None);
+        let note = term_to_noun(ut.slab, "fast");
+        let (n, t) = ut.hint_type_n(D(0), note, payload).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        let pv = ty_void_n(ut.slab);
+        let note2 = term_to_noun(ut.slab, "fast");
+        let (n, t) = ut.hint_type_n(D(0), note2, pv).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        assert!(matches!(&*t, NTy::Void));
+        let pn = ty_noun_n(ut.slab);
+        let note3 = term_to_noun(ut.slab, "fast");
+        let (n, t) = ut.hint_type_n(D(0), note3, pn).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        assert!(matches!(&*t, NTy::Noun));
+
+        // fork_from_options_n: multi-option + single-collapse + empty->void
+        let o1 = ty_atom_n(ut.slab, "f", Some(D(0))).0;
+        let o2 = ty_atom_n(ut.slab, "f", Some(D(1))).0;
+        let (n, t) = ut.fork_from_options_n(vec![o1, o2]).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        let single = ty_atom_n(ut.slab, "ud", None).0;
+        let (n, t) = ut.fork_from_options_n(vec![single]).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        let (n, t) = ut.fork_from_options_n(vec![]).unwrap();
+        assert_native_eq(n, &t, &ut.slab.noun_space());
+        assert!(matches!(&*t, NTy::Void), "empty fork must collapse to Void");
     }
 }
 
@@ -13097,4 +13175,22 @@ fn cell_type(slab: &mut NounSlab, head: Noun, tail: Noun) -> Result<Noun> {
         return Ok(ty_void(slab));
     }
     Ok(ty_cell(slab, head, tail))
+}
+
+/// Native-shadow `cell_type` (INC2): mirrors the cell(void,_)/cell(_,void)->void
+/// collapse, returning the native Void in those cases and `ty_cell_n` otherwise.
+#[allow(dead_code)]
+fn cell_type_n(
+    slab: &mut NounSlab,
+    head: (Noun, NRc<NTy>),
+    tail: (Noun, NRc<NTy>),
+) -> Result<(Noun, NRc<NTy>)> {
+    let space = slab.noun_space();
+    if type_tag(head.0, &space)? == "void" {
+        return Ok(ty_void_n(slab));
+    }
+    if type_tag(tail.0, &space)? == "void" {
+        return Ok(ty_void_n(slab));
+    }
+    Ok(ty_cell_n(slab, head, tail))
 }
