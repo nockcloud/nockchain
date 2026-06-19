@@ -113,12 +113,23 @@ steps and status:
   C5b [DONE] miss family (miss/miss_dext/miss_dext_uncached/miss_sint, mod.rs ~9612)
          -> native (returns bool; type params sut/ref_ -> NRc; uses type_*_parts +
          repo + nest — same pattern as crop; nest bridged via lowering).
-  C6 [ ] gain/lose skin families (~12 fns) + cool -> native.
-  C7 [ ] mull + type_test_formula_on_axis glue -> native.
   C8 [ ] NEST SCC (nest/nest_inner/nest_inner_impl/nest_sint/nest_core/nest_meet/
-         nest_deep_tomes/nest_deep_arms) — ONE atomic step (~600 lines), highest
-         risk; nest_deep_* switch play_noun -> native play.
-  C9 [ ] fond/find family -> native.
+         nest_deep_tomes/nest_deep_arms) — ONE atomic step (~600 lines, 8 mutually
+         recursive fns -> must flip together; non-compiling until all done).
+         DO THIS NEXT: independent (deps peek/repo/wrap_type already native; hot
+         path), unlike gain/lose. nest_* take sut/ref_ (+ dom/dab/hem/dox) -> NRc;
+         seen/gil/interner/memo keyed by native pointer; nest_deep_* use native
+         play (its result drives nest, can stay native). nest_noun bridge for the
+         many callers (nice/fuse/crop/miss/gain/lose/mull/...). nest_core lowers
+         the core coil leaf for coil_parts/garb_*/rest_tomes.
+  C6 [ ] gain/lose skin families (~12 fns) + cool/chip -> native. ENTANGLED with
+         find/take/Port/Palo (chip/cool drive `take`, whose duz closure passes
+         type NOUNS to the skins) -> flip TOGETHER with the find/take + fond
+         batch (C9), not standalone. gain_skin builds via cons_face/cons_hint/
+         fork; uses fuse/crop (native), nest (native after C8), play (bridge).
+  C7 [ ] mull + type_test_formula_on_axis glue -> native.
+  C9 [ ] find/take/Port/Palo + fond family -> native (the wing-nav subsystem;
+         gain/lose/cool/chip fold in here).
   C-final [ ] BOUNDARY CLOSE = the memory win: thread sut native (play/mint sut
          param Noun->Rc<Type>); delete play_noun/pb/repo_noun + all transient
          native_of/to_noun bridges; retire decoders (type_*_parts/type_tag*/coil_*)
