@@ -3806,10 +3806,12 @@ impl<'a> Ut<'a> {
                 Ok((ty, formula))
             }
             Hoon::BarCen(prefix, tomes) => {
-                self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Dry, tomes)
+                let (ty, formula) = self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Dry, tomes)?;
+                Ok((ty.to_noun(self.slab), formula))
             }
             Hoon::BarPat(prefix, tomes) => {
-                self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Wet, tomes)
+                let (ty, formula) = self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Wet, tomes)?;
+                Ok((ty.to_noun(self.slab), formula))
             }
             _ => self.mint_opened(sut, gol, gen),
         }?;
@@ -7031,13 +7033,17 @@ impl<'a> Ut<'a> {
         prefix: &Option<String>,
         tomes: &HashMap<String, Tome>,
         poly: Poly,
-    ) -> Result<(Noun, Noun)> {
+    ) -> Result<(NRc<NTy>, Noun)> {
         // Canonical layered-core construction keeps prior arms in payload/context ancestry.
         // New core tomes contain only the newly declared arms; inherited arms are resolved via
         // `%core` payload traversal in `fond`, not by copying old tomes into the new battery.
         let tomes_map = self.tomes_map_from_ast(tomes)?;
-        if let Some(cached) = self.core_mint_cache_lookup(sut, gol, tomes_map, prefix, poly)? {
-            return Ok(cached);
+        if let Some((cached_ty, cached_formula)) =
+            self.core_mint_cache_lookup(sut, gol, tomes_map, prefix, poly)?
+        {
+            // Cache still holds a noun type (Phase 1); bridge to native on hit.
+            let native = native_of(cached_ty, &self.slab.noun_space())?;
+            return Ok((native, cached_formula));
         }
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
         // Match hoon-138/hoonc layered-core payload layout and formula shape.
@@ -7089,22 +7095,18 @@ impl<'a> Ut<'a> {
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let coil = coil_from_parts(self.slab, garb, context, rest);
         let core_type = ty_core(self.slab, payload_type, coil);
-        // Native-shadow construction port (INC5, flag-gated): mint_core is THE
-        // subject-deepening site — build this core's native bottom-up via
-        // ty_core_n (Core { payload: native(sut), coil: leaf }) and assert it is
-        // byte-exact. The payload native is the (shared, interned) subject; once
-        // sut is threaded as native (next increments) the deepened subjects
-        // collapse to one Rc. Replaces the post-hoc full-walk hook.
-        if crate::native::ir::intern::live_enabled() {
-            let payload_native = native_of(payload_type, &self.slab.noun_space())?;
-            let (_n2, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
-            crate::native::ir::intern::assert_native_eq(core_type, &native, &self.slab.noun_space());
-        }
+        // ATOMIC FLIP step 4: mint_core RETURNS the core's native Rc<Type> — this
+        // is THE subject-deepening site. The noun core_type is still built for the
+        // nice validation + the (noun) core_mint_cache; the native is built
+        // bottom-up via ty_core_n from the payload's native (shared subject). nice
+        // is identity-on-success, so the returned native matches the validated ty.
+        let payload_native = native_of(payload_type, &self.slab.noun_space())?;
+        let (_n2, core_native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
         let battery_formula = T(self.slab, &[D(1), battery]);
         let formula = cons(self.slab, battery_formula, payload_formula)?;
         let ty = self.nice(sut, gol, core_type)?;
         self.core_mint_cache_store(sut, gol, tomes_map, prefix, poly, ty, formula)?;
-        Ok((ty, formula))
+        Ok((core_native, formula))
     }
 
     fn mine(
@@ -7115,12 +7117,16 @@ impl<'a> Ut<'a> {
         nym: Option<&str>,
         hud: Poly,
         dom: &HashMap<String, Tome>,
-    ) -> Result<(Noun, Noun)> {
+    ) -> Result<(NRc<NTy>, Noun)> {
         let prefix = nym.map(str::to_string);
         let (mut ty, formula) = self.mint_core(sut, gol, &prefix, dom, hud)?;
         if mel != Vair::Gold {
-            ty = self.wrap_type(ty, mel)?;
-            ty = self.nice(sut, gol, ty)?;
+            // wrap_type/nice are still noun-typed (Phase 1): bridge native->noun
+            // and back at this boundary.
+            let ty_noun = ty.to_noun(self.slab);
+            let wrapped = self.wrap_type(ty_noun, mel)?;
+            let checked = self.nice(sut, gol, wrapped)?;
+            ty = native_of(checked, &self.slab.noun_space())?;
         }
         Ok((ty, formula))
     }

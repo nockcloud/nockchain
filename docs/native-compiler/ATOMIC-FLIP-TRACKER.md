@@ -46,9 +46,11 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
    callers + play_* helpers' internal self.play renamed to `play_noun` (= play +
    to_noun) so they keep compiling unchanged. Gate PASS, tests green.
 3. [ ] play_* helpers -> Rc<Type>  (drop `pb`/`play_noun` bridges as each flips)
-4. [ ] mint_core -> (Rc<Type>, Noun)  (handle nice + core_mint_cache native)
-5. [ ] mine -> (Rc<Type>, Noun)  (wrap_type, nice)
-6. [ ] mint_inner / mint -> (Rc<Type>, Noun)  (78 self.mint callers)
+4. [DONE] mint_core -> (Rc<Type>, Noun). nice/core_mint_cache stay noun (cache
+   bridged via native_of on hit); native built bottom-up via ty_core_n.
+5. [DONE] mine -> (Rc<Type>, Noun). wrap_type/nice bridged (to_noun->...->native_of).
+   Its 2 callers (mint_inner BarCen/BarPat) to_noun the type slot.
+6. [ ] mint_inner / mint -> (Rc<Type>, Noun)  (78 self.mint callers -> mint_noun)
 7. [ ] mint_* helpers -> (Rc<Type>, Noun)
 8. [ ] nice / wrap_type -> Rc<Type>
 9. [ ] type consumers (nest/fond/repo/type_*_parts) read Rc<Type>; drop to_noun shims
