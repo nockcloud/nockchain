@@ -4562,33 +4562,33 @@ impl<'a> Ut<'a> {
             }
             BaseType::Flag => {
                 let bool_ty = ty_bool(self.slab);
-                if self.nest(bool_ty, ty)? {
+                if self.nest_noun(bool_ty, ty)? {
                     return Ok(Some(true));
                 }
                 let head = ty_noun(self.slab);
                 let tail = ty_noun(self.slab);
                 let cell_ty = ty_cell(self.slab, head, tail);
-                if self.nest(cell_ty, ty)? {
+                if self.nest_noun(cell_ty, ty)? {
                     return Ok(Some(false));
                 }
                 Ok(None)
             }
             BaseType::Atom(_) => {
                 let atom_ty = ty_atom(self.slab, "$", None);
-                if self.nest(atom_ty, ty)? {
+                if self.nest_noun(atom_ty, ty)? {
                     return Ok(Some(true));
                 }
                 let head = ty_noun(self.slab);
                 let tail = ty_noun(self.slab);
                 let cell_ty = ty_cell(self.slab, head, tail);
-                if self.nest(cell_ty, ty)? {
+                if self.nest_noun(cell_ty, ty)? {
                     return Ok(Some(false));
                 }
                 Ok(None)
             }
             BaseType::Null => {
                 let exact = ty_atom(self.slab, "$", Some(D(0)));
-                if self.nest(exact, ty)? {
+                if self.nest_noun(exact, ty)? {
                     Ok(Some(true))
                 } else {
                     Ok(None)
@@ -4604,14 +4604,14 @@ impl<'a> Ut<'a> {
         tail: &Skin,
     ) -> Result<Option<bool>> {
         let atom_ty = ty_atom(self.slab, "$", None);
-        if self.nest(atom_ty, ty)? {
+        if self.nest_noun(atom_ty, ty)? {
             return Ok(Some(false));
         }
 
         let cell_head = ty_noun(self.slab);
         let cell_tail = ty_noun(self.slab);
         let cell_ty = ty_cell(self.slab, cell_head, cell_tail);
-        let known_cell = self.nest(cell_ty, ty)?;
+        let known_cell = self.nest_noun(cell_ty, ty)?;
 
         let head_ty = self.peek_noun(ty, Way::Free, 2)?;
         let tail_ty = self.peek_noun(ty, Way::Free, 3)?;
@@ -4644,7 +4644,7 @@ impl<'a> Ut<'a> {
             Skin::Leaf(_aura, atom) => {
                 let value = parsed_atom_to_noun(self.slab, atom);
                 let exact = ty_atom(self.slab, "$", Some(value));
-                if self.nest(exact, ty)? {
+                if self.nest_noun(exact, ty)? {
                     Ok(Some(true))
                 } else {
                     Ok(None)
@@ -4817,7 +4817,7 @@ impl<'a> Ut<'a> {
                 let ref_type = self.peek_noun(sut, Way::Free, axis)?;
                 let example = self.spec_example_cached(spec);
                 let hit = self.play_noun(sut, example.as_ref())?;
-                if !self.nest(hit, ref_type)? {
+                if !self.nest_noun(hit, ref_type)? {
                     return Err(CompilerError::Noun("native mint: wthx spec".to_string()));
                 }
                 self.skin_test_formula(sut, axis, inner)
@@ -7223,7 +7223,7 @@ impl<'a> Ut<'a> {
             "cell" => {
                 let (head, _tail) = type_cell_parts(goal, &self.slab.noun_space())?;
                 let noun = ty_noun(self.slab);
-                if self.nest(head, noun)? {
+                if self.nest_noun(head, noun)? {
                     Ok(())
                 } else {
                     Err(CompilerError::Noun("core-nice".to_string()))
@@ -7909,7 +7909,7 @@ impl<'a> Ut<'a> {
         }
         if noun_eq(gol, ty_noun(self.slab), &self.slab.noun_space())?
             || noun_eq(gol, typ, &self.slab.noun_space())?
-            || self.nest(gol, typ)?
+            || self.nest_noun(gol, typ)?
         {
             return Ok(typ);
         }
@@ -8121,52 +8121,104 @@ impl<'a> Ut<'a> {
         Ok(*memo.get(&root_raw).unwrap_or(&typ))
     }
 
-    fn nest(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
-        if let Some(cached) = self.nest_mug_lookup(sut, ref_)? {
+    fn nest(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<bool> {
+        // ATOMIC FLIP (consumer C8): nest reads the native enum directly. The
+        // deepening children (cell/face/hint/core payloads) stay native (no
+        // lowering — this is the memory win). Leaf-carried parts (coil, fork set,
+        // atom aura/bits) are lowered via live_to_noun / live_leaf_to_noun
+        // (memoized) and decoded with the existing noun helpers. Type identity for
+        // the seen-hold / gil / memo sets uses the interned `Rc` pointer as a
+        // canonical id (flip natives are hash-consed), replacing the old noun
+        // interner. repo/peek are native (C1/C2); play still takes a noun subject
+        // (lowered here) until C-final. The boundary cache is native-keyed
+        // (intern.rs) — keying on noun mugs would force lowering the deepening
+        // subject per call, which is O(N^2) over the deepening chain.
+        let semantic = self.semantic_context_key();
+        if let Some(cached) =
+            nest_cache_lookup(&sut, &ref_, semantic.vet_key, semantic.fan_context_key)
+        {
             return Ok(cached);
         }
-        let mut type_ids = NestTypeInterner::new();
         let mut seen_sut_holds = NestSeenSet::new();
         let mut seen_ref_holds = NestSeenSet::new();
         let mut gil = NestPairSet::new();
         let mut memo: FastHashMap<NestMemoKey, bool> = Default::default();
         let result = self.nest_inner(
-            sut, ref_, 0, &mut type_ids, &mut seen_sut_holds, &mut seen_ref_holds, &mut gil,
+            sut.clone(),
+            ref_.clone(),
+            0,
+            &mut seen_sut_holds,
+            &mut seen_ref_holds,
+            &mut gil,
             &mut memo,
         )?;
-        // Native exposes only the top-level `nest(sut, ref)` entrypoint, which corresponds to the
-        // jet-cacheable `seg=0, reg=0` case in `jet_ut_nest_dext`.
+        // Native exposes only the top-level seg=0,reg=0 case (jet-cacheable).
         let seg_empty = true;
         let reg_empty = true;
         let cacheable = (result && reg_empty) || (!result && seg_empty);
         if cacheable {
-            self.nest_mug_register(sut, ref_, result);
+            nest_cache_store(
+                &sut,
+                &ref_,
+                semantic.vet_key,
+                semantic.fan_context_key,
+                result,
+            );
         }
         Ok(result)
     }
 
+    /// Noun-bridged `nest` for not-yet-flipped callers (C8): lift both type nouns
+    /// to native, run native nest. Drops as callers flip (C-final).
+    fn nest_noun(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
+        let space = self.slab.noun_space();
+        let sut_n = native_of(sut, &space)?;
+        let ref_n = native_of(ref_, &space)?;
+        self.nest(sut_n, ref_n)
+    }
+
+    /// Decode a native `%fork` set into its native option types (C8): the fork set
+    /// is a carried leaf, so lower it and re-lift the options. Forks are small.
+    fn fork_options_native(&mut self, fork: &NRc<NTy>) -> Result<Vec<NRc<NTy>>> {
+        let fork_noun = live_to_noun(fork, self.slab);
+        let space = self.slab.noun_space();
+        let opts = type_fork_options(fork_noun, &space)?;
+        let mut out = Vec::with_capacity(opts.len());
+        for opt in opts {
+            out.push(native_of(opt, &space)?);
+        }
+        Ok(out)
+    }
+
+    /// Native `core_dox` (C8): build the doppelganger context-core from a carried
+    /// coil leaf without lowering the (possibly deep) payload. `core_dox` ignores
+    /// the payload, so a `%noun` placeholder is byte-identical.
+    fn core_dox_native(&mut self, coil: &NLeaf) -> Result<NRc<NTy>> {
+        let coil_noun = live_leaf_to_noun(coil, self.slab);
+        let dummy = ty_noun(self.slab);
+        let core_noun = ty_core(self.slab, dummy, coil_noun);
+        let dox_noun = self.core_dox(core_noun)?;
+        native_of(dox_noun, &self.slab.noun_space())
+    }
+
     fn nest_inner(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
         memo: &mut FastHashMap<NestMemoKey, bool>,
     ) -> Result<bool> {
-        self.nest_inner_impl(
-            sut, ref_, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
-        )
+        self.nest_inner_impl(sut, ref_, depth, seen_sut_holds, seen_ref_holds, gil, memo)
     }
 
     fn nest_inner_impl(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
@@ -8175,12 +8227,12 @@ impl<'a> Ut<'a> {
         let next_depth = depth.saturating_add(1);
 
         (|| -> Result<bool> {
-            if noun_eq(sut, ref_, &self.slab.noun_space())? {
+            if NRc::ptr_eq(&sut, &ref_) {
                 return Ok(true);
             }
             let memo_key = NestMemoKey {
-                sut_id: type_ids.id_for(self, sut)?,
-                ref_id: type_ids.id_for(self, ref_)?,
+                sut_id: NRc::as_ptr(&sut) as u64,
+                ref_id: NRc::as_ptr(&ref_) as u64,
                 seg: seen_sut_holds.snapshot(),
                 reg: seen_ref_holds.snapshot(),
                 gil: gil.snapshot(),
@@ -8188,76 +8240,129 @@ impl<'a> Ut<'a> {
             if let Some(cached) = memo.get(&memo_key).copied() {
                 return Ok(cached);
             }
-            let sut_tag = type_tag_kind(sut, &self.slab.noun_space())?;
-            let result = match sut_tag {
-                TypeTagKind::Void => self.nest_sint(
-                    sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+            let result = match &*sut {
+                NTy::Void => self.nest_sint(
+                    sut.clone(),
+                    ref_.clone(),
+                    next_depth,
+                    seen_sut_holds,
+                    seen_ref_holds,
+                    gil,
+                    memo,
                 ),
-                TypeTagKind::Noun => Ok(true),
-                TypeTagKind::Atom => match type_tag_kind(ref_, &self.slab.noun_space())? {
-                    TypeTagKind::Atom => self.atom_nest(sut, ref_),
+                NTy::Noun => Ok(true),
+                NTy::Atom { .. } => match &*ref_ {
+                    NTy::Atom { .. } => self.atom_nest(sut.clone(), ref_.clone()),
                     _ => self.nest_sint(
-                        sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                        sut.clone(),
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     ),
                 },
-                TypeTagKind::Cell => match type_tag_kind(ref_, &self.slab.noun_space())? {
-                    TypeTagKind::Cell => {
-                        let (s_head, s_tail) = type_cell_parts(sut, &self.slab.noun_space())?;
-                        let (r_head, r_tail) = type_cell_parts(ref_, &self.slab.noun_space())?;
+                NTy::Cell(s_head, s_tail) => match &*ref_ {
+                    NTy::Cell(r_head, r_tail) => {
+                        let s_head = s_head.clone();
+                        let s_tail = s_tail.clone();
+                        let r_head = r_head.clone();
+                        let r_tail = r_tail.clone();
                         // Canonical ++nest resets seg/reg at each %cell child descent.
                         let mut branch_sut_holds = NestSeenSet::new();
                         let mut branch_ref_holds = NestSeenSet::new();
                         if !self.nest_inner(
-                            s_head, r_head, next_depth, type_ids, &mut branch_sut_holds,
-                            &mut branch_ref_holds, gil, memo,
+                            s_head,
+                            r_head,
+                            next_depth,
+                            &mut branch_sut_holds,
+                            &mut branch_ref_holds,
+                            gil,
+                            memo,
                         )? {
                             return Ok(false);
                         }
                         branch_sut_holds.clear();
                         branch_ref_holds.clear();
                         self.nest_inner(
-                            s_tail, r_tail, next_depth, type_ids, &mut branch_sut_holds,
-                            &mut branch_ref_holds, gil, memo,
+                            s_tail,
+                            r_tail,
+                            next_depth,
+                            &mut branch_sut_holds,
+                            &mut branch_ref_holds,
+                            gil,
+                            memo,
                         )
                     }
                     _ => self.nest_sint(
-                        sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                        sut.clone(),
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     ),
                 },
-                TypeTagKind::Core => match type_tag_kind(ref_, &self.slab.noun_space())? {
-                    TypeTagKind::Core => self.nest_core(
-                        sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                NTy::Core { .. } => match &*ref_ {
+                    NTy::Core { .. } => self.nest_core(
+                        sut.clone(),
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     ),
                     _ => self.nest_sint(
-                        sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                        sut.clone(),
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     ),
                 },
-                TypeTagKind::Face => {
-                    let inner = type_face_inner(sut, &self.slab.noun_space())?;
+                NTy::Face { inner, .. } => {
+                    let inner = inner.clone();
                     self.nest_inner(
-                        inner, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
+                        inner,
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
                         memo,
                     )
                 }
-                TypeTagKind::Fork => {
-                    let ref_tag = type_tag_kind(ref_, &self.slab.noun_space())?;
-                    if !matches!(
-                        ref_tag,
-                        TypeTagKind::Atom
-                            | TypeTagKind::Noun
-                            | TypeTagKind::Cell
-                            | TypeTagKind::Core
-                    ) {
+                NTy::Fork { .. } => {
+                    let ref_is_simple = matches!(
+                        &*ref_,
+                        NTy::Atom { .. } | NTy::Noun | NTy::Cell(..) | NTy::Core { .. }
+                    );
+                    if !ref_is_simple {
                         return self.nest_sint(
-                            sut, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
+                            sut.clone(),
+                            ref_.clone(),
+                            next_depth,
+                            seen_sut_holds,
+                            seen_ref_holds,
+                            gil,
                             memo,
                         );
                     }
-                    let options = type_fork_options(sut, &self.slab.noun_space())?;
+                    let options = self.fork_options_native(&sut)?;
                     for option in options {
                         let ok = self.nest_inner(
-                            option, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds,
-                            gil, memo,
+                            option,
+                            ref_.clone(),
+                            next_depth,
+                            seen_sut_holds,
+                            seen_ref_holds,
+                            gil,
+                            memo,
                         )?;
                         if ok {
                             return Ok(true);
@@ -8265,32 +8370,44 @@ impl<'a> Ut<'a> {
                     }
                     Ok(false)
                 }
-                TypeTagKind::Hint => {
-                    let inner = type_hint_inner(sut, &self.slab.noun_space())?;
+                NTy::Hint { payload, .. } => {
+                    let inner = payload.clone();
                     self.nest_inner(
-                        inner, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
+                        inner,
+                        ref_.clone(),
+                        next_depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
                         memo,
                     )
                 }
-                TypeTagKind::Hold => {
-                    if !seen_sut_holds.insert(self, type_ids, sut)? {
+                NTy::Hold { .. } => {
+                    let sut_id = NRc::as_ptr(&sut) as u64;
+                    let ref_id = NRc::as_ptr(&ref_) as u64;
+                    if !seen_sut_holds.insert_id(sut_id) {
                         return Ok(false);
                     }
-                    if !gil.insert(self, type_ids, sut, ref_)? {
-                        let removed = seen_sut_holds.remove(self, type_ids, sut)?;
+                    if !gil.insert_id(sut_id, ref_id) {
+                        let removed = seen_sut_holds.remove_id(sut_id);
                         debug_assert!(removed);
                         return Ok(true);
                     }
                     let result = (|| -> Result<bool> {
-                        let inner = self.repo_noun(sut)?;
+                        let inner = self.repo(sut.clone())?;
                         self.nest_inner(
-                            inner, ref_, next_depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
+                            inner,
+                            ref_.clone(),
+                            next_depth,
+                            seen_sut_holds,
+                            seen_ref_holds,
+                            gil,
                             memo,
                         )
                     })();
-                    let gil_removed = gil.remove(self, type_ids, sut, ref_)?;
+                    let gil_removed = gil.remove_id(sut_id, ref_id);
                     debug_assert!(gil_removed);
-                    let sut_removed = seen_sut_holds.remove(self, type_ids, sut)?;
+                    let sut_removed = seen_sut_holds.remove_id(sut_id);
                     debug_assert!(sut_removed);
                     result
                 }
@@ -8302,64 +8419,79 @@ impl<'a> Ut<'a> {
 
     fn nest_sint(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
         memo: &mut FastHashMap<NestMemoKey, bool>,
     ) -> Result<bool> {
-        match type_tag_kind(ref_, &self.slab.noun_space())? {
-            TypeTagKind::Void => Ok(true),
-            TypeTagKind::Noun | TypeTagKind::Atom | TypeTagKind::Cell => Ok(false),
-            TypeTagKind::Core => {
-                let repo_ref = self.repo_noun(ref_)?;
+        match &*ref_ {
+            NTy::Void => Ok(true),
+            NTy::Noun | NTy::Atom { .. } | NTy::Cell(..) => Ok(false),
+            NTy::Core { .. } => {
+                let repo_ref = self.repo(ref_.clone())?;
                 self.nest_inner(
-                    sut, repo_ref, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                    sut,
+                    repo_ref,
+                    depth,
+                    seen_sut_holds,
+                    seen_ref_holds,
+                    gil,
+                    memo,
                 )
             }
-            TypeTagKind::Face => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
-                self.nest_inner(
-                    sut, inner, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
-                )
+            NTy::Face { inner, .. } => {
+                let inner = inner.clone();
+                self.nest_inner(sut, inner, depth, seen_sut_holds, seen_ref_holds, gil, memo)
             }
-            TypeTagKind::Fork => {
-                for option in type_fork_options(ref_, &self.slab.noun_space())? {
+            NTy::Fork { .. } => {
+                for option in self.fork_options_native(&ref_)? {
                     if !self.nest_inner(
-                        sut, option, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                        sut.clone(),
+                        option,
+                        depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     )? {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
-            TypeTagKind::Hint => {
-                let inner = type_hint_inner(ref_, &self.slab.noun_space())?;
-                self.nest_inner(
-                    sut, inner, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
-                )
+            NTy::Hint { payload, .. } => {
+                let inner = payload.clone();
+                self.nest_inner(sut, inner, depth, seen_sut_holds, seen_ref_holds, gil, memo)
             }
-            TypeTagKind::Hold => {
-                if !seen_ref_holds.insert(self, type_ids, ref_)? {
+            NTy::Hold { .. } => {
+                let sut_id = NRc::as_ptr(&sut) as u64;
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen_ref_holds.insert_id(ref_id) {
                     return Ok(true);
                 }
-                if !gil.insert(self, type_ids, sut, ref_)? {
-                    let removed = seen_ref_holds.remove(self, type_ids, ref_)?;
+                if !gil.insert_id(sut_id, ref_id) {
+                    let removed = seen_ref_holds.remove_id(ref_id);
                     debug_assert!(removed);
                     return Ok(true);
                 }
                 let result = (|| -> Result<bool> {
-                    let repo_ref = self.repo_noun(ref_)?;
+                    let repo_ref = self.repo(ref_.clone())?;
                     self.nest_inner(
-                        sut, repo_ref, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                        sut.clone(),
+                        repo_ref,
+                        depth,
+                        seen_sut_holds,
+                        seen_ref_holds,
+                        gil,
+                        memo,
                     )
                 })();
-                let gil_removed = gil.remove(self, type_ids, sut, ref_)?;
+                let gil_removed = gil.remove_id(sut_id, ref_id);
                 debug_assert!(gil_removed);
-                let ref_removed = seen_ref_holds.remove(self, type_ids, ref_)?;
+                let ref_removed = seen_ref_holds.remove_id(ref_id);
                 debug_assert!(ref_removed);
                 result
             }
@@ -8368,45 +8500,78 @@ impl<'a> Ut<'a> {
 
     fn nest_core(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
         memo: &mut FastHashMap<NestMemoKey, bool>,
     ) -> Result<bool> {
-        let (sut_payload, sut_coil) = type_core_parts(sut, &self.slab.noun_space())?;
-        let (ref_payload, ref_coil) = type_core_parts(ref_, &self.slab.noun_space())?;
-        if noun_eq(sut_coil, ref_coil, &self.slab.noun_space())? {
+        let (sut_payload, sut_coil) = match &*sut {
+            NTy::Core { payload, coil } => (payload.clone(), coil.clone()),
+            _ => return Err(CompilerError::Noun("nest_core: sut not a core".to_string())),
+        };
+        let (ref_payload, ref_coil) = match &*ref_ {
+            NTy::Core { payload, coil } => (payload.clone(), coil.clone()),
+            _ => return Err(CompilerError::Noun("nest_core: ref not a core".to_string())),
+        };
+        if sut_coil == ref_coil {
             return self.nest_inner(
-                sut_payload, ref_payload, depth, type_ids, seen_sut_holds, seen_ref_holds, gil,
+                sut_payload,
+                ref_payload,
+                depth,
+                seen_sut_holds,
+                seen_ref_holds,
+                gil,
                 memo,
             );
         }
-        let (sut_garb, sut_context, sut_rest) = coil_parts(sut_coil, &self.slab.noun_space())?;
-        let (ref_garb, ref_context, ref_rest) = coil_parts(ref_coil, &self.slab.noun_space())?;
+        let sut_coil_noun = live_leaf_to_noun(&sut_coil, self.slab);
+        let ref_coil_noun = live_leaf_to_noun(&ref_coil, self.slab);
+        let (sut_garb, sut_context, sut_rest) = coil_parts(sut_coil_noun, &self.slab.noun_space())?;
+        let (ref_garb, ref_context, ref_rest) = coil_parts(ref_coil_noun, &self.slab.noun_space())?;
         let sut_poly = garb_poly(sut_garb, &self.slab.noun_space())?;
         let ref_poly = garb_poly(ref_garb, &self.slab.noun_space())?;
         if sut_poly != ref_poly {
             return Ok(false);
         }
+        let sut_context_n = native_of(sut_context, &self.slab.noun_space())?;
+        let ref_context_n = native_of(ref_context, &self.slab.noun_space())?;
         if !self.nest_meet(
-            sut_context, sut_payload, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+            sut_context_n.clone(),
+            sut_payload,
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
         if !self.nest_inner(
-            ref_context, ref_payload, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+            ref_context_n.clone(),
+            ref_payload,
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
         let sut_vair = garb_vair(sut_garb, &self.slab.noun_space())?;
         let ref_vair = garb_vair(ref_garb, &self.slab.noun_space())?;
         if !self.deem_variance(
-            sut_context, ref_context, sut_vair, ref_vair, depth, type_ids, seen_sut_holds,
-            seen_ref_holds, gil, memo,
+            sut_context_n,
+            ref_context_n,
+            sut_vair,
+            ref_vair,
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
@@ -8418,30 +8583,38 @@ impl<'a> Ut<'a> {
             }
             return Ok(true);
         }
-        if !gil.insert(self, type_ids, sut, ref_)? {
+        let sut_id = NRc::as_ptr(&sut) as u64;
+        let ref_id = NRc::as_ptr(&ref_) as u64;
+        if !gil.insert_id(sut_id, ref_id) {
             return Ok(true);
         }
         let result = (|| -> Result<bool> {
-            let sut_dox = self.core_dox(sut)?;
-            let ref_dox = self.core_dox(ref_)?;
+            let sut_dox = self.core_dox_native(&sut_coil)?;
+            let ref_dox = self.core_dox_native(&ref_coil)?;
             self.nest_deep_tomes(
-                sut_tomes, ref_tomes, sut_dox, ref_dox, depth, type_ids, seen_sut_holds,
-                seen_ref_holds, gil, memo,
+                sut_tomes,
+                ref_tomes,
+                sut_dox,
+                ref_dox,
+                depth,
+                seen_sut_holds,
+                seen_ref_holds,
+                gil,
+                memo,
             )
         })();
-        let gil_removed = gil.remove(self, type_ids, sut, ref_)?;
+        let gil_removed = gil.remove_id(sut_id, ref_id);
         debug_assert!(gil_removed);
         result
     }
 
     fn deem_variance(
         &mut self,
-        sut_ctx: Noun,
-        ref_ctx: Noun,
+        sut_ctx: NRc<NTy>,
+        ref_ctx: NRc<NTy>,
         sut_vair: Vair,
         ref_vair: Vair,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
@@ -8453,21 +8626,39 @@ impl<'a> Ut<'a> {
         match sut_vair {
             Vair::Lead => Ok(true),
             Vair::Gold => self.nest_meet(
-                sut_ctx, ref_ctx, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                sut_ctx,
+                ref_ctx,
+                depth,
+                seen_sut_holds,
+                seen_ref_holds,
+                gil,
+                memo,
             ),
             Vair::Iron => {
                 // Bootstrap `+nest` compares `%iron` in this orientation.
-                let sut_peek = self.peek_noun(ref_ctx, Way::Rite, 2)?;
-                let ref_peek = self.peek_noun(sut_ctx, Way::Rite, 2)?;
+                let sut_peek = self.peek(ref_ctx, Way::Rite, 2)?;
+                let ref_peek = self.peek(sut_ctx, Way::Rite, 2)?;
                 self.nest_inner(
-                    sut_peek, ref_peek, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                    sut_peek,
+                    ref_peek,
+                    depth,
+                    seen_sut_holds,
+                    seen_ref_holds,
+                    gil,
+                    memo,
                 )
             }
             Vair::Zinc => {
-                let sut_peek = self.peek_noun(sut_ctx, Way::Read, 2)?;
-                let ref_peek = self.peek_noun(ref_ctx, Way::Read, 2)?;
+                let sut_peek = self.peek(sut_ctx, Way::Read, 2)?;
+                let ref_peek = self.peek(ref_ctx, Way::Read, 2)?;
                 self.nest_inner(
-                    sut_peek, ref_peek, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+                    sut_peek,
+                    ref_peek,
+                    depth,
+                    seen_sut_holds,
+                    seen_ref_holds,
+                    gil,
+                    memo,
                 )
             }
         }
@@ -8475,33 +8666,35 @@ impl<'a> Ut<'a> {
 
     fn nest_meet(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
         memo: &mut FastHashMap<NestMemoKey, bool>,
     ) -> Result<bool> {
         if !self.nest_inner(
-            sut, ref_, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+            sut.clone(),
+            ref_.clone(),
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
-        self.nest_inner(
-            ref_, sut, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
-        )
+        self.nest_inner(ref_, sut, depth, seen_sut_holds, seen_ref_holds, gil, memo)
     }
 
     fn nest_deep_tomes(
         &mut self,
         dom: Noun,
         vim: Noun,
-        sut_dox: Noun,
-        ref_dox: Noun,
+        sut_dox: NRc<NTy>,
+        ref_dox: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
@@ -8528,14 +8721,28 @@ impl<'a> Ut<'a> {
             return Ok(false);
         }
         if !self.nest_deep_tomes(
-            dom_left, vim_left, sut_dox, ref_dox, depth, type_ids, seen_sut_holds, seen_ref_holds,
-            gil, memo,
+            dom_left,
+            vim_left,
+            sut_dox.clone(),
+            ref_dox.clone(),
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
         if !self.nest_deep_tomes(
-            dom_right, vim_right, sut_dox, ref_dox, depth, type_ids, seen_sut_holds,
-            seen_ref_holds, gil, memo,
+            dom_right,
+            vim_right,
+            sut_dox.clone(),
+            ref_dox.clone(),
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
@@ -8552,8 +8759,15 @@ impl<'a> Ut<'a> {
         let dom_arms = dom_tome_cell.tail().noun();
         let vim_arms = vim_tome_cell.tail().noun();
         self.nest_deep_arms(
-            dom_arms, vim_arms, sut_dox, ref_dox, depth, type_ids, seen_sut_holds, seen_ref_holds,
-            gil, memo,
+            dom_arms,
+            vim_arms,
+            sut_dox,
+            ref_dox,
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )
     }
 
@@ -8561,10 +8775,9 @@ impl<'a> Ut<'a> {
         &mut self,
         dab: Noun,
         hem: Noun,
-        sut_dox: Noun,
-        ref_dox: Noun,
+        sut_dox: NRc<NTy>,
+        ref_dox: NRc<NTy>,
         depth: usize,
-        type_ids: &mut NestTypeInterner,
         seen_sut_holds: &mut NestSeenSet,
         seen_ref_holds: &mut NestSeenSet,
         gil: &mut NestPairSet,
@@ -8591,37 +8804,59 @@ impl<'a> Ut<'a> {
             return Ok(false);
         }
         if !self.nest_deep_arms(
-            dab_left, hem_left, sut_dox, ref_dox, depth, type_ids, seen_sut_holds, seen_ref_holds,
-            gil, memo,
+            dab_left,
+            hem_left,
+            sut_dox.clone(),
+            ref_dox.clone(),
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
         if !self.nest_deep_arms(
-            dab_right, hem_right, sut_dox, ref_dox, depth, type_ids, seen_sut_holds,
-            seen_ref_holds, gil, memo,
+            dab_right,
+            hem_right,
+            sut_dox.clone(),
+            ref_dox.clone(),
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )? {
             return Ok(false);
         }
         let dab_hoon_noun = dab_node_cell.tail().noun();
         let hem_hoon_noun = hem_node_cell.tail().noun();
         let dab_hoon = self.hoon_ast_lookup_result(dab_hoon_noun).map_err(|err| {
-            let tag = Self::hoon_noun_tag(dab_hoon_noun, &space)
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let tag =
+                Self::hoon_noun_tag(dab_hoon_noun, &space).unwrap_or_else(|| "<unknown>".to_string());
             CompilerError::Noun(format!(
                 "native nest deep: arm ast missing tag={tag} decode_err={err}"
             ))
         })?;
         let hem_hoon = self.hoon_ast_lookup_result(hem_hoon_noun).map_err(|err| {
-            let tag = Self::hoon_noun_tag(hem_hoon_noun, &space)
-                .unwrap_or_else(|| "<unknown>".to_string());
+            let tag =
+                Self::hoon_noun_tag(hem_hoon_noun, &space).unwrap_or_else(|| "<unknown>".to_string());
             CompilerError::Noun(format!(
                 "native nest deep: arm ast missing tag={tag} decode_err={err}"
             ))
         })?;
-        let dab_ty = self.play_noun(sut_dox, dab_hoon.as_ref())?;
-        let hem_ty = self.play_noun(ref_dox, hem_hoon.as_ref())?;
+        let sut_dox_noun = live_to_noun(&sut_dox, self.slab);
+        let dab_ty = self.play(sut_dox_noun, dab_hoon.as_ref())?;
+        let ref_dox_noun = live_to_noun(&ref_dox, self.slab);
+        let hem_ty = self.play(ref_dox_noun, hem_hoon.as_ref())?;
         self.nest_inner(
-            dab_ty, hem_ty, depth, type_ids, seen_sut_holds, seen_ref_holds, gil, memo,
+            dab_ty,
+            hem_ty,
+            depth,
+            seen_sut_holds,
+            seen_ref_holds,
+            gil,
+            memo,
         )
     }
 
@@ -9095,7 +9330,7 @@ impl<'a> Ut<'a> {
                 BaseType::Void => Ok(ty_void(self.slab)),
                 BaseType::NounExpr => {
                     let void = ty_void(self.slab);
-                    if self.nest(void, ref_)? {
+                    if self.nest_noun(void, ref_)? {
                         Ok(ty_void(self.slab))
                     } else {
                         Ok(ref_)
@@ -9133,7 +9368,7 @@ impl<'a> Ut<'a> {
                 let example = self.spec_example_cached(spec);
                 let hit = self.play_noun(sut, example.as_ref())?;
                 let inner_ty = self.gain_skin_inner(sut, ref_, inner, seen)?;
-                if !self.nest(hit, inner_ty)? {
+                if !self.nest_noun(hit, inner_ty)? {
                     return Err(CompilerError::Noun("native mint: gain spec".to_string()));
                 }
                 self.fuse_noun(ref_, hit)
@@ -9419,7 +9654,7 @@ impl<'a> Ut<'a> {
                 let example = self.spec_example_cached(spec);
                 let hit = self.play_noun(sut, example.as_ref())?;
                 let inner_ty = self.lose_skin_inner(sut, ref_, inner, seen)?;
-                if !self.nest(hit, inner_ty)? {
+                if !self.nest_noun(hit, inner_ty)? {
                     return Err(CompilerError::Noun("native mint: lose spec".to_string()));
                 }
                 self.crop_noun(ref_, hit)
@@ -9698,7 +9933,7 @@ impl<'a> Ut<'a> {
         if NRc::ptr_eq(&sut, &ref_) {
             let void = ty_void(self.slab);
             let sut_noun = live_to_noun(&sut, self.slab);
-            return self.nest(void, sut_noun);
+            return self.nest_noun(void, sut_noun);
         }
         if matches!(&*ref_, NTy::Void) {
             return Ok(true);
@@ -9708,7 +9943,7 @@ impl<'a> Ut<'a> {
             NTy::Noun => {
                 let void = ty_void(self.slab);
                 let ref_noun = live_to_noun(&ref_, self.slab);
-                self.nest(void, ref_noun)
+                self.nest_noun(void, ref_noun)
             }
             NTy::Atom { .. } | NTy::Cell(..) => self.miss_sint(sut, ref_, seen, memo),
             NTy::Core { .. } => {
@@ -9960,7 +10195,7 @@ impl<'a> Ut<'a> {
                     // hoon-138 nest(ref_head, sut_head); nest still noun (C8) -> lower.
                     let rh_noun = live_to_noun(&rh, self.slab);
                     let sh_noun = live_to_noun(&sh, self.slab);
-                    if !self.nest(rh_noun, sh_noun)? {
+                    if !self.nest_noun(rh_noun, sh_noun)? {
                         return Ok(cons_cell(sh, st));
                     }
                     let tail = self.crop_inner(st, rt, seen)?;
@@ -10176,7 +10411,12 @@ impl<'a> Ut<'a> {
         Ok((noun, native))
     }
 
-    fn atom_nest(&mut self, sut: Noun, ref_: Noun) -> Result<bool> {
+    fn atom_nest(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<bool> {
+        // ATOMIC FLIP (consumer C8): atoms are small, so lowering the carried
+        // aura/bits leaves via the whole-type to_noun is cheap and reuses the
+        // existing noun decoder.
+        let sut = live_to_noun(&sut, self.slab);
+        let ref_ = live_to_noun(&ref_, self.slab);
         let (sut_aura, sut_val) = type_atom_parts(sut, &self.slab.noun_space())
             .map_err(|err| CompilerError::Decode(format!("atom nest sut: {err}")))?;
         let (ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())
@@ -10630,7 +10870,7 @@ impl<'a> Ut<'a> {
                     return Err(CompilerError::Noun("mull-bonk-x".to_string()));
                 }
                 // Assert old type nests in new (type.new ⊆ type.old)
-                if !self.nest(old_type, new_type)? {
+                if !self.nest_noun(old_type, new_type)? {
                     return Err(CompilerError::Noun("mull-bonk-x".to_string()));
                 }
                 let bool_ty = ty_bool(self.slab);
@@ -10759,7 +10999,7 @@ impl<'a> Ut<'a> {
         }
         if noun_eq(gol, ty_noun(self.slab), &self.slab.noun_space())?
             || noun_eq(gol, typ, &self.slab.noun_space())?
-            || self.nest(gol, typ)?
+            || self.nest_noun(gol, typ)?
         {
             return Ok(typ);
         }
@@ -12157,6 +12397,14 @@ pub(crate) fn mint_tisgar_chain_chunked(
     let mut layer_formulas: Vec<Noun> = Vec::with_capacity(layers.len());
     let last = layers.len() - 1;
     for (i, layer) in layers.iter().enumerate() {
+        // Each layer mints in a FRESH slab, so reset the thread-local native
+        // intern table + lowering memos (live_to_noun / the nest cache) — they key
+        // on canonical `Rc` pointers but hold slab-bound nouns, and would
+        // otherwise hand this layer a noun allocated in a prior layer's (dropped)
+        // slab. Cross-layer state crosses via the `subject`/`gol` nouns copied in
+        // below and is re-interned fresh within this layer. Mirrors honk.rs's
+        // per-compile `live_reset`.
+        crate::native::ir::intern::live_reset();
         let mut layer_slab: NounSlab = NounSlab::new();
         {
             let mut ut = Ut::new(&mut layer_slab);
@@ -12285,7 +12533,7 @@ use std::rc::Rc as NRc;
 
 use crate::native::ir::intern::{
     cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, live_leaf_to_noun,
-    live_to_noun, native_of,
+    live_to_noun, native_of, nest_cache_lookup, nest_cache_store,
 };
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;

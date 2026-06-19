@@ -40,7 +40,7 @@ impl<'a> Ut<'a> {
         let space = self.slab.noun_space();
         let (payload, coil) = type_core_parts(arm_core, &space)?;
         let (_garb, context, _rest) = coil_parts(coil, &space)?;
-        if dry_vet_checks_active && !self.nest(context, payload)? {
+        if dry_vet_checks_active && !self.nest_noun(context, payload)? {
             return Err(CompilerError::Noun("fire-dry".to_string()));
         }
         let dox = self.core_dox(arm_core)?;

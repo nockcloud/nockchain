@@ -609,6 +609,32 @@ impl NestSeenSet {
         self.ids.clone()
     }
 
+    /// Native-id variants (C8): the interned `Rc` pointer is a canonical type id,
+    /// so the seen-hold set keys directly on it instead of the noun interner.
+    pub fn contains_id(&self, id: u64) -> bool {
+        self.ids.binary_search(&id).is_ok()
+    }
+
+    pub fn insert_id(&mut self, id: u64) -> bool {
+        match self.ids.binary_search(&id) {
+            Ok(_) => false,
+            Err(idx) => {
+                self.ids.insert(idx, id);
+                true
+            }
+        }
+    }
+
+    pub fn remove_id(&mut self, id: u64) -> bool {
+        match self.ids.binary_search(&id) {
+            Ok(idx) => {
+                self.ids.remove(idx);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn contains(
         &mut self,
         ut: &mut Ut,
@@ -666,6 +692,33 @@ impl NestPairSet {
 
     pub fn snapshot(&self) -> Vec<(u64, u64)> {
         self.ids.clone()
+    }
+
+    /// Native-id variants (C8): key directly on interned `Rc`-pointer ids.
+    pub fn contains_id(&self, sut_id: u64, ref_id: u64) -> bool {
+        self.ids.binary_search(&(sut_id, ref_id)).is_ok()
+    }
+
+    pub fn insert_id(&mut self, sut_id: u64, ref_id: u64) -> bool {
+        let key = (sut_id, ref_id);
+        match self.ids.binary_search(&key) {
+            Ok(_) => false,
+            Err(idx) => {
+                self.ids.insert(idx, key);
+                true
+            }
+        }
+    }
+
+    pub fn remove_id(&mut self, sut_id: u64, ref_id: u64) -> bool {
+        let key = (sut_id, ref_id);
+        match self.ids.binary_search(&key) {
+            Ok(idx) => {
+                self.ids.remove(idx);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn contains(

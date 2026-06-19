@@ -166,6 +166,33 @@ std::thread_local! {
     /// Per-compile memo for `live_leaf_to_noun`: Jammed-leaf Arc pointer -> noun.
     static LEAF_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `nest`, keyed on the interned `Rc`
+    /// pointers of (sut, ref) plus the semantic context (vet, fan). Replaces the
+    /// noun-mug-keyed `nest_mug` cache for the native path: ptr identity ==
+    /// structural identity (flip natives are canonical/interned), so this avoids
+    /// lowering the deepening subject to a noun just to compute a cache key
+    /// (which would be O(subject) per call -> O(N^2) over the deepening chain).
+    static NEST_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), bool>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Look up a native `nest` result by interned (sut, ref) pointers + context.
+pub fn nest_cache_lookup(
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+) -> Option<bool> {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    NEST_CACHE.with(|m| m.borrow().get(&key).copied())
+}
+
+/// Store a native `nest` result by interned (sut, ref) pointers + context.
+pub fn nest_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: bool) {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    NEST_CACHE.with(|m| {
+        m.borrow_mut().insert(key, result);
+    });
 }
 
 /// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
@@ -190,6 +217,7 @@ pub fn live_reset() {
     LIVE.with(|cell| *cell.borrow_mut() = None);
     TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
     LEAF_MEMO.with(|m| m.borrow_mut().clear());
+    NEST_CACHE.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
