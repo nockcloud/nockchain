@@ -179,3 +179,29 @@ DONE so far: C1 repo, C2 peek, C3 wrap_type (+cons_core/face/hint), C4 fuse,
 C5 crop. NEXT: C5b miss, C6 gain/lose+cool, C7 mull glue, C8 NEST SCC, C9 fond,
 C-final.
 
+
+## NEST SCC impl plan (do as ONE atomic python pass — next step)
+
+nest family (mod.rs ~8124-8620): nest, nest_inner, nest_inner_impl, nest_sint,
+nest_core, nest_meet, nest_deep_tomes, nest_deep_arms + atom_nest (Atom arm).
+All mutually recursive -> flip together (non-compiling until all done).
+
+Helper structs (mod.rs, search NestTypeInterner/NestSeenSet/NestPairSet/
+NestMemoKey): they assign ids to type NOUNS (id_for) and key the memo/seen/gil on
+those ids. NATIVE: the canonical Rc pointer IS the id -> drop NestTypeInterner;
+key NestSeenSet (HashSet<u64>), NestPairSet (HashSet<(u64,u64)>), NestMemoKey
+{sut:u64, ref_:u64, seg, reg, gil} on NRc::as_ptr(&t) as u64. snapshot()/insert/
+remove become trivial ptr ops (no `self`/interner needed).
+
+Per-fn: sut/ref_ (+ dom/dab/hem/dox/vim in nest_core/meet/deep) -> NRc<NTy>;
+noun_eq(sut,ref_) -> Rc::ptr_eq; type_tag_kind+type_*_parts -> match &*; repo ->
+native (done); nest_deep_* play_noun -> native play (result drives nest); nest_core
+lowers the core coil leaf via live_leaf_to_noun for coil_parts/garb_poly/garb_vair/
+rest_tomes (those stay noun); atom_nest reads NTy::Atom leaves (lower small for
+type_atom_parts/fitz). nest_mug_lookup/register (3542): keep noun-keyed (lower
+sut/ref_ via live_to_noun) until C-final.
+
+Then: add `fn nest_noun(sut: Noun, ref_: Noun) -> bool` bridge; python-rename the
+19 self.nest(/ut.nest( callers -> nest_noun (in mod.rs/wet.rs/find.rs/test.rs);
+fix nest_noun's own self-call back to native; cargo build -p honk --lib; release
+build + shadow_gate.sh; commit; mark C8 DONE.
