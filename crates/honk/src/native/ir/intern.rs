@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+use nockapp::noun::slab::NounSlab;
 use nockvm::noun::{Noun, NounSpace};
 
 use super::leaf::Leaf;
@@ -139,6 +140,17 @@ struct LiveIntern {
     next_report: u64,
 }
 
+impl LiveIntern {
+    fn new() -> Self {
+        LiveIntern {
+            table: TypeTable::new(),
+            memo: HashMap::new(),
+            cores: 0,
+            next_report: 100_000,
+        }
+    }
+}
+
 std::thread_local! {
     static LIVE: std::cell::RefCell<Option<LiveIntern>> = const { std::cell::RefCell::new(None) };
 }
@@ -160,12 +172,54 @@ pub fn live_enabled() -> bool {
 }
 
 /// Reset the live table (call at the start of each top-level compile so stale
-/// noun pointers from a prior compile can't alias).
+/// noun pointers from a prior compile can't alias). Unconditional: the native
+/// construction helpers (`live_intern`/`native_of`) use the table regardless of
+/// the measurement flag, so the table must be reset every compile.
 pub fn live_reset() {
-    if !live_enabled() {
-        return;
-    }
     LIVE.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Intern a single native node through the persistent thread-local table — the
+/// ONE canonical pointer-identity universe shared by all native-shadow
+/// construction (so `intern_shallow`'s children-by-`Rc`-pointer hashing stays
+/// valid). Children must already be canonical `Rc<Type>` from this same table.
+/// Works regardless of `HONK_NATIVE_TYPES` (the flag only gates the measurement
+/// hook); it is only ever CALLED on the native-shadow path.
+pub fn live_intern(node: Type) -> Rc<Type> {
+    LIVE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let st = slot.get_or_insert_with(LiveIntern::new);
+        st.table.intern_shallow(node)
+    })
+}
+
+/// The O(n) fallback for a not-yet-threaded child: decode `noun` to its canonical
+/// native `Rc<Type>` via the shared memoized walk. One shared `(table, memo)`
+/// means each noun node is walked at most once per compile.
+pub fn native_of(noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
+    LIVE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let st = slot.get_or_insert_with(LiveIntern::new);
+        intern_type_noun(&mut st.table, &mut st.memo, noun, space)
+    })
+}
+
+/// Live byte-exact oracle: panic unless `to_noun(native)` jams identically to the
+/// `noun` it shadows. The per-node validation for the construction port.
+pub fn assert_native_eq(noun: Noun, native: &Rc<Type>, space: &NounSpace) {
+    let mut a: NounSlab = NounSlab::new();
+    a.copy_into(noun, space);
+    let ja = a.jam();
+    let mut b: NounSlab = NounSlab::new();
+    let rebuilt = native.to_noun(&mut b);
+    b.set_root(rebuilt);
+    let jb = b.jam();
+    assert!(
+        ja == jb,
+        "native shadow mismatch: to_noun(native)={} bytes != noun={} bytes",
+        jb.len(),
+        ja.len()
+    );
 }
 
 /// Build the interned native type for one minted core type noun.
@@ -175,12 +229,7 @@ pub fn live_intern_core_type(noun: Noun, space: &NounSpace) {
     }
     LIVE.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let st = slot.get_or_insert_with(|| LiveIntern {
-            table: TypeTable::new(),
-            memo: HashMap::new(),
-            cores: 0,
-            next_report: 100_000,
-        });
+        let st = slot.get_or_insert_with(LiveIntern::new);
         if intern_type_noun(&mut st.table, &mut st.memo, noun, space).is_ok() {
             st.cores += 1;
             if st.table.interned_calls >= st.next_report {

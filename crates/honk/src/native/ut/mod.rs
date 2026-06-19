@@ -12093,6 +12093,214 @@ fn coil_from_parts(slab: &mut NounSlab, garb: Noun, context: Noun, rest: Noun) -
     T(slab, &[garb, tail])
 }
 
+// ---------------------------------------------------------------------------
+// Native-shadow type constructors (native-types migration, INC1).
+//
+// Each `ty_*_n` builds the SAME noun as its `ty_*` sibling — byte-identical, via
+// the exact same code — AND the corresponding interned native `Rc<Type>`, built
+// from its children's ALREADY-native `Rc<Type>` (O(n): no re-decode of children;
+// the shared Rc is reused even when the noun side rebuilds). Branch constructors
+// mirror hoon-138's collapse rules by reading the RESULT noun's tag, so a
+// collapsed core/face/hint yields Void/Noun native exactly when the noun does.
+// Leaf constructors (atom/fork/bool) capture leaf content via the memoized
+// `native_of` (O(1) on a freshly-built leaf noun). All native nodes intern
+// through the one shared thread-local table (`live_intern`/`native_of`).
+//
+// Additive: the noun-only `ty_*` call sites are untouched; callers migrate to
+// `_n` incrementally (INC2+). Validated per-node by `assert_native_eq`.
+// ---------------------------------------------------------------------------
+use std::rc::Rc as NRc;
+
+use crate::native::ir::intern::{live_intern, native_of};
+use crate::native::ir::leaf::Leaf as NLeaf;
+use crate::native::ir::ty::Type as NTy;
+
+#[allow(dead_code)]
+fn ty_noun_n(slab: &mut NounSlab) -> (Noun, NRc<NTy>) {
+    (ty_noun(slab), live_intern(NTy::Noun))
+}
+
+#[allow(dead_code)]
+fn ty_void_n(slab: &mut NounSlab) -> (Noun, NRc<NTy>) {
+    (ty_void(slab), live_intern(NTy::Void))
+}
+
+#[allow(dead_code)]
+fn ty_atom_n(slab: &mut NounSlab, aura: &str, value: Option<Noun>) -> (Noun, NRc<NTy>) {
+    let noun = ty_atom(slab, aura, value);
+    let native = native_of(noun, &slab.noun_space()).expect("ty_atom_n native");
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_cell_n(slab: &mut NounSlab, head: (Noun, NRc<NTy>), tail: (Noun, NRc<NTy>)) -> (Noun, NRc<NTy>) {
+    let noun = ty_cell(slab, head.0, tail.0);
+    let native = live_intern(NTy::Cell(head.1, tail.1));
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_face_tool_n(slab: &mut NounSlab, tool: Noun, inner: (Noun, NRc<NTy>)) -> (Noun, NRc<NTy>) {
+    let noun = ty_face_tool(slab, tool, inner.0);
+    let kind = type_tag_kind(noun, &slab.noun_space());
+    let native = match kind {
+        Ok(TypeTagKind::Void) => live_intern(NTy::Void),
+        _ => live_intern(NTy::Face {
+            tool: NLeaf::from_noun(tool, &slab.noun_space()),
+            inner: inner.1,
+        }),
+    };
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_face_n(slab: &mut NounSlab, name: &str, inner: (Noun, NRc<NTy>)) -> (Noun, NRc<NTy>) {
+    let name_noun = term_to_noun(slab, name);
+    ty_face_tool_n(slab, name_noun, inner)
+}
+
+#[allow(dead_code)]
+fn ty_hint_n(slab: &mut NounSlab, inner: Noun, note: Noun, payload: (Noun, NRc<NTy>)) -> (Noun, NRc<NTy>) {
+    let noun = ty_hint(slab, inner, note, payload.0);
+    let kind = type_tag_kind(noun, &slab.noun_space());
+    let native = match kind {
+        Ok(TypeTagKind::Void) => live_intern(NTy::Void),
+        Ok(TypeTagKind::Noun) => live_intern(NTy::Noun),
+        _ => {
+            let head = T(slab, &[inner, note]);
+            live_intern(NTy::Hint {
+                head: NLeaf::from_noun(head, &slab.noun_space()),
+                payload: payload.1,
+            })
+        }
+    };
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_hold_n(slab: &mut NounSlab, inner: (Noun, NRc<NTy>), hoon: Noun) -> (Noun, NRc<NTy>) {
+    let noun = ty_hold(slab, inner.0, hoon);
+    let native = live_intern(NTy::Hold {
+        subject: inner.1,
+        gene: NLeaf::from_noun(hoon, &slab.noun_space()),
+    });
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_core_n(slab: &mut NounSlab, payload: (Noun, NRc<NTy>), coil: Noun) -> (Noun, NRc<NTy>) {
+    let noun = ty_core(slab, payload.0, coil);
+    let kind = type_tag_kind(noun, &slab.noun_space());
+    let native = match kind {
+        Ok(TypeTagKind::Void) => live_intern(NTy::Void),
+        _ => live_intern(NTy::Core {
+            payload: payload.1,
+            coil: NLeaf::from_noun(coil, &slab.noun_space()),
+        }),
+    };
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_fork_n(slab: &mut NounSlab, options: Vec<Noun>) -> (Noun, NRc<NTy>) {
+    let noun = ty_fork(slab, options);
+    let native = native_of(noun, &slab.noun_space()).expect("ty_fork_n native");
+    (noun, native)
+}
+
+#[allow(dead_code)]
+fn ty_bool_n(slab: &mut NounSlab) -> (Noun, NRc<NTy>) {
+    let noun = ty_bool(slab);
+    let native = native_of(noun, &slab.noun_space()).expect("ty_bool_n native");
+    (noun, native)
+}
+
+#[cfg(test)]
+mod native_ctor_tests {
+    use super::*;
+    use crate::native::ir::intern::{assert_native_eq, live_reset};
+
+    fn check(slab: &NounSlab, noun: Noun, native: &NRc<NTy>) {
+        assert_native_eq(noun, native, &slab.noun_space());
+    }
+
+    #[test]
+    fn native_ctors_byte_exact_all_tags_and_collapses() {
+        live_reset();
+        let mut slab: NounSlab = NounSlab::new();
+
+        // leaves
+        let (n, t) = ty_noun_n(&mut slab);
+        check(&slab, n, &t);
+        let (n, t) = ty_void_n(&mut slab);
+        check(&slab, n, &t);
+        let (n, t) = ty_atom_n(&mut slab, "ud", None);
+        check(&slab, n, &t);
+        let (n, t) = ty_atom_n(&mut slab, "f", Some(D(0)));
+        check(&slab, n, &t);
+
+        // cell
+        let h = ty_atom_n(&mut slab, "ud", None);
+        let tl = ty_noun_n(&mut slab);
+        let (n, t) = ty_cell_n(&mut slab, h, tl);
+        check(&slab, n, &t);
+
+        // face non-collapse
+        let inner = ty_atom_n(&mut slab, "ud", None);
+        let (n, t) = ty_face_n(&mut slab, "x", inner);
+        check(&slab, n, &t);
+        // face(_, void) -> void
+        let vc = ty_void_n(&mut slab);
+        let (n, t) = ty_face_n(&mut slab, "x", vc);
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Void), "face(_,void) must collapse to Void");
+
+        // hint non-collapse
+        let payload = ty_atom_n(&mut slab, "ud", None);
+        let note = term_to_noun(&mut slab, "fast");
+        let (n, t) = ty_hint_n(&mut slab, D(0), note, payload);
+        check(&slab, n, &t);
+        // hint(_, void) -> void ; hint(_, noun) -> noun
+        let pv = ty_void_n(&mut slab);
+        let note2 = term_to_noun(&mut slab, "fast");
+        let (n, t) = ty_hint_n(&mut slab, D(0), note2, pv);
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Void));
+        let pn = ty_noun_n(&mut slab);
+        let note3 = term_to_noun(&mut slab, "fast");
+        let (n, t) = ty_hint_n(&mut slab, D(0), note3, pn);
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Noun));
+
+        // hold
+        let subj = ty_atom_n(&mut slab, "ud", None);
+        let hoon = T(&mut slab, &[D(1), D(0)]);
+        let (n, t) = ty_hold_n(&mut slab, subj, hoon);
+        check(&slab, n, &t);
+
+        // core non-collapse
+        let payload2 = ty_atom_n(&mut slab, "ud", None);
+        let ctx = ty_noun_n(&mut slab).0;
+        let coil = coil_from_parts(&mut slab, D(0), ctx, D(0));
+        let (n, t) = ty_core_n(&mut slab, payload2, coil);
+        check(&slab, n, &t);
+        // core(void, _) -> void
+        let pv2 = ty_void_n(&mut slab);
+        let coil2 = coil_from_parts(&mut slab, D(0), D(0), D(0));
+        let (n, t) = ty_core_n(&mut slab, pv2, coil2);
+        check(&slab, n, &t);
+        assert!(matches!(&*t, NTy::Void));
+
+        // fork + bool
+        let o1 = ty_atom_n(&mut slab, "f", Some(D(0))).0;
+        let o2 = ty_atom_n(&mut slab, "f", Some(D(1))).0;
+        let (n, t) = ty_fork_n(&mut slab, vec![o1, o2]);
+        check(&slab, n, &t);
+        let (n, t) = ty_bool_n(&mut slab);
+        check(&slab, n, &t);
+    }
+}
+
 fn rest_tomes(rest: Noun, space: &NounSpace) -> Result<Noun> {
     let cell = rest
         .in_space(space)
