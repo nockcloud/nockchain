@@ -4151,8 +4151,14 @@ impl<'a> Ut<'a> {
                     }
                 },
                 Hoon::Axis(axis) => self.peek(sut, Way::Free, *axis),
-                Hoon::BarCen(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Dry),
-                Hoon::BarPat(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Wet),
+                Hoon::BarCen(prefix, tomes) => {
+                    let native = self.play_core(sut, prefix, tomes, Poly::Dry)?;
+                    Ok(native.to_noun(self.slab))
+                }
+                Hoon::BarPat(prefix, tomes) => {
+                    let native = self.play_core(sut, prefix, tomes, Poly::Wet)?;
+                    Ok(native.to_noun(self.slab))
+                }
                 _ => self.play_opened(sut, gen),
             }
         };
@@ -7027,29 +7033,22 @@ impl<'a> Ut<'a> {
         prefix: &Option<String>,
         tomes: &HashMap<String, Tome>,
         poly: Poly,
-    ) -> Result<Noun> {
+    ) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP step 1: play_core RETURNS native Rc<Type>. The payload (sut)
+        // is still a noun from a not-yet-flipped caller, so it is bridged to native
+        // via native_of at this (shrinking) boundary; callers that still want a
+        // noun `to_noun` the result. coil stays an opaque noun leaf (Phase 1).
         let tomes_map = self.tomes_map_from_ast(tomes)?;
-        // Match hoon-138/hoonc layered-core payload layout.
         let payload_type = sut;
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
         let context = self.core_context_from_payload(payload_type)?;
-        // Canonical hoon-138 `%play` builds cores with `*seminoun` (blocked by default),
-        // not a fully-complete seminoun payload.
+        // Canonical hoon-138 `%play` builds cores with `*seminoun` (blocked by default).
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let coil = coil_from_parts(self.slab, garb, context, rest);
-        // Native-shadow construction port (INC4): play_core is the simplest core
-        // producer (no nice/battery/cache), so it is the first to build + assert
-        // its native bottom-up via ty_core_n. Flag-gated: the shipping path is the
-        // unchanged ty_core. The payload native comes from the memoized fallback
-        // (sut not yet threaded); next increments thread sut native in.
-        if crate::native::ir::intern::live_enabled() {
-            let payload_native = native_of(payload_type, &self.slab.noun_space())?;
-            let (noun, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
-            crate::native::ir::intern::assert_native_eq(noun, &native, &self.slab.noun_space());
-            return Ok(noun);
-        }
-        Ok(ty_core(self.slab, payload_type, coil))
+        let payload_native = native_of(payload_type, &self.slab.noun_space())?;
+        let (_noun, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
+        Ok(native)
     }
 
     fn tomes_map_from_ast(&mut self, tomes: &HashMap<String, Tome>) -> Result<Noun> {

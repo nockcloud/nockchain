@@ -1,0 +1,71 @@
+# Atomic-flip execution tracker (native-types migration)
+
+Resumption anchor for the atomic replace (the FLIP): types become native
+`Rc<Type>` as the working representation of `mint`/`play`; nouns are materialized
+only at boundaries via `Type::to_noun`. This survives context resets — **update
+the STATE section every turn.**
+
+## Strategy: monotonic native-region expansion (compiles at every step)
+
+Flip producers one connected step at a time to RETURN `Rc<Type>` (the type slot;
+the formula slot stays `Noun`). At the current boundary, convert:
+- incoming noun types → native via `intern::native_of(noun, space)` (a not-yet-
+  flipped caller still hands us a noun `sut`);
+- outgoing native types → noun via `native.to_noun(slab)` (a not-yet-flipped
+  caller still expects a noun).
+
+Each step compiles (boundary conversions bridge the gap) and the native region
+grows; the boundary (and thus the transient noun (re)builds) shrinks. The memory
+win grows monotonically — internal deepened subjects become shared `Rc`. At
+completion the boundary is the OUTPUT only, and noun type construction is gone.
+
+VALIDATION each step: `crates/honk/test-assets/native-parity/shadow_gate.sh`
+(fast fixtures, byte-identical output). Full kernel byte-parity at completion.
+Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
+
+## Conventions
+
+- Type slot: `Rc<Type>` (alias `NRc<NTy>` in ut/mod.rs). Formula slot: `Noun`.
+- mint family returns `(Rc<Type>, Noun)` = (type, formula); play family returns
+  `Rc<Type>`.
+- Construction: use the `_n` constructors' native (`ty_*_n(...).1`,
+  `cell_type_n(...)?.1`) for now (transient double-build of the discarded noun;
+  add native-only `cons_*` constructors later as an optimization). Collapses are
+  already mirrored in the `_n` ctors.
+- Boundary bridges: `native_of(noun, &slab.noun_space())?` (noun→native),
+  `native.to_noun(self.slab)` (native→noun).
+- Type consumers (nest/fond/repo/type_*_parts/wrap_type decoders) still take
+  nouns for now; a flipped producer feeding a consumer `to_noun`s at the call.
+  Consumers convert to read `Rc<Type>` in a later pass (drops those `to_noun`s).
+
+## Ordered checklist (leaf producers → spine → consumers → boundary)
+
+1. [in progress] play_core -> Rc<Type>  (callers: play_inner BarCen/BarPat)
+2. [ ] play_inner / play -> Rc<Type>  (94 self.play callers -> to_noun)
+3. [ ] play_* helpers -> Rc<Type>
+4. [ ] mint_core -> (Rc<Type>, Noun)  (handle nice + core_mint_cache native)
+5. [ ] mine -> (Rc<Type>, Noun)  (wrap_type, nice)
+6. [ ] mint_inner / mint -> (Rc<Type>, Noun)  (78 self.mint callers)
+7. [ ] mint_* helpers -> (Rc<Type>, Noun)
+8. [ ] nice / wrap_type -> Rc<Type>
+9. [ ] type consumers (nest/fond/repo/type_*_parts) read Rc<Type>; drop to_noun shims
+10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
+11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
+
+## STATE (update every turn)
+
+- Branch: feature branch (non-compiling intermediate accepted, but kept compiling
+  so far via the boundary-bridge technique).
+- Done: native IR boundaries (Type/Formula to_noun+from_noun), intern table,
+  `_n` constructor + wrapper vocabulary, intern accessors
+  (live_intern/native_of/assert_native_eq).
+- Gate: `shadow_gate.sh` now compares fixture output vs FIXED `flip-baselines/*.jam`
+  (the flag no longer changes output once producers return native). PASS.
+- Step 1 DONE: `play_core` returns `Rc<Type>`; its 2 callers (play_inner
+  BarCen/BarPat) `to_noun` the result. Byte-parity PASS, native tests green.
+- Compiles: YES.
+- NEXT: step 2 — `play`/`play_inner` -> `Rc<Type>`. play_inner's non-delegating
+  arms produce native (`ty_*_n(...).1`, `cell_type_n(...)?.1`); delegating arms
+  (`self.play(sut, &lowered)`) forward the native unchanged; helper arms bridge
+  via `native_of(self.helper(...)?)`. Then the ~94 external `self.play` callers
+  `to_noun` (compiler-guided). Keep coil/leaf parts as nouns (Phase 1).
