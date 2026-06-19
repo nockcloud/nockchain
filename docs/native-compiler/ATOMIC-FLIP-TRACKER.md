@@ -74,20 +74,29 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
   noun (bridged), callers (mint_inner BarCen/BarPat) to_noun the type slot.
 - Compiles: YES.
 
-KEY INSIGHT (2026-06-19): the producer-OUTPUT flips (play/mint_core/mine) build
-native then `to_noun` it straight back at each not-yet-flipped boundary — correct
-+ compiling, but no memory win yet. Two things actually deliver the win and should
-drive the remaining order:
-  (a) flip `nice` to native FIRST (it is called by nearly every mint arm; native
-      nice = nest-check via one internal to_noun, return typ native). This removes
-      per-arm nice bridging and unblocks a clean mint_inner/mint output flip.
-  (b) the memory win specifically needs the `sut` INPUT threaded as native through
-      mint/mint_core (so the deepened subject is ONE shared Rc, not a noun rebuilt
-      per core). Output-only flips don't share the subject. Plan: after nice +
-      the mint output flip, thread `sut: Rc<Type>` through mint/mint_inner/
-      mint_core/mine (+ the 78 callers pass native sut), which is where the
-      O(N^2)->O(N) subject collapse lands.
-Revised next order: nice->native; mint_inner/mint output->native (+ mint_noun
-scoped rename, ~40 mint_* helper arms bridged or flipped); then sut->native input
-threading; then consumers (nest/fond/type_*_parts) read Rc<Type>; then drop nouns.
+KEY FINDING (2026-06-19, corrected): the migration is CONSUMER-DOMINATED, and the
+producer-output flips have reached the boundary of what's cheap.
+- "nice-first" was WRONG: `nice` has ~52 callers (nearly every mint_* helper +
+  inline arm), all passing/consuming NOUN. Flipping nice alone cascades to 52
+  bridge sites with no benefit (reverted). nice can only flip together with its
+  callers.
+- ROOT shape: the type is consumed pervasively by NOUN-based code — nice, nest,
+  fond, fish, peek, gain, lose, fuse, crop, the whole type-algebra, and the
+  type_*_parts decoders. ANY native type bridges back to a noun (to_noun) for
+  these. So nouns are still BUILT (transiently, per consumer call) until the
+  CONSUMERS read native. => no memory win, and every further producer flip just
+  adds bridges, until the consumer subsystem is native.
+- Therefore the remaining BULK = rewrite the type-consuming subsystem to operate
+  on `Rc<Type>` (match the enum) instead of decoding nouns: the type_*_parts
+  decoders first (the leaves of consumption), then peek/gain/lose/nest/fond/fish/
+  fuse/crop/wrap_type, then nice. Once consumers are native, the producer natives
+  (play/mint_core/mine, already done) flow straight in with no to_noun, the sut
+  input can thread native (shared subject => the O(N^2)->O(N) win), and the noun
+  ty_* ctors can be deleted. This is the large core of the migration (~500+ lines
+  of type algebra), best done decoder-leaves-first, each validated by shadow_gate.
+
+DONE producer spine: play_core, play/play_inner, mint_core, mine -> native
+(committed, compiling, byte-parity). play_* and mint_* helpers + mint_inner/mint
+dispatch remain noun (bridged) and are best flipped AFTER the consumer subsystem
+so they don't double-bridge.
 
