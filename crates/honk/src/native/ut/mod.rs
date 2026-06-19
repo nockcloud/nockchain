@@ -3807,11 +3807,11 @@ impl<'a> Ut<'a> {
             }
             Hoon::BarCen(prefix, tomes) => {
                 let (ty, formula) = self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Dry, tomes)?;
-                Ok((ty.to_noun(self.slab), formula))
+                Ok((live_to_noun(&ty, self.slab), formula))
             }
             Hoon::BarPat(prefix, tomes) => {
                 let (ty, formula) = self.mine(sut, gol, Vair::Gold, prefix.as_deref(), Poly::Wet, tomes)?;
-                Ok((ty.to_noun(self.slab), formula))
+                Ok((live_to_noun(&ty, self.slab), formula))
             }
             _ => self.mint_opened(sut, gol, gen),
         }?;
@@ -3905,7 +3905,8 @@ impl<'a> Ut<'a> {
     /// Noun-returning `play` for not-yet-flipped callers/helpers: the native
     /// result materialized to a noun at the boundary. Drops as callers flip.
     fn play_noun(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
-        Ok(self.play(sut, gen)?.to_noun(self.slab))
+        let r = self.play(sut, gen)?;
+        Ok(live_to_noun(&r, self.slab))
     }
 
     /// play bridge: a not-yet-flipped play_* helper returned a type NOUN; lift it
@@ -7123,7 +7124,7 @@ impl<'a> Ut<'a> {
         if mel != Vair::Gold {
             // wrap_type/nice are still noun-typed (Phase 1): bridge native->noun
             // and back at this boundary.
-            let ty_noun = ty.to_noun(self.slab);
+            let ty_noun = live_to_noun(&ty, self.slab);
             let wrapped = self.wrap_type_noun(ty_noun, mel)?;
             let checked = self.nice(sut, gol, wrapped)?;
             ty = native_of(checked, &self.slab.noun_space())?;
@@ -8662,7 +8663,7 @@ impl<'a> Ut<'a> {
                 for option in options {
                     let opt = native_of(option, &self.slab.noun_space())?;
                     let w = self.wrap_type(opt, vair)?;
-                    wrapped.push(w.to_noun(self.slab));
+                    wrapped.push(live_to_noun(&w, self.slab));
                 }
                 let fork_noun = self.fork_from_options(wrapped)?;
                 native_of(fork_noun, &self.slab.noun_space())
@@ -8685,7 +8686,8 @@ impl<'a> Ut<'a> {
     /// callers flip.
     fn wrap_type_noun(&mut self, typ: Noun, vair: Vair) -> Result<Noun> {
         let native = native_of(typ, &self.slab.noun_space())?;
-        Ok(self.wrap_type(native, vair)?.to_noun(self.slab))
+        let r = self.wrap_type(native, vair)?;
+        Ok(live_to_noun(&r, self.slab))
     }
 
     fn burp_fork_set_run(&mut self, set: Noun) -> Result<Noun> {
@@ -10284,7 +10286,7 @@ impl<'a> Ut<'a> {
                     go(ut, payload, way, axis, seen_holds)
                 }
                 NTy::Hold { .. } => {
-                    let hold_noun = sut.to_noun(ut.slab);
+                    let hold_noun = live_to_noun(&sut, ut.slab);
                     if seen_hold(ut, seen_holds, hold_noun, axis)? {
                         return Ok(cons_void());
                     }
@@ -10301,7 +10303,7 @@ impl<'a> Ut<'a> {
                     }
                     let mut peek_nouns = Vec::with_capacity(peeks.len());
                     for p in &peeks {
-                        peek_nouns.push(p.to_noun(ut.slab));
+                        peek_nouns.push(live_to_noun(p, ut.slab));
                     }
                     let fork_noun = ut.fork_from_options(peek_nouns)?;
                     native_of(fork_noun, &ut.slab.noun_space())
@@ -10317,7 +10319,8 @@ impl<'a> Ut<'a> {
     /// peek, lower the result. Drops as callers flip.
     fn peek_noun(&mut self, sut: Noun, way: Way, axis: u64) -> Result<Noun> {
         let native = native_of(sut, &self.slab.noun_space())?;
-        Ok(self.peek(native, way, axis)?.to_noun(self.slab))
+        let r = self.peek(native, way, axis)?;
+        Ok(live_to_noun(&r, self.slab))
     }
 
     /// Grow the native stack before recursing into deep type operations
@@ -12289,7 +12292,8 @@ fn coil_from_parts(slab: &mut NounSlab, garb: Noun, context: Noun, rest: Noun) -
 use std::rc::Rc as NRc;
 
 use crate::native::ir::intern::{
-    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, native_of,
+    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, live_to_noun,
+    native_of,
 };
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;

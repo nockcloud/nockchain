@@ -210,6 +210,7 @@ impl<'a> Ut<'a> {
     /// type to native, run native repo, lower the result. Drops as callers flip.
     pub(super) fn repo_noun(&mut self, typ: Noun) -> Result<Noun> {
         let native = native_of(typ, &self.slab.noun_space())?;
-        Ok(self.repo(native)?.to_noun(self.slab))
+        let r = self.repo(native)?;
+        Ok(live_to_noun(&r, self.slab))
     }
 }

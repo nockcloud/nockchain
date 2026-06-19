@@ -157,6 +157,14 @@ std::thread_local! {
 
 static LIVE_ENABLED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+std::thread_local! {
+    /// Per-compile memo for `live_to_noun`: interned `Rc<Type>` pointer -> the noun
+    /// it lowers to (in the one compile slab). Makes the flip bridges' result
+    /// lowering O(1) amortized instead of O(type) per call.
+    static TO_NOUN_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 /// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
 pub fn live_enabled() -> bool {
     use std::sync::atomic::Ordering;
@@ -177,6 +185,23 @@ pub fn live_enabled() -> bool {
 /// the measurement flag, so the table must be reset every compile.
 pub fn live_reset() {
     LIVE.with(|cell| *cell.borrow_mut() = None);
+    TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
+}
+
+/// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
+/// a noun, caching by interned `Rc` pointer so repeated lowerings (the hot
+/// `*_noun` bridges on big deepened types) are O(1) instead of O(type). SOUND
+/// because flip natives are interned (the table holds them for the whole compile,
+/// so the address is stable + not reused) and the bridges always lower into the
+/// one compile slab; reset per compile via `live_reset`.
+pub fn live_to_noun(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
+    let ptr = Rc::as_ptr(native) as usize;
+    if let Some(noun) = TO_NOUN_MEMO.with(|m| m.borrow().get(&ptr).copied()) {
+        return noun;
+    }
+    let noun = native.to_noun(dst);
+    TO_NOUN_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
+    noun
 }
 
 /// Intern a single native node through the persistent thread-local table — the
