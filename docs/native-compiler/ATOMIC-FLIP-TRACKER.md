@@ -107,7 +107,7 @@ steps and status:
   C2 [DONE] peek -> native (Core lowers coil leaf to coil_parts/garb_vair; Fork lowers
          set to fork_set_options; Hold -> repo native). ~4 callers.
   C3 [DONE] wrap_type -> native (needs collapse-aware cons_core/cons_face/cons_hint).
-  C4 [ ] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
+  C4 [DONE] fuse/fuse_inner -> native (fitz stays noun; nest bridged; caches keep
          to_noun mug keys until C-final).
   C5 [ ] crop/crop_inner/crop_sint -> native.
   C6 [ ] gain/lose skin families (~12 fns) + cool -> native.
