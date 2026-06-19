@@ -2523,7 +2523,9 @@ fn seed_honc_type_with_ut(
     let ty = if skip_play {
         sut
     } else {
-        ut.play(sut, prelude)?
+        // ATOMIC FLIP: play returns native; materialize to a noun at this boundary
+        // (the prelude vase still carries a noun type for now).
+        ut.play(sut, prelude)?.to_noun(ut.slab)
     };
     ut.set_miss_memo_persistence(false);
     Ok(NativeVase {

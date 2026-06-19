@@ -75,7 +75,7 @@ impl<'a> Ut<'a> {
                     "native rest: hold ast missing tag={tag} decode_err={err}"
                 ))
             })?;
-            played.push(self.play(*inner, hoon.as_ref())?);
+            played.push(self.play(*inner, hoon.as_ref())?.to_noun(self.slab));
         }
         self.fork_from_options(played)
     }

@@ -193,6 +193,23 @@ pub fn live_intern(node: Type) -> Rc<Type> {
     })
 }
 
+/// Native-only cell constructor (collapse-aware): `cell(void,_)`/`cell(_,void)` ->
+/// void, else `Cell`. For flipped producers that hold native children directly.
+pub fn cons_cell(head: Rc<Type>, tail: Rc<Type>) -> Rc<Type> {
+    if matches!(&*head, Type::Void) || matches!(&*tail, Type::Void) {
+        return live_intern(Type::Void);
+    }
+    live_intern(Type::Cell(head, tail))
+}
+
+/// Native `%void` / `%noun`.
+pub fn cons_void() -> Rc<Type> {
+    live_intern(Type::Void)
+}
+pub fn cons_noun() -> Rc<Type> {
+    live_intern(Type::Noun)
+}
+
 /// The O(n) fallback for a not-yet-threaded child: decode `noun` to its canonical
 /// native `Rc<Type>` via the shared memoized walk. One shared `(table, memo)`
 /// means each noun node is walked at most once per compile.

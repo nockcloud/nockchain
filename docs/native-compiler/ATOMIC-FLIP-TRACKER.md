@@ -40,9 +40,12 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 
 ## Ordered checklist (leaf producers → spine → consumers → boundary)
 
-1. [in progress] play_core -> Rc<Type>  (callers: play_inner BarCen/BarPat)
-2. [ ] play_inner / play -> Rc<Type>  (94 self.play callers -> to_noun)
-3. [ ] play_* helpers -> Rc<Type>
+1. [DONE] play_core -> Rc<Type>  (callers: play_inner BarCen/BarPat)
+2. [DONE] play_inner / play -> Rc<Type>. Arms: delegating forward native; leaf
+   arms cons_*/native_of; helper arms bridge via `pb`. The ~40 external self.play
+   callers + play_* helpers' internal self.play renamed to `play_noun` (= play +
+   to_noun) so they keep compiling unchanged. Gate PASS, tests green.
+3. [ ] play_* helpers -> Rc<Type>  (drop `pb`/`play_noun` bridges as each flips)
 4. [ ] mint_core -> (Rc<Type>, Noun)  (handle nice + core_mint_cache native)
 5. [ ] mine -> (Rc<Type>, Noun)  (wrap_type, nice)
 6. [ ] mint_inner / mint -> (Rc<Type>, Noun)  (78 self.mint callers)
@@ -61,11 +64,14 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
   (live_intern/native_of/assert_native_eq).
 - Gate: `shadow_gate.sh` now compares fixture output vs FIXED `flip-baselines/*.jam`
   (the flag no longer changes output once producers return native). PASS.
-- Step 1 DONE: `play_core` returns `Rc<Type>`; its 2 callers (play_inner
-  BarCen/BarPat) `to_noun` the result. Byte-parity PASS, native tests green.
+- Steps 1+2 DONE: `play_core` + `play`/`play_inner` return `Rc<Type>`. Bridges:
+  `cons_cell`/`cons_void`/`cons_noun` (native leaf ctors), `pb` (helper noun ->
+  native), `play_noun` (native play -> noun for not-yet-flipped callers). Byte
+  parity PASS, native tests green, lib + bin compile.
 - Compiles: YES.
-- NEXT: step 2 — `play`/`play_inner` -> `Rc<Type>`. play_inner's non-delegating
-  arms produce native (`ty_*_n(...).1`, `cell_type_n(...)?.1`); delegating arms
-  (`self.play(sut, &lowered)`) forward the native unchanged; helper arms bridge
-  via `native_of(self.helper(...)?)`. Then the ~94 external `self.play` callers
-  `to_noun` (compiler-guided). Keep coil/leaf parts as nouns (Phase 1).
+- NEXT: step 4 — `mint_core` -> `(Rc<Type>, Noun)` (the subject-deepening site;
+  the real memory win). Then `mine`/`mint_inner`/`mint` (78 self.mint callers,
+  same `mint_noun`-bridge pattern) and `nice`/`wrap_type`. Step 3 (flip play_*
+  helpers to drop `pb`/`play_noun`) is perf cleanup, lower priority than the mint
+  win. After producers: flip consumers (nest/fond/type_*_parts read Rc<Type>),
+  then the boundary + delete bridges/noun ty_* ctors.
