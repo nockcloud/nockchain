@@ -154,9 +154,87 @@ steps and status:
          - compiler_mint.rs integration target: 13 failures, all PRE-EXISTING
            (mid-flip incompleteness: find/gain/lose/mull not yet native). A/B: the
            pre-C8 commit has 15 such failures — C8 reduces it to 13.
-  C6 [ ] gain/lose skin families (~12 fns) + cool/chip -> native. ENTANGLED with
-         find/take/Port/Palo (chip/cool drive `take`, whose duz closure passes
-         type NOUNS to the skins) -> flip TOGETHER with the find/take + fond
+  C6+C9 [DONE] FUSED wing-nav core (find/fond/fond_name/fond_hold_inner/fend/fund/
+         twin/resolve_wing_axis/fine + take/take_inner/take_inner_head_tail/take_axis
+         + cnts_tack/cnts_toss/tack/toss/cnts_base_port + feel) AND the skin family
+         (gain/lose/chip/cool + gain_skin[_inner]/gain_{atom,cell,leaf}_skin +
+         lose_skin[_inner]/lose_{atom,cell,leaf}_skin) flipped to native (NRc<NTy>)
+         in ONE atomic compile. Done as designed:
+         - types.rs CARRIERS: Port/Pony::Synthetic.typ -> NRc<NTy> (formula stays
+           Noun); Opal::Leg(NRc<NTy>); Opal::Arm.arms Vec<(NRc<NTy>, Noun)> (core
+           native, foot stays Noun). Added `Debug` derive to ir::Type + ir::Leaf
+           (the carriers derive Debug). DORMANT Port-embedding caches DELETED
+           (find/find_raw/strict_term_port[_raw] + FindCacheEntry/FindRawCacheEntry/
+           FindMemoValue/StrictTermPortCacheEntry + their typedefs) — grep-verified
+           dead (only Default+clear). Surviving LookupMemoSet entries (cool/chip/
+           wing_axis/look/loot/strict_term_core_parts_raw) kept noun-keyed (also
+           dormant); re-key at C-final.
+         - find.rs FOND SCC: reads &*sut; %hold cycle guard = Vec<u64> of NRc::as_ptr
+           (interned ptr==structural); fond_hold_inner -> self.repo; peek native
+           (dropped peek_noun); coil/face-tool/coil-tome leaves lowered via
+           live_leaf_to_noun then look/loot (look/loot/dab/dom/cog stay NOUN); fork
+           via fork_from_options(noun)+native_of; fund/fond->mint+play lower native
+           sut via live_to_noun, ty_noun goal, native_of minted typ. is_term_face
+           now reads the lowered face-tool leaf directly (a term face's tool is a
+           bare atom). twin: Synthetic.formula keeps noun_eq; arm dedup uses
+           NRc::ptr_eq on cores + noun_eq on feet.
+         - fine() RETURN-SHAPE CHOICE: kept fine returning (Noun typ, Noun formula),
+           lowering the native Port typ via live_to_noun, to bound blast radius
+           (callers mint_fits/mint_wing/feel/fond_name-go consume noun typ today).
+           fire stays NOUN-bridged (arm cores lowered in fine); wet.rs untouched.
+         - TAKE SCC: duz bound Fn(&mut Self, NRc<NTy>)->Result<NRc<NTy>>; vil ->
+           HashSet<u64> NRc-ptr; rebuilds via cons_cell/cons_core/cons_face/cons_hint
+           + repo native + fork_from_options(noun)+native_of.
+         - SKIN SCC: sut/ref_/return NRc; seen -> HashSet<u64> NRc-ptr; cons_* with
+           tool/note/coil leaves preserved; native nest/fuse/crop/repo; play lowers
+           sut; atom/leaf arms lower the small atom for type_atom_parts/fitz/atom_max
+           via live_to_noun. gain/lose asymmetry preserved EXACTLY (gain Help/Name
+           re-wrap cons_hint/cons_face, gain Flag=fork; lose Help/Name drop, lose
+           Flag=chained lose). gain Help hint head = [sut note] (byte-parity with
+           hint_type(sut,note,payload)). cool identity collapse -> NRc::ptr_eq(ty,sut).
+         - mull C7-trio re-touched: mull_cnts calls native find; mull_cnts_with_ports/
+           mull_endo read native Port/Palo/Opal (dropped native_of-on-typ + the find
+           lowering); mull WutCol/WutHax/ZapPat arms call native gain/lose/fend/feel
+           (dropped lowering); fire-bound arm cores still lowered (fire noun).
+         - BRIDGES added (self-call protected, no global rename used): find_noun,
+           fend_noun, feel_noun, gain_noun, lose_noun, resolve_wing_axis_noun,
+           cnts_base_port_noun. mint-side noun callers route through them
+           (mint_fits/mint_wing/mint_wthx/mint_cnts/play_cnts/play_wtcl/mint_wtcl/
+           mint_zppt/play_inner ZapPat/skin_test_formula Over). fuse_noun/crop_noun/
+           ty_face now used only by test.rs (lib-build dead-code warnings; harmless).
+         - REGRESSION CAUGHT + KEYSTONE FIX (live_reset in Ut::new): the initial
+           C6+C9 draft built green + passed shadow_gate, but the deterministic
+           single-threaded compiler_mint A/B vs C7 (cfce3f6b) found 3 NEW failures
+           (compile_opened_runes, compile_representative, metamorphic_branch_swap)
+           with decode errors ("unknown type tag", "atom missing tail",
+           atom->noun widening). ROOT CAUSE (parallel diagnosis, all 3 converged):
+           C6+C9 made the persistent thread-local intern table + TO_NOUN_MEMO/
+           LEAF_MEMO (keyed by Rc/noun pointer, bound to a compile's slab) the
+           PRIMARY path for the wing-nav/skin families AND deleted the find caches
+           that bounded re-decoding — so a test thread compiling many exprs without
+           live_reset got a prior compile's freed-slab noun aliased back via
+           live_to_noun -> decoded as garbage. The binary already resets per
+           batch-entry (honk.rs:1108) and per chunk-layer, which is why shadow_gate
+           (fresh process per fixture) passed but the multi-compile-per-thread test
+           suite failed. FIX: call intern::live_reset() at the top of Ut::new
+           (every compile boundary). Safe for the binary: its long-lived
+           build-context Ut resets once at construction while the per-entry reset
+           still dominates intra-compile sharing; cross-Ut types cross as nouns
+           (pre-C-final) so no Ut depends on another's table.
+         - VALIDATION (after the live_reset fix): cargo build --lib + --tests GREEN;
+           shadow_gate byte-parity PASS (4 fixtures); compiler_mint single-threaded
+           69 passed / 0 failed (was 12 failing on C7, 14 on C8 — the live_reset
+           fixed the entire cross-compile aliasing class, which had masqueraded as
+           "mid-flip incompleteness"); full lib suite 122 passed / 0 failed / 1
+           ignored. frame_arena_wet_gate_function_sample_matches_monolithic was the
+           same aliasing bug -> now FIXED + un-ignored. frame_arena_core_mint stays
+           ignored: confirmed still failing with a fresh table ("coil missing tail")
+           -> a GENUINE pre-existing bare-%noun wet-|- mint bug, separate from the
+           flip. Zero regressions vs C7. Adversarial review of the byte-parity-risky
+           spots pending.
+  C6 [SUPERSEDED by C6+C9 above] gain/lose skin families + cool/chip -> native.
+         ENTANGLED with find/take/Port/Palo (chip/cool drive `take`, whose duz
+         closure passes type NOUNS to the skins) -> flip TOGETHER with the find/take + fond
          batch (C9), not standalone. gain_skin builds via cons_face/cons_hint/
          fork; uses fuse/crop (native), nest (native after C8), play (bridge).
   C7 [DONE] mull family + fish (type_test_formula_on_axis) SCC read/return native
@@ -194,8 +272,8 @@ steps and status:
          - VALIDATION: cargo build -p honk --lib GREEN; full honk lib suite green
            single-threaded (121 passed, 2 ignored — same as C8). Release build +
            shadow_gate byte-parity left to the parent (per task discipline).
-  C9 [ ] find/take/Port/Palo + fond family -> native (the wing-nav subsystem;
-         gain/lose/cool/chip fold in here).
+  C9 [DONE — see C6+C9 fused entry above] find/take/Port/Palo + fond family ->
+         native (the wing-nav subsystem; gain/lose/cool/chip folded in).
   C-final [ ] BOUNDARY CLOSE = the memory win: thread sut native (play/mint sut
          param Noun->Rc<Type>); delete play_noun/pb/repo_noun + all transient
          native_of/to_noun bridges; retire decoders (type_*_parts/type_tag*/coil_*)

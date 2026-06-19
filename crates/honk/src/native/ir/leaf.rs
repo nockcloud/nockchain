@@ -27,7 +27,7 @@ use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace};
 /// short-circuits on `Arc` pointer identity (the common case, since `native_of`
 /// memoizes leaves by source-noun identity), falling back to a content compare
 /// only on a hash match across distinct allocations.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Leaf {
     /// A direct (≤ 63-bit) atom, stored inline.
     Direct(u64),

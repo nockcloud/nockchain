@@ -1834,6 +1834,18 @@ impl Sig64 {
 
 impl<'a> Ut<'a> {
     pub fn new(slab: &'a mut NounSlab) -> Self {
+        // Native-types flip: the wing-nav / skin / mull / nest families now make
+        // the persistent thread-local intern table + the live_to_noun /
+        // live_leaf_to_noun memos (keyed by Rc/noun pointer, bound to THIS
+        // compile's slab) the primary path. Reset that thread-local state at every
+        // compile boundary (= each fresh Ut) so a prior compile's slab-bound
+        // nouns can't alias into this one (a freed slab's address is reused by the
+        // next compile, otherwise returning a stale interned Rc / dangling noun).
+        // The binary already resets per batch-entry (honk.rs) and the chunked
+        // driver per layer; centralizing it here also covers every direct
+        // `Ut::new` entry — notably the test harnesses that compile many exprs on
+        // one thread, which is where the missing reset surfaced as decode errors.
+        crate::native::ir::intern::live_reset();
         Self {
             slab,
             vet: true,
@@ -4231,7 +4243,7 @@ impl<'a> Ut<'a> {
                 }
                 Hoon::ZapTis(_p) => Ok(cons_noun()),
                 Hoon::ZapPat(wings, q, r) => {
-                    if self.feel(sut, wings)? {
+                    if self.feel_noun(sut, wings)? {
                         self.play(sut, q)
                     } else {
                         self.play(sut, r)
@@ -4383,8 +4395,8 @@ impl<'a> Ut<'a> {
     }
 
     fn play_wtcl(&mut self, sut: Noun, p: &Hoon, q: &Hoon, r: &Hoon) -> Result<Noun> {
-        let fex = self.gain(sut, p)?;
-        let wux = self.lose(sut, p)?;
+        let fex = self.gain_noun(sut, p)?;
+        let wux = self.lose_noun(sut, p)?;
         let mut options = Vec::with_capacity(2);
         if type_tag(fex, &self.slab.noun_space())? != "void" {
             options.push(self.play_noun(fex, q)?);
@@ -4406,8 +4418,8 @@ impl<'a> Ut<'a> {
     ) -> Result<(Noun, Noun)> {
         let bool_ty = ty_bool(self.slab);
         let (_cond_ty, cond_formula) = self.mint(sut, bool_ty, p)?;
-        let fex = self.gain(sut, p)?;
-        let wux = self.lose(sut, p)?;
+        let fex = self.gain_noun(sut, p)?;
+        let wux = self.lose_noun(sut, p)?;
         let fex_tag = type_tag(fex, &self.slab.noun_space())?;
         let wux_tag = type_tag(wux, &self.slab.noun_space())?;
         let fex_void = fex_tag.as_str() == "void";
@@ -4512,7 +4524,7 @@ impl<'a> Ut<'a> {
         wing: &WingType,
     ) -> Result<(Noun, Noun)> {
         let ref_type = self.play(sut, p)?;
-        let port = self.find(sut, Way::Read, wing)?;
+        let port = self.find_noun(sut, Way::Read, wing)?;
         let formula = match &port {
             // Match hoon-138 `%fits`: when `find` returns a leg, fish directly at that axis
             // rather than composing through `%7`.
@@ -4539,7 +4551,8 @@ impl<'a> Ut<'a> {
         skin: &Skin,
         wing: &WingType,
     ) -> Result<(Noun, Noun)> {
-        let (hit_ty, axis) = self.fend(sut, Way::Read, wing)?;
+        let (hit_ty, axis) = self.fend_noun(sut, Way::Read, wing)?;
+        let hit_ty = live_to_noun(&hit_ty, self.slab);
         let static_match = self.skin_match_static(hit_ty, skin)?;
         let formula = if let Some(matches) = static_match {
             const_bool_formula(self.slab, matches)
@@ -4812,7 +4825,7 @@ impl<'a> Ut<'a> {
             Skin::Help(_, inner) => self.skin_test_formula(sut, axis, inner),
             Skin::Name(_, inner) => self.skin_test_formula(sut, axis, inner),
             Skin::Over(wing, inner) => {
-                let rel_axis = self.resolve_wing_axis(sut, wing)?;
+                let rel_axis = self.resolve_wing_axis_noun(sut, wing)?;
                 let axis = peg_axis(axis, rel_axis)?;
                 self.skin_test_formula(sut, axis, inner)
             }
@@ -6447,11 +6460,17 @@ impl<'a> Ut<'a> {
         Ok(out)
     }
 
-    fn cnts_tack(&mut self, sut: Noun, wing: &WingType, mur: Noun) -> Result<(u64, Noun)> {
-        let port = self.find(sut, Way::Rite, wing)?;
+    fn cnts_tack(
+        &mut self,
+        sut: NRc<NTy>,
+        wing: &WingType,
+        mur: NRc<NTy>,
+    ) -> Result<(u64, NRc<NTy>)> {
+        let port = self.find(sut.clone(), Way::Rite, wing)?;
         match port {
             Port::Palo(palo) => {
-                let duz = |_ut: &mut Self, _a: Noun| Ok(mur);
+                let mur_for_duz = mur.clone();
+                let duz = |_ut: &mut Self, _a: NRc<NTy>| Ok(mur_for_duz.clone());
                 self.take(sut, &palo.vein, &duz)
             }
             Port::Synthetic { .. } => Err(CompilerError::Noun("tack".to_string())),
@@ -6461,13 +6480,13 @@ impl<'a> Ut<'a> {
     fn cnts_toss(
         &mut self,
         wing: &WingType,
-        mur: Noun,
-        arms: &[(Noun, Noun)],
-    ) -> Result<(u64, Vec<(Noun, Noun)>)> {
+        mur: NRc<NTy>,
+        arms: &[(NRc<NTy>, Noun)],
+    ) -> Result<(u64, Vec<(NRc<NTy>, Noun)>)> {
         let mut axis_match: Option<u64> = None;
         let mut out = Vec::with_capacity(arms.len());
         for (typ, foot) in arms {
-            let (axis, new_typ) = self.cnts_tack(*typ, wing, mur)?;
+            let (axis, new_typ) = self.cnts_tack(typ.clone(), wing, mur.clone())?;
             if let Some(existing) = axis_match {
                 if existing != axis {
                     return Err(CompilerError::Noun("mate".to_string()));
@@ -6483,7 +6502,7 @@ impl<'a> Ut<'a> {
 
     // HOON138:arm=ut:tack lines=10848-10853 map=direct status=partial reviewed=2026-03-06
     // HOON138_NOTE:native primary implementation for canonical `++tack`; full parity review is still in progress
-    fn tack(&mut self, sut: Noun, hyp: &WingType, mur: Noun) -> Result<(u64, Noun)> {
+    fn tack(&mut self, sut: NRc<NTy>, hyp: &WingType, mur: NRc<NTy>) -> Result<(u64, NRc<NTy>)> {
         self.cnts_tack(sut, hyp, mur)
     }
 
@@ -6492,20 +6511,21 @@ impl<'a> Ut<'a> {
     fn toss(
         &mut self,
         hyp: &WingType,
-        mur: Noun,
-        men: &[(Noun, Noun)],
-    ) -> Result<(u64, Vec<(Noun, Noun)>)> {
+        mur: NRc<NTy>,
+        men: &[(NRc<NTy>, Noun)],
+    ) -> Result<(u64, Vec<(NRc<NTy>, Noun)>)> {
         self.cnts_toss(hyp, mur, men)
     }
 
     fn play_cnts_apply_leg_patches(
         &mut self,
         sut: Noun,
-        mut typ: Noun,
+        mut typ: NRc<NTy>,
         pairs: &[(WingType, Hoon)],
-    ) -> Result<Noun> {
+    ) -> Result<NRc<NTy>> {
         for (sub_wing, expr) in pairs {
-            let patch_type = self.play_noun(sut, expr)?;
+            // play takes a noun subject (C-final): pass the noun sut; returns native.
+            let patch_type = self.play(sut, expr)?;
             let (_axis, edited) = self.tack(typ, sub_wing, patch_type)?;
             typ = edited;
         }
@@ -6520,26 +6540,34 @@ impl<'a> Ut<'a> {
         wing: &WingType,
         pairs: &[(WingType, Hoon)],
     ) -> Result<Noun> {
-        let port = self.cnts_base_port(sut, wing)?;
+        let port = self.cnts_base_port_noun(sut, wing)?;
         let palo = match port {
             Port::Palo(palo) => palo,
             Port::Synthetic { typ, .. } => {
                 if pairs.is_empty() {
-                    return Ok(typ);
+                    return Ok(live_to_noun(&typ, self.slab));
                 }
                 return Err(CompilerError::Noun("hoon".to_string()));
             }
         };
         match palo.opal {
-            Opal::Leg(typ) => self.play_cnts_apply_leg_patches(sut, typ, pairs),
+            Opal::Leg(typ) => {
+                let ty = self.play_cnts_apply_leg_patches(sut, typ, pairs)?;
+                Ok(live_to_noun(&ty, self.slab))
+            }
             Opal::Arm { arms, .. } => {
                 let mut hag = arms;
                 for (sub_wing, expr) in pairs {
-                    let patch_type = self.play_noun(sut, expr)?;
+                    let patch_type = self.play(sut, expr)?;
                     let (_axis, next_hag) = self.toss(sub_wing, patch_type, &hag)?;
                     hag = next_hag;
                 }
-                self.fire(&hag)
+                // fire stays on the NOUN path (C9): lower the arm core types.
+                let hag_noun: Vec<(Noun, Noun)> = hag
+                    .iter()
+                    .map(|(core, foot)| (live_to_noun(core, self.slab), *foot))
+                    .collect();
+                self.fire(&hag_noun)
             }
         }
     }
@@ -6655,7 +6683,7 @@ impl<'a> Ut<'a> {
         q: &Hoon,
         r: &Hoon,
     ) -> Result<(Noun, Noun)> {
-        let found = self.feel(sut, wings)?;
+        let found = self.feel_noun(sut, wings)?;
         if found {
             self.mint(sut, gol, q)
         } else {
@@ -6701,7 +6729,7 @@ impl<'a> Ut<'a> {
     }
 
     fn mint_wing(&mut self, sut: Noun, gol: Noun, wing: &WingType) -> Result<(Noun, Noun)> {
-        let port = self.find(sut, Way::Read, wing)?;
+        let port = self.find_noun(sut, Way::Read, wing)?;
         let (ty, formula) = self.fine(&port)?;
         let ty = self.nice(sut, gol, ty)?;
         Ok((ty, formula))
@@ -6746,8 +6774,14 @@ impl<'a> Ut<'a> {
         Ok(None)
     }
 
-    fn cnts_base_port(&mut self, sut: Noun, wing: &WingType) -> Result<Port> {
+    fn cnts_base_port(&mut self, sut: NRc<NTy>, wing: &WingType) -> Result<Port> {
         self.find(sut, Way::Read, wing)
+    }
+
+    /// Noun-bridged `cnts_base_port` for still-noun callers (play_cnts/mint_cnts).
+    fn cnts_base_port_noun(&mut self, sut: Noun, wing: &WingType) -> Result<Port> {
+        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        self.cnts_base_port(sut_n, wing)
     }
 
     // HOON138:arm=ut:et:mint lines=9250-9257 map=envelope status=partial reviewed=2026-03-06
@@ -6759,12 +6793,14 @@ impl<'a> Ut<'a> {
         wing: &WingType,
         pairs: &[(WingType, Hoon)],
     ) -> Result<(Noun, Noun)> {
-        let port = self.cnts_base_port(sut, wing)?;
+        let port = self.cnts_base_port_noun(sut, wing)?;
         let palo = match port {
             Port::Palo(palo) => palo,
             Port::Synthetic { typ, formula } => {
                 if pairs.is_empty() {
-                    let ty = self.nice(sut, gol, typ)?;
+                    // nice takes a noun TYPE (C-final): lower the native typ.
+                    let typ_noun = live_to_noun(&typ, self.slab);
+                    let ty = self.nice(sut, gol, typ_noun)?;
                     return Ok((ty, formula));
                 }
                 return Err(CompilerError::Noun("hoon".to_string()));
@@ -6777,14 +6813,16 @@ impl<'a> Ut<'a> {
                 for (_idx, (sub_wing, expr)) in pairs.iter().enumerate() {
                     let goal = ty_noun(self.slab);
                     let (patch_ty, patch_formula) = self.mint(sut, goal, expr)?;
-                    let (edit_axis, edited_leg) = self.tack(base_leg, sub_wing, patch_ty)?;
+                    let patch_ty_n = native_of(patch_ty, &self.slab.noun_space())?;
+                    let (edit_axis, edited_leg) = self.tack(base_leg, sub_wing, patch_ty_n)?;
                     base_leg = edited_leg;
                     edits.push((edit_axis, patch_formula));
                 }
                 // hoon-138 `++ergo` conses each edit onto `hej` (`[[p.dar q.zil] hej]`), so
                 // `hike` sees edits in reverse traversal order.
                 edits.reverse();
-                let ty = self.nice(sut, gol, base_leg)?;
+                let base_leg_noun = live_to_noun(&base_leg, self.slab);
+                let ty = self.nice(sut, gol, base_leg_noun)?;
                 let formula = self.hike_formula(base_axis, &edits)?;
                 Ok((ty, formula))
             }
@@ -6796,7 +6834,8 @@ impl<'a> Ut<'a> {
                 for (_idx, (sub_wing, expr)) in pairs.iter().enumerate() {
                     let goal = ty_noun(self.slab);
                     let (patch_ty, patch_formula) = self.mint(sut, goal, expr)?;
-                    let (edit_axis, next_hag) = self.toss(sub_wing, patch_ty, &hag)?;
+                    let patch_ty_n = native_of(patch_ty, &self.slab.noun_space())?;
+                    let (edit_axis, next_hag) = self.toss(sub_wing, patch_ty_n, &hag)?;
                     // hoon-138 `++ergo` always threads `hag` through `q.dix`, even when the
                     // sample edit is `%void`; the subsequent `++fire` is responsible for
                     // rejecting non-core arm subjects.
@@ -6809,7 +6848,12 @@ impl<'a> Ut<'a> {
                 let hike = self.hike_formula(base_axis, &edits)?;
                 let arm_axis_noun = noun_u64(self.slab, arm_axis);
                 let formula = T(self.slab, &[D(9), arm_axis_noun, hike]);
-                let arm_ty = self.fire(&hag)?;
+                // fire stays on the NOUN path (C9): lower the arm core types.
+                let hag_noun: Vec<(Noun, Noun)> = hag
+                    .iter()
+                    .map(|(core, foot)| (live_to_noun(core, self.slab), *foot))
+                    .collect();
+                let arm_ty = self.fire(&hag_noun)?;
                 let ty = self.nice(sut, gol, arm_ty)?;
                 Ok((ty, formula))
             }
@@ -9040,7 +9084,7 @@ impl<'a> Ut<'a> {
         Ok(noun_is_zero(stencil_cell.tail().noun()))
     }
 
-    fn feel(&mut self, sut: Noun, wings: &[WingType]) -> Result<bool> {
+    fn feel(&mut self, sut: NRc<NTy>, wings: &[WingType]) -> Result<bool> {
         let mut current = sut;
         for wing in wings.iter().rev() {
             let pony = self.fond(current, Way::Free, wing)?;
@@ -9049,15 +9093,22 @@ impl<'a> Ut<'a> {
                 Pony::Palo(palo) => Port::Palo(palo),
                 Pony::Synthetic { typ, formula } => Port::Synthetic { typ, formula },
             };
+            // fine returns a NOUN typ (bounded blast radius); re-lift for fond.
             let (ty, _formula) = self.fine(&port)?;
-            current = ty;
+            current = native_of(ty, &self.slab.noun_space())?;
         }
         Ok(true)
     }
 
-    fn take<F>(&mut self, sut: Noun, vein: &[Option<BigUint>], duz: &F) -> Result<(u64, Noun)>
+    /// Noun-bridged `feel` for still-noun callers.
+    fn feel_noun(&mut self, sut: Noun, wings: &[WingType]) -> Result<bool> {
+        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        self.feel(sut_n, wings)
+    }
+
+    fn take<F>(&mut self, sut: NRc<NTy>, vein: &[Option<BigUint>], duz: &F) -> Result<(u64, NRc<NTy>)>
     where
-        F: Fn(&mut Self, Noun) -> Result<Noun>,
+        F: Fn(&mut Self, NRc<NTy>) -> Result<NRc<NTy>>,
     {
         let axis = tend(vein)?;
         let vit: Vec<Option<u64>> = vein
@@ -9069,9 +9120,9 @@ impl<'a> Ut<'a> {
         Ok((axis, ty))
     }
 
-    fn take_inner<F>(&mut self, sut: Noun, vit: &[Option<u64>], duz: &F) -> Result<Noun>
+    fn take_inner<F>(&mut self, sut: NRc<NTy>, vit: &[Option<u64>], duz: &F) -> Result<NRc<NTy>>
     where
-        F: Fn(&mut Self, Noun) -> Result<Noun>,
+        F: Fn(&mut Self, NRc<NTy>) -> Result<NRc<NTy>>,
     {
         let Some((head, tail)) = vit.split_first() else {
             return duz(self, sut);
@@ -9081,45 +9132,46 @@ impl<'a> Ut<'a> {
 
     fn take_inner_head_tail<F>(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         head: Option<u64>,
         tail: &[Option<u64>],
         duz: &F,
-    ) -> Result<Noun>
+    ) -> Result<NRc<NTy>>
     where
-        F: Fn(&mut Self, Noun) -> Result<Noun>,
+        F: Fn(&mut Self, NRc<NTy>) -> Result<NRc<NTy>>,
     {
         match head {
-            None => {
-                let tag = type_tag(sut, &self.slab.noun_space())?;
-                match tag.as_str() {
-                    "face" => {
-                        let inner = type_face_inner(sut, &self.slab.noun_space())?;
-                        let new_inner = self.take_inner(inner, tail, duz)?;
-                        type_face_with_inner(self.slab, sut, new_inner)
-                    }
-                    "hint" => {
-                        let (inner, note, payload) = type_hint_parts(sut, &self.slab.noun_space())?;
-                        let new_payload = self.take_inner_head_tail(payload, None, tail, duz)?;
-                        Ok(ty_hint(self.slab, inner, note, new_payload))
-                    }
-                    "fork" => {
-                        let options = type_fork_options(sut, &self.slab.noun_space())?;
-                        let mut out = Vec::with_capacity(options.len());
-                        for option in options {
-                            out.push(self.take_inner_head_tail(option, None, tail, duz)?);
-                        }
-                        self.fork_from_options(out)
-                    }
-                    "hold" => {
-                        let inner = self.repo_noun(sut)?;
-                        self.take_inner_head_tail(inner, None, tail, duz)
-                    }
-                    _ => self.take_inner(sut, tail, duz),
+            None => match &*sut {
+                NTy::Face { tool, inner } => {
+                    let tool = tool.clone();
+                    let inner = inner.clone();
+                    let new_inner = self.take_inner(inner, tail, duz)?;
+                    Ok(cons_face(tool, new_inner))
                 }
-            }
+                NTy::Hint { head: hd, payload } => {
+                    let hd = hd.clone();
+                    let payload = payload.clone();
+                    let new_payload = self.take_inner_head_tail(payload, None, tail, duz)?;
+                    Ok(cons_hint(hd, new_payload))
+                }
+                NTy::Fork { .. } => {
+                    let options = self.fork_options_native(&sut)?;
+                    let mut out = Vec::with_capacity(options.len());
+                    for option in options {
+                        let opt_ty = self.take_inner_head_tail(option, None, tail, duz)?;
+                        out.push(live_to_noun(&opt_ty, self.slab));
+                    }
+                    let fork = self.fork_from_options(out)?;
+                    native_of(fork, &self.slab.noun_space())
+                }
+                NTy::Hold { .. } => {
+                    let inner = self.repo(sut.clone())?;
+                    self.take_inner_head_tail(inner, None, tail, duz)
+                }
+                _ => self.take_inner(sut, tail, duz),
+            },
             Some(step) => {
-                let mut vil = StructNounSet::new();
+                let mut vil: HashSet<u64> = HashSet::new();
                 self.take_axis(sut, step, tail, duz, &mut vil)
             }
         }
@@ -9127,112 +9179,132 @@ impl<'a> Ut<'a> {
 
     fn take_axis<F>(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         step: u64,
         tail: &[Option<u64>],
         duz: &F,
-        vil: &mut StructNounSet,
-    ) -> Result<Noun>
+        vil: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>>
     where
-        F: Fn(&mut Self, Noun) -> Result<Noun>,
+        F: Fn(&mut Self, NRc<NTy>) -> Result<NRc<NTy>>,
     {
         if step == 1 {
             return self.take_inner(sut, tail, duz);
         }
         let (cap, mas) = axis_cap_mas(step)?;
-        let tag = type_tag(sut, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "noun" => {
-                let noun = ty_noun(self.slab);
-                let cell = ty_cell(self.slab, noun, noun);
+        match &*sut {
+            NTy::Noun => {
+                let noun = cons_noun();
+                let cell = cons_cell(noun.clone(), noun);
                 self.take_axis(cell, step, tail, duz, vil)
             }
-            "void" => Ok(ty_void(self.slab)),
-            "atom" => Ok(ty_void(self.slab)),
-            "cell" => {
-                let (head_ty, tail_ty) = type_cell_parts(sut, &self.slab.noun_space())?;
+            NTy::Void => Ok(cons_void()),
+            NTy::Atom { .. } => Ok(cons_void()),
+            NTy::Cell(head_ty, tail_ty) => {
+                let head_ty = head_ty.clone();
+                let tail_ty = tail_ty.clone();
                 if cap == 2 {
                     let new_head = self.take_axis(head_ty, mas, tail, duz, vil)?;
-                    cell_type(self.slab, new_head, tail_ty)
+                    Ok(cons_cell(new_head, tail_ty))
                 } else {
                     let new_tail = self.take_axis(tail_ty, mas, tail, duz, vil)?;
-                    cell_type(self.slab, head_ty, new_tail)
+                    Ok(cons_cell(head_ty, new_tail))
                 }
             }
-            "core" => {
+            NTy::Core { payload, coil } => {
                 if cap == 2 {
-                    let repo = self.repo_noun(sut)?;
+                    let repo = self.repo(sut.clone())?;
                     self.take_axis(repo, step, tail, duz, vil)
                 } else {
-                    let (payload, coil) = type_core_parts(sut, &self.slab.noun_space())?;
+                    let payload = payload.clone();
+                    let coil = coil.clone();
                     let new_payload = self.take_axis(payload, mas, tail, duz, vil)?;
-                    Ok(ty_core(self.slab, new_payload, coil))
+                    Ok(cons_core(new_payload, coil))
                 }
             }
-            "face" => {
-                let inner = type_face_inner(sut, &self.slab.noun_space())?;
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let new_inner = self.take_axis(inner, step, tail, duz, vil)?;
-                type_face_with_inner(self.slab, sut, new_inner)
+                Ok(cons_face(tool, new_inner))
             }
-            "fork" => {
-                let options = type_fork_options(sut, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&sut)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.take_axis(option, step, tail, duz, vil)?);
+                    let opt_ty = self.take_axis(option, step, tail, duz, vil)?;
+                    out.push(live_to_noun(&opt_ty, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(sut, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let new_payload = self.take_axis(payload, step, tail, duz, vil)?;
-                Ok(ty_hint(self.slab, inner, note, new_payload))
+                Ok(cons_hint(head, new_payload))
             }
-            "hold" => {
-                if !vil.insert(self, sut)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let sut_id = NRc::as_ptr(&sut) as u64;
+                if !vil.insert(sut_id) {
+                    return Ok(cons_void());
                 }
-                let result = (|| -> Result<Noun> {
-                    let inner = self.repo_noun(sut)?;
+                let result = (|| -> Result<NRc<NTy>> {
+                    let inner = self.repo(sut.clone())?;
                     self.take_axis(inner, step, tail, duz, vil)
                 })();
-                let removed = vil.remove(self, sut)?;
+                let removed = vil.remove(&sut_id);
                 debug_assert!(removed, "take %hold vil should unwind per branch");
                 result
             }
-            _ => Err(CompilerError::UnsupportedExpr(format!(
-                "native mint: take type {tag}"
-            ))),
         }
     }
 
-    fn gain(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+    fn gain(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         self.chip(true, sut, gen)
     }
 
-    fn lose(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+    fn lose(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         self.chip(false, sut, gen)
     }
 
-    fn chip(&mut self, how: bool, sut: Noun, gen: &Hoon) -> Result<Noun> {
+    /// Noun-bridged `gain` for still-noun callers (play_wtcl/mint_wtcl).
+    fn gain_noun(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        let r = self.gain(sut_n, gen)?;
+        Ok(live_to_noun(&r, self.slab))
+    }
+
+    /// Noun-bridged `lose` for still-noun callers (play_wtcl/mint_wtcl).
+    fn lose_noun(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        let r = self.lose(sut_n, gen)?;
+        Ok(live_to_noun(&r, self.slab))
+    }
+
+    fn chip(&mut self, how: bool, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         match gen {
             // Source-location/debug wrappers are non-semantic.
             Hoon::Dbug(_, inner) | Hoon::Note(_, inner) => self.chip(how, sut, inner.as_ref()),
             Hoon::WutTis(spec, wing) => {
                 let example = self.spec_example_cached(spec);
-                let ref_type = self.play_noun(sut, example.as_ref())?;
+                // play takes a noun subject (C-final): lower; returns native.
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let ref_type = self.play(sut_noun, example.as_ref())?;
                 self.cool(how, sut, wing, ref_type)
             }
             Hoon::WutHax(skin, wing) => {
-                let port = self.find(sut, Way::Both, wing)?;
+                let port = self.find(sut.clone(), Way::Both, wing)?;
                 let palo = match port {
                     Port::Palo(palo) => palo,
                     Port::Synthetic { .. } => return Ok(sut),
                 };
-                let duz = |ut: &mut Self, a: Noun| {
+                let sut_for_duz = sut.clone();
+                let duz = |ut: &mut Self, a: NRc<NTy>| {
                     if how {
-                        ut.gain_skin(sut, a, skin)
+                        ut.gain_skin(sut_for_duz.clone(), a, skin)
                     } else {
-                        ut.lose_skin(sut, a, skin)
+                        ut.lose_skin(sut_for_duz.clone(), a, skin)
                     }
                 };
                 let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
@@ -9262,48 +9334,44 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn cool(&mut self, pol: bool, sut: Noun, wing: &WingType, ref_type: Noun) -> Result<Noun> {
-        let port = self.find(sut, Way::Both, wing)?;
+    fn cool(
+        &mut self,
+        pol: bool,
+        sut: NRc<NTy>,
+        wing: &WingType,
+        ref_type: NRc<NTy>,
+    ) -> Result<NRc<NTy>> {
+        let port = self.find(sut.clone(), Way::Both, wing)?;
         let palo = match port {
             Port::Palo(palo) => palo,
             Port::Synthetic { .. } => return Ok(sut),
         };
-        let duz = |ut: &mut Self, a: Noun| {
+        let ref_for_duz = ref_type.clone();
+        let duz = |ut: &mut Self, a: NRc<NTy>| {
             if pol {
-                ut.fuse_noun(a, ref_type)
+                ut.fuse(a, ref_for_duz.clone())
             } else {
-                ut.crop_noun(a, ref_type)
+                ut.crop(a, ref_for_duz.clone())
             }
         };
-        let (_axis, ty) = self.take(sut, &palo.vein, &duz)?;
-        let ty = if unsafe { ty.raw_equals(&sut) } {
-            sut
-        } else {
-            // `noun_eq` on large recursive types is expensive; only attempt structural
-            // comparison when mug-equality says it is possible.
-            let ty_mug = self.noun_mug_cached(ty);
-            let sut_mug = self.noun_mug_cached(sut);
-            if ty_mug == sut_mug && noun_eq(ty, sut, &self.slab.noun_space())? {
-                sut
-            } else {
-                ty
-            }
-        };
+        let (_axis, ty) = self.take(sut.clone(), &palo.vein, &duz)?;
+        // Native identity collapse: interned ptr == structural identity.
+        let ty = if NRc::ptr_eq(&ty, &sut) { sut } else { ty };
         Ok(ty)
     }
 
-    fn gain_skin(&mut self, sut: Noun, ref_: Noun, skin: &Skin) -> Result<Noun> {
-        let mut seen = StructNounSet::new();
+    fn gain_skin(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>, skin: &Skin) -> Result<NRc<NTy>> {
+        let mut seen: HashSet<u64> = HashSet::new();
         self.gain_skin_inner(sut, ref_, skin, &mut seen)
     }
 
     fn gain_skin_inner(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         skin: &Skin,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
         match skin {
             Skin::Term(name) => {
                 let wing = vec![Limb::Term(name.clone())];
@@ -9322,59 +9390,72 @@ impl<'a> Ut<'a> {
                 BaseType::Flag => {
                     let yes = Skin::Leaf("f".to_string(), ParsedAtom::Small(0));
                     let no = Skin::Leaf("f".to_string(), ParsedAtom::Small(1));
-                    let yes_ty = self.gain_skin_inner(sut, ref_, &yes, seen)?;
+                    let yes_ty = self.gain_skin_inner(sut.clone(), ref_.clone(), &yes, seen)?;
                     let no_ty = self.gain_skin_inner(sut, ref_, &no, seen)?;
-                    self.fork_from_options(vec![yes_ty, no_ty])
+                    let yes_noun = live_to_noun(&yes_ty, self.slab);
+                    let no_noun = live_to_noun(&no_ty, self.slab);
+                    let fork = self.fork_from_options(vec![yes_noun, no_noun])?;
+                    native_of(fork, &self.slab.noun_space())
                 }
                 BaseType::Null => {
                     let skin = Skin::Leaf("n".to_string(), ParsedAtom::Small(0));
                     self.gain_skin_inner(sut, ref_, &skin, seen)
                 }
-                BaseType::Void => Ok(ty_void(self.slab)),
+                BaseType::Void => Ok(cons_void()),
                 BaseType::NounExpr => {
-                    let void = ty_void(self.slab);
-                    if self.nest_noun(void, ref_)? {
-                        Ok(ty_void(self.slab))
+                    let void = cons_void();
+                    if self.nest(void, ref_.clone())? {
+                        Ok(cons_void())
                     } else {
                         Ok(ref_)
                     }
                 }
                 BaseType::Atom(aura) => {
-                    let mut seen_ref = StructNounSet::new();
+                    let mut seen_ref: HashSet<u64> = HashSet::new();
                     self.gain_atom_skin(sut, ref_, aura, &mut seen_ref)
                 }
             },
             Skin::Cell(head, tail) => {
-                let mut seen_ref = StructNounSet::new();
+                let mut seen_ref: HashSet<u64> = HashSet::new();
                 self.gain_cell_skin(sut, ref_, head, tail, &mut seen_ref)
             }
             Skin::Leaf(aura, atom) => {
-                let mut seen_ref = StructNounSet::new();
+                let mut seen_ref: HashSet<u64> = HashSet::new();
                 self.gain_leaf_skin(sut, ref_, aura, atom, &mut seen_ref)
             }
             Skin::Dbug(_, inner) => self.gain_skin_inner(sut, ref_, inner, seen),
             Skin::Help(help, inner) => {
-                let payload = self.gain_skin_inner(sut, ref_, inner, seen)?;
+                let payload = self.gain_skin_inner(sut.clone(), ref_, inner, seen)?;
                 let help_noun = noun_expr_to_noun(self.slab, help);
                 let note_noun = tagged1(self.slab, "help", help_noun);
-                self.hint_type(sut, note_noun, payload)
+                // hoon-138 `hint_type(sut, note, payload)`: the hint "inner" slot is
+                // the subject type itself, so the native head leaf is `[sut note]`.
+                // cons_hint preserves the void/noun collapse hint_type applies.
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let head_noun = T(self.slab, &[sut_noun, note_noun]);
+                let head_leaf = NLeaf::from_noun(head_noun, &self.slab.noun_space());
+                Ok(cons_hint(head_leaf, payload))
             }
             Skin::Name(name, inner) => {
                 let inner_ty = self.gain_skin_inner(sut, ref_, inner, seen)?;
-                Ok(ty_face(self.slab, name, inner_ty))
+                let tool_noun = term_to_noun(self.slab, name);
+                let tool_leaf = NLeaf::from_noun(tool_noun, &self.slab.noun_space());
+                Ok(cons_face(tool_leaf, inner_ty))
             }
             Skin::Over(wing, inner) => {
-                let next_sut = self.play_noun(sut, &Hoon::Wing(wing.clone()))?;
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let next_sut = self.play(sut_noun, &Hoon::Wing(wing.clone()))?;
                 self.gain_skin_inner(next_sut, ref_, inner, seen)
             }
             Skin::Spec(spec, inner) => {
                 let example = self.spec_example_cached(spec);
-                let hit = self.play_noun(sut, example.as_ref())?;
-                let inner_ty = self.gain_skin_inner(sut, ref_, inner, seen)?;
-                if !self.nest_noun(hit, inner_ty)? {
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let hit = self.play(sut_noun, example.as_ref())?;
+                let inner_ty = self.gain_skin_inner(sut, ref_.clone(), inner, seen)?;
+                if !self.nest(hit.clone(), inner_ty)? {
                     return Err(CompilerError::Noun("native mint: gain spec".to_string()));
                 }
-                self.fuse_noun(ref_, hit)
+                self.fuse(ref_, hit)
             }
             Skin::Wash(_) => Ok(ref_),
         }
@@ -9382,17 +9463,20 @@ impl<'a> Ut<'a> {
 
     fn gain_atom_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         aura: &str,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => Ok(ty_atom(self.slab, aura, None)),
-            "atom" => {
-                let (ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())?;
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => {
+                let noun = ty_atom(self.slab, aura, None);
+                native_of(noun, &self.slab.noun_space())
+            }
+            NTy::Atom { .. } => {
+                let ref_noun = live_to_noun(&ref_, self.slab);
+                let (ref_aura, ref_val) = type_atom_parts(ref_noun, &self.slab.noun_space())?;
                 let aura_tag = if aura.is_empty() { "$" } else { aura };
                 let aura_noun = term_to_noun(self.slab, aura_tag);
                 let aura_any = aura_tag == "$" || aura_tag == "@";
@@ -9413,133 +9497,142 @@ impl<'a> Ut<'a> {
                     .map_err(|err| CompilerError::Decode(format!("atom aura: {err}")))?;
                 let aura_str = atom_to_string(aura_atom)
                     .map_err(|err| CompilerError::Decode(format!("atom aura: {err}")))?;
-                Ok(ty_atom(self.slab, &aura_str, ref_val))
+                let noun = ty_atom(self.slab, &aura_str, ref_val);
+                native_of(noun, &self.slab.noun_space())
             }
-            "cell" => Ok(ty_void(self.slab)),
-            "core" => Ok(ty_void(self.slab)),
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Cell(..) => Ok(cons_void()),
+            NTy::Core { .. } => Ok(cons_void()),
+            NTy::Face { inner, .. } => {
+                let inner = inner.clone();
                 self.gain_atom_skin(sut, inner, aura, seen)
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.gain_atom_skin(sut, option, aura, seen)?);
+                    let opt = self.gain_atom_skin(sut.clone(), option, aura, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let payload = self.gain_atom_skin(sut, payload, aura, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(head, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.gain_atom_skin(sut, inner, aura, seen)
             }
-            _ => Ok(ty_void(self.slab)),
         }
     }
 
     fn gain_cell_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         head: &Skin,
         tail: &Skin,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => {
-                let head_ty = self.gain_skin_inner(sut, ref_, head, seen)?;
-                if type_tag(head_ty, &self.slab.noun_space())? == "void" {
-                    return Ok(ty_void(self.slab));
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => {
+                let head_ty = self.gain_skin_inner(sut.clone(), ref_.clone(), head, seen)?;
+                if matches!(&*head_ty, NTy::Void) {
+                    return Ok(cons_void());
                 }
                 let tail_ty = self.gain_skin_inner(sut, ref_, tail, seen)?;
-                cell_type(self.slab, head_ty, tail_ty)
+                Ok(cons_cell(head_ty, tail_ty))
             }
-            "atom" => Ok(ty_void(self.slab)),
-            "cell" => {
-                let (ref_head, ref_tail) = type_cell_parts(ref_, &self.slab.noun_space())?;
-                let head_ty = self.gain_skin_inner(sut, ref_head, head, seen)?;
-                if type_tag(head_ty, &self.slab.noun_space())? == "void" {
-                    return Ok(ty_void(self.slab));
+            NTy::Atom { .. } => Ok(cons_void()),
+            NTy::Cell(ref_head, ref_tail) => {
+                let ref_head = ref_head.clone();
+                let ref_tail = ref_tail.clone();
+                let head_ty = self.gain_skin_inner(sut.clone(), ref_head, head, seen)?;
+                if matches!(&*head_ty, NTy::Void) {
+                    return Ok(cons_void());
                 }
                 let tail_ty = self.gain_skin_inner(sut, ref_tail, tail, seen)?;
-                cell_type(self.slab, head_ty, tail_ty)
+                Ok(cons_cell(head_ty, tail_ty))
             }
-            "core" => {
-                let (payload, coil) = type_core_parts(ref_, &self.slab.noun_space())?;
-                let head_ty = self.gain_skin_inner(sut, payload, head, seen)?;
-                if type_tag(head_ty, &self.slab.noun_space())? == "void" {
-                    return Ok(ty_void(self.slab));
+            NTy::Core { payload, coil } => {
+                let payload = payload.clone();
+                let coil = coil.clone();
+                let head_ty = self.gain_skin_inner(sut.clone(), payload, head, seen)?;
+                if matches!(&*head_ty, NTy::Void) {
+                    return Ok(cons_void());
                 }
                 // hoon-138 `ar:gain` preserves a core only for the generic cell skin tail
                 // (`[%cell head %noun]`).  More specific tail skins refine the core as an
                 // ordinary cell and must not leave the arm namespace available.
                 if matches!(tail, Skin::Base(BaseType::NounExpr)) {
-                    Ok(ty_core(self.slab, head_ty, coil))
+                    Ok(cons_core(head_ty, coil))
                 } else {
-                    let noun = ty_noun(self.slab);
+                    let noun = cons_noun();
                     let tail_ty = self.gain_skin_inner(sut, noun, tail, seen)?;
-                    cell_type(self.slab, head_ty, tail_ty)
+                    Ok(cons_cell(head_ty, tail_ty))
                 }
             }
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Face { inner, .. } => {
+                let inner = inner.clone();
                 self.gain_cell_skin(sut, inner, head, tail, seen)
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.gain_cell_skin(sut, option, head, tail, seen)?);
+                    let opt = self.gain_cell_skin(sut.clone(), option, head, tail, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head: hd, payload } => {
+                let hd = hd.clone();
+                let payload = payload.clone();
                 let payload = self.gain_cell_skin(sut, payload, head, tail, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(hd, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.gain_cell_skin(sut, inner, head, tail, seen)
             }
-            _ => Ok(ty_void(self.slab)),
         }
     }
 
     fn gain_leaf_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         aura: &str,
         atom: &ParsedAtom,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => {
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => {
                 let value = parsed_atom_to_noun(self.slab, atom);
-                Ok(ty_atom(self.slab, aura, Some(value)))
+                let noun = ty_atom(self.slab, aura, Some(value));
+                native_of(noun, &self.slab.noun_space())
             }
-            "atom" => {
-                let (ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())?;
+            NTy::Atom { .. } => {
+                let ref_noun = live_to_noun(&ref_, self.slab);
+                let (ref_aura, ref_val) = type_atom_parts(ref_noun, &self.slab.noun_space())?;
                 let value = parsed_atom_to_noun(self.slab, atom);
                 if let Some(ref_val) = ref_val {
                     if !noun_eq(ref_val, value, &self.slab.noun_space())? {
-                        return Ok(ty_void(self.slab));
+                        return Ok(cons_void());
                     }
                 }
                 let aura_tag = if aura.is_empty() { "$" } else { aura };
@@ -9562,50 +9655,54 @@ impl<'a> Ut<'a> {
                     .map_err(|err| CompilerError::Decode(format!("atom aura: {err}")))?;
                 let aura_str = atom_to_string(aura_atom)
                     .map_err(|err| CompilerError::Decode(format!("atom aura: {err}")))?;
-                Ok(ty_atom(self.slab, &aura_str, Some(value)))
+                let noun = ty_atom(self.slab, &aura_str, Some(value));
+                native_of(noun, &self.slab.noun_space())
             }
-            "cell" => Ok(ty_void(self.slab)),
-            "core" => Ok(ty_void(self.slab)),
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Cell(..) => Ok(cons_void()),
+            NTy::Core { .. } => Ok(cons_void()),
+            NTy::Face { inner, .. } => {
+                let inner = inner.clone();
                 self.gain_leaf_skin(sut, inner, aura, atom, seen)
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.gain_leaf_skin(sut, option, aura, atom, seen)?);
+                    let opt = self.gain_leaf_skin(sut.clone(), option, aura, atom, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let payload = self.gain_leaf_skin(sut, payload, aura, atom, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(head, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.gain_leaf_skin(sut, inner, aura, atom, seen)
             }
-            _ => Ok(ty_void(self.slab)),
         }
     }
 
-    fn lose_skin(&mut self, sut: Noun, ref_: Noun, skin: &Skin) -> Result<Noun> {
-        let mut seen = StructNounSet::new();
+    fn lose_skin(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>, skin: &Skin) -> Result<NRc<NTy>> {
+        let mut seen: HashSet<u64> = HashSet::new();
         self.lose_skin_inner(sut, ref_, skin, &mut seen)
     }
 
     fn lose_skin_inner(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         skin: &Skin,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
         match skin {
             Skin::Term(name) => {
                 let wing = vec![Limb::Term(name.clone())];
@@ -9624,7 +9721,7 @@ impl<'a> Ut<'a> {
                 BaseType::Flag => {
                     let yes = Skin::Leaf("f".to_string(), ParsedAtom::Small(0));
                     let no = Skin::Leaf("f".to_string(), ParsedAtom::Small(1));
-                    let without_yes = self.lose_skin_inner(sut, ref_, &yes, seen)?;
+                    let without_yes = self.lose_skin_inner(sut.clone(), ref_, &yes, seen)?;
                     self.lose_skin_inner(sut, without_yes, &no, seen)
                 }
                 BaseType::Null => {
@@ -9632,35 +9729,37 @@ impl<'a> Ut<'a> {
                     self.lose_skin_inner(sut, ref_, &skin, seen)
                 }
                 BaseType::Void => Ok(ref_),
-                BaseType::NounExpr => Ok(ty_void(self.slab)),
+                BaseType::NounExpr => Ok(cons_void()),
                 BaseType::Atom(aura) => {
-                    let mut seen_ref = StructNounSet::new();
+                    let mut seen_ref: HashSet<u64> = HashSet::new();
                     self.lose_atom_skin(sut, ref_, aura, &mut seen_ref)
                 }
             },
             Skin::Cell(head, tail) => {
-                let mut seen_ref = StructNounSet::new();
+                let mut seen_ref: HashSet<u64> = HashSet::new();
                 self.lose_cell_skin(sut, ref_, head, tail, &mut seen_ref)
             }
             Skin::Leaf(aura, atom) => {
-                let mut seen_ref = StructNounSet::new();
+                let mut seen_ref: HashSet<u64> = HashSet::new();
                 self.lose_leaf_skin(sut, ref_, aura, atom, &mut seen_ref)
             }
             Skin::Dbug(_, inner) => self.lose_skin_inner(sut, ref_, inner, seen),
             Skin::Help(_, inner) => self.lose_skin_inner(sut, ref_, inner, seen),
             Skin::Name(_, inner) => self.lose_skin_inner(sut, ref_, inner, seen),
             Skin::Over(wing, inner) => {
-                let next_sut = self.play_noun(sut, &Hoon::Wing(wing.clone()))?;
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let next_sut = self.play(sut_noun, &Hoon::Wing(wing.clone()))?;
                 self.lose_skin_inner(next_sut, ref_, inner, seen)
             }
             Skin::Spec(spec, inner) => {
                 let example = self.spec_example_cached(spec);
-                let hit = self.play_noun(sut, example.as_ref())?;
-                let inner_ty = self.lose_skin_inner(sut, ref_, inner, seen)?;
-                if !self.nest_noun(hit, inner_ty)? {
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let hit = self.play(sut_noun, example.as_ref())?;
+                let inner_ty = self.lose_skin_inner(sut, ref_.clone(), inner, seen)?;
+                if !self.nest(hit.clone(), inner_ty)? {
                     return Err(CompilerError::Noun("native mint: lose spec".to_string()));
                 }
-                self.crop_noun(ref_, hit)
+                self.crop(ref_, hit)
             }
             Skin::Wash(_) => Ok(ref_),
         }
@@ -9668,174 +9767,194 @@ impl<'a> Ut<'a> {
 
     fn lose_atom_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         _aura: &str,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => {
-                let noun = ty_noun(self.slab);
-                Ok(ty_cell(self.slab, noun, noun))
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => {
+                let noun = cons_noun();
+                Ok(cons_cell(noun.clone(), noun))
             }
-            "atom" => Ok(ty_void(self.slab)),
-            "cell" => Ok(ref_),
-            "core" => Ok(ref_),
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Atom { .. } => Ok(cons_void()),
+            NTy::Cell(..) => Ok(ref_),
+            NTy::Core { .. } => Ok(ref_),
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let inner = self.lose_atom_skin(sut, inner, _aura, seen)?;
-                type_face_with_inner(self.slab, ref_, inner)
+                Ok(cons_face(tool, inner))
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.lose_atom_skin(sut, option, _aura, seen)?);
+                    let opt = self.lose_atom_skin(sut.clone(), option, _aura, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let payload = self.lose_atom_skin(sut, payload, _aura, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(head, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.lose_atom_skin(sut, inner, _aura, seen)
             }
-            _ => Ok(ref_),
         }
     }
 
     fn lose_cell_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         head: &Skin,
         tail: &Skin,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => {
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => {
                 let is_noun_cell = matches!(head, Skin::Base(BaseType::NounExpr))
                     && matches!(tail, Skin::Base(BaseType::NounExpr));
                 if is_noun_cell {
-                    Ok(ty_atom(self.slab, "$", None))
+                    let noun = ty_atom(self.slab, "$", None);
+                    native_of(noun, &self.slab.noun_space())
                 } else {
                     Ok(ref_)
                 }
             }
-            "atom" => Ok(ref_),
-            "cell" => {
-                let (ref_head, ref_tail) = type_cell_parts(ref_, &self.slab.noun_space())?;
-                let lef = self.lose_skin_inner(sut, ref_head, head, seen)?;
-                let rig = self.lose_skin_inner(sut, ref_tail, tail, seen)?;
-                let cell_lr = cell_type(self.slab, lef, rig)?;
-                let cell_l = cell_type(self.slab, lef, ref_tail)?;
-                let cell_r = cell_type(self.slab, ref_head, rig)?;
-                self.fork_from_options(vec![cell_lr, cell_l, cell_r])
+            NTy::Atom { .. } => Ok(ref_),
+            NTy::Cell(ref_head, ref_tail) => {
+                let ref_head = ref_head.clone();
+                let ref_tail = ref_tail.clone();
+                let lef = self.lose_skin_inner(sut.clone(), ref_head.clone(), head, seen)?;
+                let rig = self.lose_skin_inner(sut, ref_tail.clone(), tail, seen)?;
+                // 3-way fork rebuild via the NOUN fork path (RT-07 ordering).
+                let cell_lr = cons_cell(lef.clone(), rig.clone());
+                let cell_l = cons_cell(lef, ref_tail);
+                let cell_r = cons_cell(ref_head, rig);
+                let opts = vec![
+                    live_to_noun(&cell_lr, self.slab),
+                    live_to_noun(&cell_l, self.slab),
+                    live_to_noun(&cell_r, self.slab),
+                ];
+                let fork = self.fork_from_options(opts)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "core" => {
-                let (payload, coil) = type_core_parts(ref_, &self.slab.noun_space())?;
-                let head_ty = self.lose_skin_inner(sut, payload, head, seen)?;
-                if type_tag(head_ty, &self.slab.noun_space())? == "void" {
-                    return Ok(ty_void(self.slab));
+            NTy::Core { payload, coil } => {
+                let payload = payload.clone();
+                let coil = coil.clone();
+                let head_ty = self.lose_skin_inner(sut.clone(), payload, head, seen)?;
+                if matches!(&*head_ty, NTy::Void) {
+                    return Ok(cons_void());
                 }
                 // hoon-138 `ar:lose` uses the same core-vs-cell split as `ar:gain` here.
                 if matches!(tail, Skin::Base(BaseType::NounExpr)) {
-                    Ok(ty_core(self.slab, head_ty, coil))
+                    Ok(cons_core(head_ty, coil))
                 } else {
-                    let noun = ty_noun(self.slab);
+                    let noun = cons_noun();
                     let tail_ty = self.lose_skin_inner(sut, noun, tail, seen)?;
-                    cell_type(self.slab, head_ty, tail_ty)
+                    Ok(cons_cell(head_ty, tail_ty))
                 }
             }
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let inner = self.lose_cell_skin(sut, inner, head, tail, seen)?;
-                type_face_with_inner(self.slab, ref_, inner)
+                Ok(cons_face(tool, inner))
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.lose_cell_skin(sut, option, head, tail, seen)?);
+                    let opt = self.lose_cell_skin(sut.clone(), option, head, tail, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head: hd, payload } => {
+                let hd = hd.clone();
+                let payload = payload.clone();
                 let payload = self.lose_cell_skin(sut, payload, head, tail, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(hd, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.lose_cell_skin(sut, inner, head, tail, seen)
             }
-            _ => Ok(ref_),
         }
     }
 
     fn lose_leaf_skin(
         &mut self,
-        sut: Noun,
-        ref_: Noun,
+        sut: NRc<NTy>,
+        ref_: NRc<NTy>,
         _aura: &str,
         atom: &ParsedAtom,
-        seen: &mut StructNounSet,
-    ) -> Result<Noun> {
-        let tag = type_tag(ref_, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "void" => Ok(ty_void(self.slab)),
-            "noun" => Ok(ty_noun(self.slab)),
-            "atom" => {
-                let (_ref_aura, ref_val) = type_atom_parts(ref_, &self.slab.noun_space())?;
+        seen: &mut HashSet<u64>,
+    ) -> Result<NRc<NTy>> {
+        match &*ref_ {
+            NTy::Void => Ok(cons_void()),
+            NTy::Noun => Ok(cons_noun()),
+            NTy::Atom { .. } => {
+                let ref_noun = live_to_noun(&ref_, self.slab);
+                let (_ref_aura, ref_val) = type_atom_parts(ref_noun, &self.slab.noun_space())?;
                 let value = parsed_atom_to_noun(self.slab, atom);
                 if let Some(ref_val) = ref_val {
                     if noun_eq(ref_val, value, &self.slab.noun_space())? {
-                        return Ok(ty_void(self.slab));
+                        return Ok(cons_void());
                     }
                 }
                 Ok(ref_)
             }
-            "cell" => Ok(ref_),
-            "core" => Ok(ref_),
-            "face" => {
-                let inner = type_face_inner(ref_, &self.slab.noun_space())?;
+            NTy::Cell(..) => Ok(ref_),
+            NTy::Core { .. } => Ok(ref_),
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let inner = self.lose_leaf_skin(sut, inner, _aura, atom, seen)?;
-                type_face_with_inner(self.slab, ref_, inner)
+                Ok(cons_face(tool, inner))
             }
-            "fork" => {
-                let options = type_fork_options(ref_, &self.slab.noun_space())?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&ref_)?;
                 let mut out = Vec::with_capacity(options.len());
                 for option in options {
-                    out.push(self.lose_leaf_skin(sut, option, _aura, atom, seen)?);
+                    let opt = self.lose_leaf_skin(sut.clone(), option, _aura, atom, seen)?;
+                    out.push(live_to_noun(&opt, self.slab));
                 }
-                self.fork_from_options(out)
+                let fork = self.fork_from_options(out)?;
+                native_of(fork, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(ref_, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let payload = self.lose_leaf_skin(sut, payload, _aura, atom, seen)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(head, payload))
             }
-            "hold" => {
-                if !seen.insert(self, ref_)? {
-                    return Ok(ty_void(self.slab));
+            NTy::Hold { .. } => {
+                let ref_id = NRc::as_ptr(&ref_) as u64;
+                if !seen.insert(ref_id) {
+                    return Ok(cons_void());
                 }
-                let inner = self.repo_noun(ref_)?;
+                let inner = self.repo(ref_.clone())?;
                 self.lose_leaf_skin(sut, inner, _aura, atom, seen)
             }
-            _ => Ok(ref_),
         }
     }
 
@@ -10847,15 +10966,11 @@ impl<'a> Ut<'a> {
                 let bool_gol = ty_bool_n(self.slab).1;
                 let _nor = self.mull(sut.clone(), bool_gol, dox.clone(), p)?;
 
-                // True branch: apply gain to both sut and dox. gain/lose are still
-                // noun (C6) — bridge via lowering args + native_of'ing results.
+                // True branch: apply gain to both sut and dox. gain/lose are native
+                // now (C6) — thread the native subjects directly.
                 let hiq: (NRc<NTy>, NRc<NTy>) = {
-                    let sut_noun = live_to_noun(&sut, self.slab);
-                    let dox_noun = live_to_noun(&dox, self.slab);
-                    let fex_p_noun = self.gain(sut_noun, p)?;
-                    let fex_q_noun = self.gain(dox_noun, p)?;
-                    let fex_p = native_of(fex_p_noun, &self.slab.noun_space())?;
-                    let fex_q = native_of(fex_q_noun, &self.slab.noun_space())?;
+                    let fex_p = self.gain(sut.clone(), p)?;
+                    let fex_q = self.gain(dox.clone(), p)?;
                     if matches!(&*fex_p, NTy::Void) {
                         let q_ty = if matches!(&*fex_q, NTy::Void) {
                             cons_void()
@@ -10875,12 +10990,8 @@ impl<'a> Ut<'a> {
 
                 // False branch: apply lose to both sut and dox
                 let ran: (NRc<NTy>, NRc<NTy>) = {
-                    let sut_noun = live_to_noun(&sut, self.slab);
-                    let dox_noun = live_to_noun(&dox, self.slab);
-                    let wux_p_noun = self.lose(sut_noun, p)?;
-                    let wux_q_noun = self.lose(dox_noun, p)?;
-                    let wux_p = native_of(wux_p_noun, &self.slab.noun_space())?;
-                    let wux_q = native_of(wux_q_noun, &self.slab.noun_space())?;
+                    let wux_p = self.lose(sut.clone(), p)?;
+                    let wux_q = self.lose(dox.clone(), p)?;
                     if matches!(&*wux_p, NTy::Void) {
                         let q_ty = if matches!(&*wux_q, NTy::Void) {
                             cons_void()
@@ -10940,19 +11051,15 @@ impl<'a> Ut<'a> {
 
             // ---- Aura test: %wthx ----
             Hoon::WutHax(_skin, wing) => {
-                // fend from both perspectives. fend is still noun (C9); lower
-                // sut/dox, native_of the returned types.
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let (new_type_noun, new_axis) = self.fend(sut_noun, Way::Read, wing)?;
-                let (old_type_noun, old_axis) = self.fend(dox_noun, Way::Read, wing)?;
+                // fend from both perspectives. fend is native now (C9): thread the
+                // native subjects + read native types directly.
+                let (new_type, new_axis) = self.fend(sut.clone(), Way::Read, wing)?;
+                let (old_type, old_axis) = self.fend(dox.clone(), Way::Read, wing)?;
 
                 // Assert axes match
                 if new_axis != old_axis {
                     return Err(CompilerError::Noun("mull-bonk-x".to_string()));
                 }
-                let new_type = native_of(new_type_noun, &self.slab.noun_space())?;
-                let old_type = native_of(old_type_noun, &self.slab.noun_space())?;
                 // Assert old type nests in new (type.new ⊆ type.old)
                 if !self.nest(old_type, new_type)? {
                     return Err(CompilerError::Noun("mull-bonk-x".to_string()));
@@ -11016,10 +11123,9 @@ impl<'a> Ut<'a> {
 
             // ---- Conditional compilation: %zppt ----
             Hoon::ZapPat(wings, q, r) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let feel_sut = self.feel(sut_noun, wings)?;
-                let feel_dox = self.feel(dox_noun, wings)?;
+                // feel is native now (C9): thread the native subjects directly.
+                let feel_sut = self.feel(sut.clone(), wings)?;
+                let feel_dox = self.feel(dox.clone(), wings)?;
                 if feel_sut != feel_dox {
                     return Err(CompilerError::Noun("mull-bonk-f".to_string()));
                 }
@@ -11268,12 +11374,9 @@ impl<'a> Ut<'a> {
         wing: &WingType,
         pairs: &[(WingType, Hoon)],
     ) -> Result<(NRc<NTy>, NRc<NTy>)> {
-        // find/Port are still noun (C9): lower sut/dox to nouns, find returns a
-        // noun Port, kept as a noun contract into mull_cnts_with_ports.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let dox_noun = live_to_noun(&dox, self.slab);
-        let lug_p = self.find(sut_noun, Way::Read, wing)?;
-        let lug_q = self.find(dox_noun, Way::Read, wing)?;
+        // find/Port are native (C6+C9): thread the native subjects directly.
+        let lug_p = self.find(sut.clone(), Way::Read, wing)?;
+        let lug_q = self.find(dox.clone(), Way::Read, wing)?;
         self.mull_cnts_with_ports(sut, gol, dox, &lug_p, &lug_q, pairs)
     }
 
@@ -11297,18 +11400,15 @@ impl<'a> Ut<'a> {
         lug_q: &Port,
         pairs: &[(WingType, Hoon)],
     ) -> Result<(NRc<NTy>, NRc<NTy>)> {
-        // Port stays noun (C9); read its carried type nouns and native_of where a
-        // native type is needed (mull_nice / the returned slots).
+        // Port carries native types now (C6+C9): read them directly.
         match (lug_p, lug_q) {
             // Both synthetic: assert no edits, return both types
             (Port::Synthetic { typ: typ_p, .. }, Port::Synthetic { typ: typ_q, .. }) => {
                 if !pairs.is_empty() {
                     return Err(CompilerError::Noun("mull-bonk-cnts".to_string()));
                 }
-                let typ_p_n = native_of(*typ_p, &self.slab.noun_space())?;
-                let typ_q_n = native_of(*typ_q, &self.slab.noun_space())?;
-                let p_ty = self.mull_nice(sut, gol, typ_p_n)?;
-                Ok((p_ty, typ_q_n))
+                let p_ty = self.mull_nice(sut, gol, typ_p.clone())?;
+                Ok((p_ty, typ_q.clone()))
             }
             // Mixed synthetic/natural: reject (hoon-138 asserts)
             (Port::Synthetic { .. }, Port::Palo(_)) | (Port::Palo(_), Port::Synthetic { .. }) => {
@@ -11337,21 +11437,19 @@ impl<'a> Ut<'a> {
         palo_q: &Palo,
         rig: &[(WingType, Hoon)],
     ) -> Result<(NRc<NTy>, NRc<NTy>)> {
-        // Palo/Opal/tack/toss/fire are still noun (C9): zil.0/zil.1 (native mull
-        // results) are lowered before tack/toss, and the leg/arm/fire noun results
-        // are native_of'd back at the return boundary.
+        // Palo/Opal/tack/toss carry native types now (C6+C9). zil.0/zil.1 (native
+        // mull results) thread straight into native tack/toss; fire stays on the
+        // NOUN path (arm cores lowered just before the fire call).
         self.with_stack_guard(|ut| match (&palo_p.opal, &palo_q.opal) {
             // Both legs: tack both sides for each edit
             (Opal::Leg(leg_p), Opal::Leg(leg_q)) => {
-                let mut current_p = *leg_p;
-                let mut current_q = *leg_q;
+                let mut current_p = leg_p.clone();
+                let mut current_q = leg_q.clone();
                 for (sub_wing, expr) in rig {
                     let noun_gol = cons_noun();
                     let zil = ut.mull(sut.clone(), noun_gol, dox.clone(), expr)?;
-                    let zil0 = live_to_noun(&zil.0, ut.slab);
-                    let zil1 = live_to_noun(&zil.1, ut.slab);
-                    let dar_p = ut.tack(current_p, sub_wing, zil0)?;
-                    let dar_q = ut.tack(current_q, sub_wing, zil1)?;
+                    let dar_p = ut.tack(current_p, sub_wing, zil.0)?;
+                    let dar_q = ut.tack(current_q, sub_wing, zil.1)?;
                     // Assert axes match (bonk check)
                     if dar_p.0 != dar_q.0 {
                         return Err(CompilerError::Noun(
@@ -11361,9 +11459,7 @@ impl<'a> Ut<'a> {
                     current_p = dar_p.1;
                     current_q = dar_q.1;
                 }
-                let p_ty = native_of(current_p, &ut.slab.noun_space())?;
-                let q_ty = native_of(current_q, &ut.slab.noun_space())?;
-                Ok((p_ty, q_ty))
+                Ok((current_p, current_q))
             }
             // Both arms: toss both sides, then fire
             (
@@ -11386,10 +11482,8 @@ impl<'a> Ut<'a> {
                 for (sub_wing, expr) in rig {
                     let noun_gol = cons_noun();
                     let zil = ut.mull(sut.clone(), noun_gol, dox.clone(), expr)?;
-                    let zil0 = live_to_noun(&zil.0, ut.slab);
-                    let zil1 = live_to_noun(&zil.1, ut.slab);
-                    let dix_p = ut.toss(sub_wing, zil0, &hag_p)?;
-                    let dix_q = ut.toss(sub_wing, zil1, &hag_q)?;
+                    let dix_p = ut.toss(sub_wing, zil.0, &hag_p)?;
+                    let dix_q = ut.toss(sub_wing, zil.1, &hag_q)?;
                     // Assert axes match
                     if dix_p.0 != dix_q.0 {
                         return Err(CompilerError::Noun(
@@ -11399,9 +11493,18 @@ impl<'a> Ut<'a> {
                     hag_p = dix_p.1;
                     hag_q = dix_q.1;
                 }
-                // Fire sut-side with vet on, dox-side with vet off.
-                let p_ty_noun = ut.fire(&hag_p)?;
-                let q_ty_noun = ut.with_vet_off(|ut| ut.fire(&hag_q))?;
+                // Fire sut-side with vet on, dox-side with vet off. fire stays on
+                // the NOUN path (C9): lower the arm core types.
+                let hag_p_noun: Vec<(Noun, Noun)> = hag_p
+                    .iter()
+                    .map(|(core, foot)| (live_to_noun(core, ut.slab), *foot))
+                    .collect();
+                let hag_q_noun: Vec<(Noun, Noun)> = hag_q
+                    .iter()
+                    .map(|(core, foot)| (live_to_noun(core, ut.slab), *foot))
+                    .collect();
+                let p_ty_noun = ut.fire(&hag_p_noun)?;
+                let q_ty_noun = ut.with_vet_off(|ut| ut.fire(&hag_q_noun))?;
                 let p_ty = native_of(p_ty_noun, &ut.slab.noun_space())?;
                 let q_ty = native_of(q_ty_noun, &ut.slab.noun_space())?;
                 Ok((p_ty, q_ty))

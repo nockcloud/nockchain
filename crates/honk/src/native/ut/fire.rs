@@ -1,17 +1,28 @@
 use super::*;
 
 impl<'a> Ut<'a> {
+    // ATOMIC FLIP (C6+C9): `fine` reads the now-native Port (typ: NRc<NTy>) but
+    // KEEPS returning a NOUN typ (+ noun formula) to bound blast radius — its
+    // callers (mint_fits/mint_wing/fond_name go/feel) consume a noun typ today.
+    // The native Port typ is lowered via live_to_noun (memoized). `fire` stays on
+    // the NOUN path (arm cores lowered) so wet.rs need not flip with C9.
     pub(super) fn fine(&mut self, port: &Port) -> Result<(Noun, Noun)> {
         match port {
-            Port::Synthetic { typ, formula } => Ok((*typ, *formula)),
+            Port::Synthetic { typ, formula } => Ok((live_to_noun(typ, self.slab), *formula)),
             Port::Palo(palo) => match &palo.opal {
                 Opal::Leg(typ) => {
                     let axis = tend_big(&palo.vein)?;
-                    Ok((*typ, slot_formula_axis_big(self.slab, axis)))
+                    let typ_noun = live_to_noun(typ, self.slab);
+                    Ok((typ_noun, slot_formula_axis_big(self.slab, axis)))
                 }
                 Opal::Arm { axis, arms } => {
                     let axe = tend_big(&palo.vein)?;
-                    let ty = self.fire(arms)?;
+                    // fire stays noun: lower the arm core types.
+                    let arms_noun: Vec<(Noun, Noun)> = arms
+                        .iter()
+                        .map(|(core, foot)| (live_to_noun(core, self.slab), *foot))
+                        .collect();
+                    let ty = self.fire(&arms_noun)?;
                     let slot = slot_formula_axis_big(self.slab, axe);
                     let arm_axis_noun = noun_u64(self.slab, *axis);
                     let formula = T(self.slab, &[D(9), arm_axis_noun, slot]);

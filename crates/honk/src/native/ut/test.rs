@@ -1,6 +1,7 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::rc::Rc as NRc;
 
 use hatch::ast::hoon::{BaseType, Hoon, NounExpr, ParsedAtom, Pint, Skin, Spec, Spot, Tome};
 use nockapp::noun::slab::NounSlab;
@@ -589,28 +590,30 @@ fn type_algebra_gain_and_lose_partition_base_skins() {
         ("cell", Skin::Base(BaseType::Cell)),
     ];
     let mut ut = Ut::new(&mut slab);
-    let sut = ty_noun(ut.slab);
+    let sut_noun = ty_noun(ut.slab);
+    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
 
     for (type_name, typ) in &types {
+        let typ_n = native_of(*typ, &ut.slab.noun_space()).expect("native typ");
         for (skin_name, skin) in &skins {
             let gained = ut
-                .gain_skin(sut, *typ, skin)
+                .gain_skin(sut.clone(), typ_n.clone(), skin)
                 .unwrap_or_else(|err| panic!("gain({type_name}, {skin_name}) errored: {err:?}"));
             let lost = ut
-                .lose_skin(sut, *typ, skin)
+                .lose_skin(sut.clone(), typ_n.clone(), skin)
                 .unwrap_or_else(|err| panic!("lose({type_name}, {skin_name}) errored: {err:?}"));
             assert!(
-                ut.nest_noun(*typ, gained).expect("gain subtype"),
+                ut.nest(typ_n.clone(), gained.clone()).expect("gain subtype"),
                 "gain({type_name}, {skin_name}) should fit original type"
             );
             assert!(
-                ut.nest_noun(*typ, lost).expect("lose subtype"),
+                ut.nest(typ_n.clone(), lost.clone()).expect("lose subtype"),
                 "lose({type_name}, {skin_name}) should fit original type"
             );
             // Base noun/void/atom/cell skins form exact representable partitions.
             if matches!(*skin_name, "noun" | "void" | "atom" | "cell") {
                 assert!(
-                    ut.miss_noun(gained, lost).expect("gain/lose disjoint"),
+                    ut.miss(gained, lost).expect("gain/lose disjoint"),
                     "gain({type_name}, {skin_name}) and lose({type_name}, {skin_name}) should be disjoint"
                 );
             }
@@ -1073,20 +1076,24 @@ fn gain_atom_skin_hold_guard_is_structural() {
     let inner_b = ty_atom(&mut slab, "@", None);
     let hoon_b = hoon_to_noun(&mut slab, &Hoon::Axis(1));
     let hold_b = ty_hold(&mut slab, inner_b, hoon_b);
-    let sut = ty_noun(&mut slab);
+    let sut_noun = ty_noun(&mut slab);
     assert!(noun_eq(hold_a, hold_b, &slab.noun_space()).expect("hold noun_eq"));
     assert!(!unsafe { hold_a.raw_equals(&hold_b) });
 
     let mut ut = Ut::new(&mut slab);
-    let mut seen = StructNounSet::new();
-    assert!(seen.insert(&mut ut, hold_a).expect("seed guard"));
+    // hold_a/hold_b are structurally equal: interning collapses them to ONE Rc,
+    // so seeding the native ptr-id guard with hold_a guards hold_b too.
+    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let hold_a_n = native_of(hold_a, &ut.slab.noun_space()).expect("native hold_a");
+    let hold_b_n = native_of(hold_b, &ut.slab.noun_space()).expect("native hold_b");
+    let mut seen: HashSet<u64> = HashSet::new();
+    assert!(seen.insert(NRc::as_ptr(&hold_a_n) as u64), "seed guard");
     let out = ut
-        .gain_atom_skin(sut, hold_b, "@", &mut seen)
+        .gain_atom_skin(sut, hold_b_n, "@", &mut seen)
         .expect("gain atom skin");
 
-    assert_eq!(
-        type_tag(out, &ut.slab.noun_space()).expect("type tag"),
-        "void",
+    assert!(
+        matches!(&*out, NTy::Void),
         "canonical ar:gain uses a structural set type guard for holds"
     );
 }
@@ -1100,20 +1107,22 @@ fn lose_leaf_skin_hold_guard_is_structural() {
     let inner_b = ty_atom(&mut slab, "@", None);
     let hoon_b = hoon_to_noun(&mut slab, &Hoon::Axis(1));
     let hold_b = ty_hold(&mut slab, inner_b, hoon_b);
-    let sut = ty_noun(&mut slab);
+    let sut_noun = ty_noun(&mut slab);
     assert!(noun_eq(hold_a, hold_b, &slab.noun_space()).expect("hold noun_eq"));
     assert!(!unsafe { hold_a.raw_equals(&hold_b) });
 
     let mut ut = Ut::new(&mut slab);
-    let mut seen = StructNounSet::new();
-    assert!(seen.insert(&mut ut, hold_a).expect("seed guard"));
+    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let hold_a_n = native_of(hold_a, &ut.slab.noun_space()).expect("native hold_a");
+    let hold_b_n = native_of(hold_b, &ut.slab.noun_space()).expect("native hold_b");
+    let mut seen: HashSet<u64> = HashSet::new();
+    assert!(seen.insert(NRc::as_ptr(&hold_a_n) as u64), "seed guard");
     let out = ut
-        .lose_leaf_skin(sut, hold_b, "@", &ParsedAtom::Small(7), &mut seen)
+        .lose_leaf_skin(sut, hold_b_n, "@", &ParsedAtom::Small(7), &mut seen)
         .expect("lose leaf skin");
 
-    assert_eq!(
-        type_tag(out, &ut.slab.noun_space()).expect("type tag"),
-        "void",
+    assert!(
+        matches!(&*out, NTy::Void),
         "canonical ar:lose uses a structural set type guard for holds"
     );
 }
@@ -1148,8 +1157,9 @@ fn take_none_fork_branches_do_not_share_hold_seen_guard() {
     let hold = ty_hold(&mut slab, inner, hoon_noun);
     let left = ty_face(&mut slab, "left", hold);
     let right = ty_face(&mut slab, "right", hold);
-    let sut = ty_fork(&mut slab, vec![left, right]);
+    let sut_noun = ty_fork(&mut slab, vec![left, right]);
     let mut ut = Ut::new(&mut slab);
+    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
     let calls = Cell::new(0usize);
 
     let out = ut
@@ -1164,9 +1174,9 @@ fn take_none_fork_branches_do_not_share_hold_seen_guard() {
         2,
         "canonical ++take should re-enter each fork branch with a fresh hold guard after ?~ i.vit"
     );
-    assert_eq!(
-        type_tag(out, &ut.slab.noun_space()).expect("tag").as_str(),
-        "fork"
+    assert!(
+        matches!(&*out, NTy::Fork { .. }),
+        "take should preserve the fork shape"
     );
 }
 
@@ -1174,8 +1184,9 @@ fn take_none_fork_branches_do_not_share_hold_seen_guard() {
 fn toss_empty_errors_need() {
     let mut slab = NounSlab::new();
     let wing = vec![Limb::Term("foo".to_string())];
-    let mur = ty_noun(&mut slab);
+    let mur_noun = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
+    let mur = native_of(mur_noun, &ut.slab.noun_space()).expect("native mur");
 
     let err = ut
         .toss(&wing, mur, &[])
@@ -1196,19 +1207,23 @@ fn toss_mismatched_axes_errors_mate() {
     let right_tail = ty_noun(&mut slab);
     let right = ty_cell(&mut slab, right_head, right_tail);
     let wing = vec![Limb::Term("foo".to_string())];
-    let mur = ty_atom(&mut slab, "ud", None);
+    let mur_noun = ty_atom(&mut slab, "ud", None);
     let foot = D(0);
     let mut ut = Ut::new(&mut slab);
+    let mur = native_of(mur_noun, &ut.slab.noun_space()).expect("native mur");
+    let left_n = native_of(left, &ut.slab.noun_space()).expect("native left");
+    let right_n = native_of(right, &ut.slab.noun_space()).expect("native right");
 
-    let (left_axis, _left_new) = ut.tack(left, &wing, mur).expect("left tack");
-    let (right_axis, _right_new) = ut.tack(right, &wing, mur).expect("right tack");
+    let (left_axis, _left_new) = ut.tack(left_n.clone(), &wing, mur.clone()).expect("left tack");
+    let (right_axis, _right_new) =
+        ut.tack(right_n.clone(), &wing, mur.clone()).expect("right tack");
     assert_ne!(
         left_axis, right_axis,
         "test setup should produce distinct edit axes for canonical mate failure"
     );
 
     let err = ut
-        .toss(&wing, mur, &[(left, foot), (right, foot)])
+        .toss(&wing, mur, &[(left_n, foot), (right_n, foot)])
         .expect_err("toss should reject mismatched edit axes");
     assert!(
         matches!(err, CompilerError::Noun(ref message) if message == "mate"),
@@ -1572,7 +1587,7 @@ fn strict_find_core_prefers_loot_arm_before_payload_face() {
     let mut ut = Ut::new(&mut slab);
 
     let port = ut
-        .find(sut, Way::Read, &wing)
+        .find_noun(sut, Way::Read, &wing)
         .expect("strict find should resolve foo");
     match port {
         Port::Palo(palo) => match palo.opal {
@@ -1591,7 +1606,7 @@ fn strict_find_core_con_true_does_not_probe_context_outside_payload_path() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "strict core lookup should not find context-only face when payload path does not expose it",
     );
 }
@@ -1604,11 +1619,11 @@ fn strict_find_core_loot_shortcut_matches_canonical_arm_precedence() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_ok(),
+        ut.find_noun(sut, Way::Read, &wing).is_ok(),
         "strict find(Read) should still return core arms before peel (canonical ++fond)",
     );
     assert!(
-        ut.find(sut, Way::Free, &wing).is_ok(),
+        ut.find_noun(sut, Way::Free, &wing).is_ok(),
         "strict find(Free) should still resolve the arm on the same core",
     );
 }
@@ -1621,7 +1636,7 @@ fn strict_fend_rejects_arm_ports() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.fend(sut, Way::Read, &wing).is_err(),
+        ut.fend_noun(sut, Way::Read, &wing).is_err(),
         "strict fend should reject arm ports and only accept leg ports",
     );
 }
@@ -1634,7 +1649,7 @@ fn strict_find_does_not_treat_dollar_as_subject_alias() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "strict find should not resolve `$` as current subject alias",
     );
 }
@@ -1674,7 +1689,7 @@ fn strict_find_does_not_treat_dollar_prefixed_axis_as_subject_alias() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "strict find should not resolve `$.<axis>` as subject-alias projection",
     );
 }
@@ -1753,7 +1768,7 @@ fn strict_resolve_wing_axis_reuses_fend_contract() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.resolve_wing_axis(sut, &wing).is_err(),
+        ut.resolve_wing_axis_noun(sut, &wing).is_err(),
         "strict resolve_wing_axis should follow strict fend semantics for arm-only hits",
     );
 }
@@ -1769,7 +1784,7 @@ fn strict_find_non_term_face_tool_is_not_transparent() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "strict find should not transparently descend through non-term face tools",
     );
 }
@@ -1784,7 +1799,7 @@ fn strict_find_atom_face_name_mismatch_does_not_descend() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "strict find should lose on atom-face name mismatch instead of descending",
     );
 }
@@ -1805,7 +1820,7 @@ fn strict_find_term_face_mismatch_loses() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "canonical strict find should lose on atom-term face mismatch",
     );
 }
@@ -1842,7 +1857,7 @@ fn strict_find_structural_face_recursive_tree_ra_resolves() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_ok(),
+        ut.find_noun(sut, Way::Read, &wing).is_ok(),
         "canonical strict find should resolve [r a] when both faces are explicitly present",
     );
 }
@@ -1864,7 +1879,7 @@ fn strict_find_structural_fork_unmatched_is_rejected() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "canonical strict twin should reject unmatched+hit fork merges",
     );
 }
@@ -1887,7 +1902,7 @@ fn strict_find_structural_p_n_a_chain_loses() {
     let mut ut = Ut::new(&mut slab);
 
     assert!(
-        ut.find(sut, Way::Read, &wing).is_err(),
+        ut.find_noun(sut, Way::Read, &wing).is_err(),
         "canonical strict find should not use structural term aliases for [p n a]",
     );
 }
@@ -1920,7 +1935,7 @@ fn strict_fend_does_not_use_compat_fallback_ladders() {
     let wing = vec![Limb::Term("definitely_missing".to_string())];
     let mut ut = Ut::new(&mut slab);
 
-    assert!(ut.fend(sut, Way::Read, &wing).is_err());
+    assert!(ut.fend_noun(sut, Way::Read, &wing).is_err());
 }
 
 #[test]
@@ -1942,19 +1957,21 @@ fn mull_cnts_mixed_ports_errors() {
     let sut = ty_noun(&mut slab);
     let dox = ty_noun(&mut slab);
     let gol = ty_noun(&mut slab);
-    let lug_p = Port::Synthetic {
-        typ: ty_atom(&mut slab, "ud", None),
-        formula: D(0),
-    };
-    let lug_q = Port::Palo(Palo {
-        vein: Vec::new(),
-        opal: Opal::Leg(ty_noun(&mut slab)),
-    });
+    let synth_typ = ty_atom(&mut slab, "ud", None);
+    let leg_typ = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     let space = ut.slab.noun_space();
     let sut_n = native_of(sut, &space).expect("native sut");
     let gol_n = native_of(gol, &space).expect("native gol");
     let dox_n = native_of(dox, &space).expect("native dox");
+    let lug_p = Port::Synthetic {
+        typ: native_of(synth_typ, &space).expect("native synth typ"),
+        formula: D(0),
+    };
+    let lug_q = Port::Palo(Palo {
+        vein: Vec::new(),
+        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
+    });
     let result = ut.mull_cnts_with_ports(sut_n, gol_n, dox_n, &lug_p, &lug_q, &[]);
     assert!(result.is_err(), "mixed synthetic/natural should error");
 }
@@ -1962,9 +1979,15 @@ fn mull_cnts_mixed_ports_errors() {
 #[test]
 fn mull_endo_mismatch_returns_noun_error() {
     let mut slab = NounSlab::new();
+    let leg_typ = ty_noun(&mut slab);
+    let sut = ty_noun(&mut slab);
+    let gol = ty_noun(&mut slab);
+    let dox = ty_noun(&mut slab);
+    let mut ut = Ut::new(&mut slab);
+    let space = ut.slab.noun_space();
     let palo_leg = Palo {
         vein: Vec::new(),
-        opal: Opal::Leg(ty_noun(&mut slab)),
+        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
     };
     let palo_arm = Palo {
         vein: Vec::new(),
@@ -1973,11 +1996,6 @@ fn mull_endo_mismatch_returns_noun_error() {
             arms: Vec::new(),
         },
     };
-    let sut = ty_noun(&mut slab);
-    let gol = ty_noun(&mut slab);
-    let dox = ty_noun(&mut slab);
-    let mut ut = Ut::new(&mut slab);
-    let space = ut.slab.noun_space();
     let sut_n = native_of(sut, &space).expect("native sut");
     let gol_n = native_of(gol, &space).expect("native gol");
     let dox_n = native_of(dox, &space).expect("native dox");
@@ -2278,12 +2296,13 @@ fn stack_guard_wrapped_paths() {
     let noun_a = ty_noun(&mut slab);
     let noun_b = ty_noun(&mut slab);
     let noun_c = ty_noun(&mut slab);
-    let palo_leg = Palo {
-        vein: Vec::new(),
-        opal: Opal::Leg(ty_noun(&mut slab)),
-    };
+    let leg_typ = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     let space = ut.slab.noun_space();
+    let palo_leg = Palo {
+        vein: Vec::new(),
+        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
+    };
     let noun_a_n = native_of(noun_a, &space).expect("native a");
     let noun_b_n = native_of(noun_b, &space).expect("native b");
     let noun_c_n = native_of(noun_c, &space).expect("native c");
@@ -2485,7 +2504,8 @@ fn frame_arena_core_mint_matches_monolithic() {
 // wet-`|-` mint corner from an earlier flip step. Tracked in
 // docs/native-compiler/ATOMIC-FLIP-TRACKER.md; un-ignore once the underlying
 // bare-subject wet-mint bug is fixed.
-#[ignore = "pre-existing bare-%noun wet-|- mint failure; see ATOMIC-FLIP-TRACKER.md"]
+// FIXED by the per-compile live_reset() in Ut::new (the C6+C9 batch): this was
+// the cross-compile thread-local intern-table aliasing, not a real mint bug.
 #[test]
 fn frame_arena_wet_gate_function_sample_matches_monolithic() {
     use std::path::Path;

@@ -33,6 +33,7 @@ use crate::errors::{CompilerError, Result};
 use crate::native::noun::noun_pair;
 
 /// A Hoon compiler type (Phase-1 boundary form; see module docs).
+#[derive(Debug)]
 pub enum Type {
     Void,
     Noun,

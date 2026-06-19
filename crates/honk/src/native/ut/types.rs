@@ -8,7 +8,9 @@ use nockvm::noun::{NounAllocator, NounSpace};
 use num_bigint::BigUint;
 
 use crate::errors::Result;
+use crate::native::ir::ty::Type as NTy;
 use crate::native::ut::{noun_eq, Ut};
+use std::rc::Rc as NRc;
 
 // Compiler inputs are not attacker-controlled; prefer a fast, non-cryptographic hasher for
 // hot-path internal caches (notably `find`/`cool` on large molds like hoon-138).
@@ -147,10 +149,6 @@ pub type NestBoundaryRawKey = (u64, u64, u64);
 pub type NestBoundaryKey = (u32, u32, u8, u64);
 pub type TypeBinaryBoundaryKey = (u32, u32, u8, u64);
 pub type FishBoundaryKey = (u32, u64, u8, u64);
-pub type FindMemoKey = (u32, u8, u64, u64, u64, u64);
-pub type FindRawMemoKey = (u64, u8, u64, u64, u64, u64);
-pub type StrictTermPortMemoKey = (u32, u32, u32, u32, u8, u64, u64);
-pub type StrictTermPortRawMemoKey = (u64, u64, u64, u64, u8, u64, u64);
 pub type CoolMemoKey = (u32, u32, u8, u64, u64);
 pub type ChipMemoKey = (u32, u8, u8, u8, u8, u64, u64, u64, u64);
 pub type WingAxisMemoKey = (u32, u64, u64);
@@ -218,10 +216,11 @@ impl BoundaryMemoSet {
 }
 
 pub struct LookupMemoSet {
-    pub find: BucketMemo<FindMemoKey, FindCacheEntry>,
-    pub find_raw: BucketMemo<FindRawMemoKey, FindRawCacheEntry>,
-    pub strict_term_port: BucketMemo<StrictTermPortMemoKey, StrictTermPortCacheEntry>,
-    pub strict_term_port_raw: RawMemoMap<StrictTermPortRawMemoKey, Port>,
+    // ATOMIC FLIP (C6+C9): the find/find_raw/strict_term_port[_raw] caches were
+    // DORMANT (only `.clear()`ed, never read/written on the live path) and they
+    // embedded `Port` (whose shape changed to carry native types) — deleted here
+    // rather than re-keyed. The surviving entries do not embed `Port`; they remain
+    // dormant noun-keyed caches (re-key on native identity at C-final if revived).
     pub strict_term_core_parts_raw: RawMemoMap<(u64, u64), Option<(Noun, Noun, Noun, Noun)>>,
     pub cool: BucketMemo<CoolMemoKey, (Noun, Noun, WingType, Noun)>,
     pub chip: BucketMemo<ChipMemoKey, (Noun, Noun)>,
@@ -233,10 +232,6 @@ pub struct LookupMemoSet {
 impl Default for LookupMemoSet {
     fn default() -> Self {
         Self {
-            find: Default::default(),
-            find_raw: Default::default(),
-            strict_term_port: Default::default(),
-            strict_term_port_raw: Default::default(),
             strict_term_core_parts_raw: Default::default(),
             cool: Default::default(),
             chip: Default::default(),
@@ -250,10 +245,6 @@ impl Default for LookupMemoSet {
 impl LookupMemoSet {
     /// Drop every memoized find/lookup result (see `BoundaryMemoSet::clear`).
     pub fn clear(&mut self) {
-        self.find.clear();
-        self.find_raw.clear();
-        self.strict_term_port.clear();
-        self.strict_term_port_raw.clear();
         self.strict_term_core_parts_raw.clear();
         self.cool.clear();
         self.chip.clear();
@@ -898,10 +889,14 @@ pub enum Vair {
     Zinc,
 }
 
+// ATOMIC FLIP (C6+C9): the wing-navigation Port/Palo/Opal/Pony carriers now hold
+// NATIVE type values (`NRc<NTy>`). The FORMULA slot (Synthetic.formula) and the
+// arm-spec foot (`Opal::Arm.arms[].1`) stay `Noun` — those are nock formulas /
+// hoon arm-specs, not types.
 #[derive(Clone, Debug)]
 pub enum Port {
     Palo(Palo),
-    Synthetic { typ: Noun, formula: Noun },
+    Synthetic { typ: NRc<NTy>, formula: Noun },
 }
 
 #[derive(Clone, Debug)]
@@ -912,8 +907,8 @@ pub struct Palo {
 
 #[derive(Clone, Debug)]
 pub enum Opal {
-    Leg(Noun),
-    Arm { axis: u64, arms: Vec<(Noun, Noun)> },
+    Leg(NRc<NTy>),
+    Arm { axis: u64, arms: Vec<(NRc<NTy>, Noun)> },
 }
 
 #[derive(Clone, Debug)]
@@ -921,26 +916,7 @@ pub enum Pony {
     Void,
     Palo(Palo),
     Unmatched(u64),
-    Synthetic { typ: Noun, formula: Noun },
-}
-
-#[derive(Clone, Debug)]
-pub enum FindMemoValue {
-    Hit(Port),
-    Miss,
-}
-
-#[derive(Clone, Debug)]
-pub struct FindCacheEntry {
-    pub sut: Noun,
-    pub wing: WingType,
-    pub value: FindMemoValue,
-}
-
-#[derive(Clone, Debug)]
-pub struct FindRawCacheEntry {
-    pub wing: WingType,
-    pub value: FindMemoValue,
+    Synthetic { typ: NRc<NTy>, formula: Noun },
 }
 
 #[derive(Clone, Debug)]
@@ -1007,16 +983,6 @@ pub struct HoldTypeCacheEntry {
     pub inner: Noun,
     pub hoon: Noun,
     pub hold: Noun,
-}
-
-#[derive(Clone, Debug)]
-pub struct StrictTermPortCacheEntry {
-    pub payload: Noun,
-    pub garb: Noun,
-    pub context: Noun,
-    pub tomes: Noun,
-    pub term: Arc<str>,
-    pub port: Port,
 }
 
 #[derive(Clone, Copy, Debug)]
