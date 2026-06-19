@@ -736,3 +736,35 @@ threading, O(n) via children-already-native), validate `to_noun == noun`
 throughout, then drop the noun path. That is the dedicated multi-week effort; all
 its prerequisites (IR boundaries, intern table, O(n) primitive, live hook) are
 proven.
+
+## INC1 + INC2: native-shadow producer vocabulary (2026-06-18)
+
+Began the return-threading port per a 5-agent mapping workflow (full ut/mod.rs
+type-construction surface: 21 producers, the call graph + sut dataflow, a 202-site
+constructor census, the consumer set, a 13-step dependency-ordered plan). Key
+census fact: `ty_void`/`ty_noun` alone have 123 call sites, so direct return-type
+changes would cascade catastrophically. Chosen representation: **additive `_n`
+sibling producers** returning `(Noun, Rc<Type>)`, leaving the 202 noun-only call
+sites untouched; native children passed explicitly (O(n) sharing), collapses
+mirrored, all interned through one shared thread-local table.
+
+- INC1: `ty_{noun,void,atom,cell,face,face_tool,hint,hold,core,fork,bool}_n` +
+  intern accessors `live_intern`/`native_of`/`assert_native_eq`. Each builds the
+  byte-identical noun via its `ty_*` sibling AND the interned native from
+  already-native children; branch ctors mirror collapse by reading the result
+  tag. Unit-tested byte-exact across all 9 tags + every collapse path.
+- Adversarial verification (3 skeptic lenses) found one CRITICAL real bug — the
+  thread-local memo (keyed by noun raw pointer) must reset per batch entry or a
+  reused slab address aliases a stale `Rc` — fixed (`live_reset` per entry); plus
+  an empty-aura coverage gap + a redundant-allocation cleanup. Verdict: byte-exact
+  + O(n) sound.
+- INC2: `cell_type_n`/`hint_type_n`/`fork_from_options_n` (the normalizing entry
+  points mint/play call), each mirroring its collapse; Ut-based tests byte-exact.
+
+The full native-returning producer vocabulary is now built + verified. What
+remains is WIRING (INC3+): thread these through play_core/mint_core → mine →
+play/mint → the mint_*/play_* helper fleet, carrying native `Rc<Type>` as the type
+slot of each return and `sut` native as an input, with `to_noun==noun` asserted
+live. This is the cascade; it pays off cumulatively (the memory win lands only once
+`sut` native flows through the whole chain and the noun path is dropped at the
+flip, INC13).
