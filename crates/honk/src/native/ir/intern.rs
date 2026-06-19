@@ -210,6 +210,32 @@ pub fn cons_noun() -> Rc<Type> {
     live_intern(Type::Noun)
 }
 
+/// Collapse-aware native `%core`: `core(void,_)` -> void (mirrors ty_core_n).
+pub fn cons_core(payload: Rc<Type>, coil: Leaf) -> Rc<Type> {
+    if matches!(&*payload, Type::Void) {
+        return live_intern(Type::Void);
+    }
+    live_intern(Type::Core { payload, coil })
+}
+
+/// Collapse-aware native `%face`: `face(_,void)` -> void (mirrors ty_face_tool_n).
+pub fn cons_face(tool: Leaf, inner: Rc<Type>) -> Rc<Type> {
+    if matches!(&*inner, Type::Void) {
+        return live_intern(Type::Void);
+    }
+    live_intern(Type::Face { tool, inner })
+}
+
+/// Collapse-aware native `%hint`: `hint(_,void)` -> void, `hint(_,noun)` -> noun
+/// (mirrors ty_hint_n).
+pub fn cons_hint(head: Leaf, payload: Rc<Type>) -> Rc<Type> {
+    match &*payload {
+        Type::Void => live_intern(Type::Void),
+        Type::Noun => live_intern(Type::Noun),
+        _ => live_intern(Type::Hint { head, payload }),
+    }
+}
+
 /// The O(n) fallback for a not-yet-threaded child: decode `noun` to its canonical
 /// native `Rc<Type>` via the shared memoized walk. One shared `(table, memo)`
 /// means each noun node is walked at most once per compile.

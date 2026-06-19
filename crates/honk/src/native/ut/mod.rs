@@ -6263,7 +6263,7 @@ impl<'a> Ut<'a> {
 
     fn mint_ketvar(&mut self, sut: Noun, gol: Noun, p: &Hoon, vair: Vair) -> Result<(Noun, Noun)> {
         let (p_ty, p_formula) = self.mint(sut, gol, p)?;
-        let wrapped = self.wrap_type(p_ty, vair)?;
+        let wrapped = self.wrap_type_noun(p_ty, vair)?;
         let ty = self.nice(sut, gol, wrapped)?;
         Ok((ty, p_formula))
     }
@@ -6321,7 +6321,7 @@ impl<'a> Ut<'a> {
 
     fn play_ketvar(&mut self, sut: Noun, p: &Hoon, vair: Vair) -> Result<Noun> {
         let p_ty = self.play_noun(sut, p)?;
-        self.wrap_type(p_ty, vair)
+        self.wrap_type_noun(p_ty, vair)
     }
 
     fn play_dbug(&mut self, sut: Noun, inner: &Hoon) -> Result<Noun> {
@@ -7124,7 +7124,7 @@ impl<'a> Ut<'a> {
             // wrap_type/nice are still noun-typed (Phase 1): bridge native->noun
             // and back at this boundary.
             let ty_noun = ty.to_noun(self.slab);
-            let wrapped = self.wrap_type(ty_noun, mel)?;
+            let wrapped = self.wrap_type_noun(ty_noun, mel)?;
             let checked = self.nice(sut, gol, wrapped)?;
             ty = native_of(checked, &self.slab.noun_space())?;
         }
@@ -8624,50 +8624,68 @@ impl<'a> Ut<'a> {
         )
     }
 
-    fn wrap_type(&mut self, typ: Noun, vair: Vair) -> Result<Noun> {
-        let tag = type_tag(typ, &self.slab.noun_space())?;
-        match tag.as_str() {
-            "cell" => {
-                let (head, tail) = type_cell_parts(typ, &self.slab.noun_space())?;
+    fn wrap_type(&mut self, typ: NRc<NTy>, vair: Vair) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP (consumer C3): wrap_type reads + rebuilds the native enum.
+        // Branch rebuilds use the collapse-aware cons_* ctors. The core coil and
+        // the fork set stay noun in Phase 1 (lowered via to_noun); repo is native.
+        match &*typ {
+            NTy::Cell(head, tail) => {
+                let head = head.clone();
+                let tail = tail.clone();
                 let head = self.wrap_type(head, vair)?;
                 let tail = self.wrap_type(tail, vair)?;
-                Ok(ty_cell(self.slab, head, tail))
+                Ok(cons_cell(head, tail))
             }
-            "core" => {
-                let (payload, coil) = type_core_parts(typ, &self.slab.noun_space())?;
-                let (garb, context, rest) = coil_parts(coil, &self.slab.noun_space())?;
+            NTy::Core { payload, coil } => {
+                let payload = payload.clone();
+                let coil_noun = coil.to_noun(self.slab);
+                let (garb, context, rest) = coil_parts(coil_noun, &self.slab.noun_space())?;
                 let current_vair = garb_vair(garb, &self.slab.noun_space())?;
                 if current_vair != Vair::Gold && vair != Vair::Lead {
                     return Err(CompilerError::Noun("wrap-core".to_string()));
                 }
                 let new_garb = self.garb_with_vair(garb, vair)?;
                 let new_coil = coil_from_parts(self.slab, new_garb, context, rest);
-                Ok(ty_core(self.slab, payload, new_coil))
+                let coil_leaf = NLeaf::from_noun(new_coil, &self.slab.noun_space());
+                Ok(cons_core(payload, coil_leaf))
             }
-            "face" => {
-                let inner = type_face_inner(typ, &self.slab.noun_space())?;
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let inner = self.wrap_type(inner, vair)?;
-                type_face_with_inner(self.slab, typ, inner)
+                Ok(cons_face(tool, inner))
             }
-            "fork" => {
-                let options = type_fork_options(typ, &self.slab.noun_space())?;
+            NTy::Fork { set } => {
+                let set_noun = set.to_noun(self.slab);
+                let options = fork_set_options(set_noun, &self.slab.noun_space())?;
                 let mut wrapped = Vec::with_capacity(options.len());
                 for option in options {
-                    wrapped.push(self.wrap_type(option, vair)?);
+                    let opt = native_of(option, &self.slab.noun_space())?;
+                    let w = self.wrap_type(opt, vair)?;
+                    wrapped.push(w.to_noun(self.slab));
                 }
-                self.fork_from_options(wrapped)
+                let fork_noun = self.fork_from_options(wrapped)?;
+                native_of(fork_noun, &self.slab.noun_space())
             }
-            "hint" => {
-                let (inner, note, payload) = type_hint_parts(typ, &self.slab.noun_space())?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let payload = self.wrap_type(payload, vair)?;
-                Ok(ty_hint(self.slab, inner, note, payload))
+                Ok(cons_hint(head, payload))
             }
-            "hold" => {
-                let repo = self.repo_noun(typ)?;
-                self.wrap_type(repo, vair)
+            NTy::Hold { .. } => {
+                let r = self.repo(typ.clone())?;
+                self.wrap_type(r, vair)
             }
-            _ => Ok(typ),
+            NTy::Void | NTy::Noun | NTy::Atom { .. } => Ok(typ.clone()),
         }
+    }
+
+    /// Noun-bridged `wrap_type` for not-yet-flipped callers (C3). Drops as
+    /// callers flip.
+    fn wrap_type_noun(&mut self, typ: Noun, vair: Vair) -> Result<Noun> {
+        let native = native_of(typ, &self.slab.noun_space())?;
+        Ok(self.wrap_type(native, vair)?.to_noun(self.slab))
     }
 
     fn burp_fork_set_run(&mut self, set: Noun) -> Result<Noun> {
@@ -10445,8 +10463,8 @@ impl<'a> Ut<'a> {
             // ---- Iron wrap: %ktbr ----
             Hoon::KetBar(p) => {
                 let vat = self.mull(sut, gol, dox, p)?;
-                let p_wrapped = self.wrap_type(vat.0, Vair::Iron)?;
-                let q_wrapped = self.wrap_type(vat.1, Vair::Iron)?;
+                let p_wrapped = self.wrap_type_noun(vat.0, Vair::Iron)?;
+                let q_wrapped = self.wrap_type_noun(vat.1, Vair::Iron)?;
                 Ok((p_wrapped, q_wrapped))
             }
 
@@ -10468,8 +10486,8 @@ impl<'a> Ut<'a> {
             // ---- Zinc wrap: %ktpm ----
             Hoon::KetPam(p) => {
                 let vat = self.mull(sut, gol, dox, p)?;
-                let p_wrapped = self.wrap_type(vat.0, Vair::Zinc)?;
-                let q_wrapped = self.wrap_type(vat.1, Vair::Zinc)?;
+                let p_wrapped = self.wrap_type_noun(vat.0, Vair::Zinc)?;
+                let q_wrapped = self.wrap_type_noun(vat.1, Vair::Zinc)?;
                 Ok((p_wrapped, q_wrapped))
             }
 
@@ -10484,8 +10502,8 @@ impl<'a> Ut<'a> {
             // ---- Lead wrap: %ktwt ----
             Hoon::KetWut(p) => {
                 let vat = self.mull(sut, gol, dox, p)?;
-                let p_wrapped = self.wrap_type(vat.0, Vair::Lead)?;
-                let q_wrapped = self.wrap_type(vat.1, Vair::Lead)?;
+                let p_wrapped = self.wrap_type_noun(vat.0, Vair::Lead)?;
+                let q_wrapped = self.wrap_type_noun(vat.1, Vair::Lead)?;
                 Ok((p_wrapped, q_wrapped))
             }
 
@@ -12270,7 +12288,9 @@ fn coil_from_parts(slab: &mut NounSlab, garb: Noun, context: Noun, rest: Noun) -
 // ---------------------------------------------------------------------------
 use std::rc::Rc as NRc;
 
-use crate::native::ir::intern::{cons_cell, cons_noun, cons_void, live_intern, native_of};
+use crate::native::ir::intern::{
+    cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void, live_intern, native_of,
+};
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;
 
