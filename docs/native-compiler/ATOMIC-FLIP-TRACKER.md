@@ -159,7 +159,41 @@ steps and status:
          type NOUNS to the skins) -> flip TOGETHER with the find/take + fond
          batch (C9), not standalone. gain_skin builds via cons_face/cons_hint/
          fork; uses fuse/crop (native), nest (native after C8), play (bridge).
-  C7 [ ] mull + type_test_formula_on_axis glue -> native.
+  C7 [DONE] mull family + fish (type_test_formula_on_axis) SCC read/return native
+         (NRc<NTy>) in one atomic pass. Done as designed:
+         - FISH SCC {type_test_formula_on_axis, _inner, _fork}: TYPE input -> NRc;
+           RETURN stays Noun (it is a NOCK FORMULA). seen_holds Vec<NRc> with
+           NRc::ptr_eq dedup (dropped raw_equals/noun_eq). atom value lowered via
+           live_to_noun + type_atom_parts; fork via fork_options_native; hold via
+           native repo + ptr_eq cycle guard; core => Err(fish-core). Fish boundary
+           cache kept noun/mug-keyed: lower typ once at entry, pass that noun.
+           mint_fits now uses self.play (NRc ref_type) + native fish (no bridge).
+         - MULL SCC {mull, mull_inner, mull_open_then_recurse, mull_nice, mull_beth,
+           mull_grow, mile, mull_mile, mull_balk, mull_bake, mull_cnts, emul,
+           mull_cnts_with_ports, mull_endo}: sut/gol/dox + both return slots -> NRc
+           (mull returns TWO TYPES p/q, NOT type+formula). ~30 mull_inner arms use
+           cons_*/ty_*_n; void guards via matches!(NTy::Void). play_noun->play
+           (lower sut), wrap_type_noun->wrap_type, nest_noun->nest. Still-noun deps
+           (C6 gain/lose; C9 find/fend/feel/tack/toss/fire/Port/Palo/Opal; mint;
+           busk; hint_type) bridged: lower native args via live_to_noun, native_of
+           the returned TYPE noun(s); mint's formula slot + cove axes stay noun.
+           %fits keeps noun_eq (formula compare) + syx_p!=syx_q (u64 axes).
+           mull_mile builds the native core via ty_core_n.1 (coil from leaf parts;
+           payload native; core_context_from_payload fed a lowered sut/dox).
+           mull cache kept noun/mug-keyed (lower sut/gol/dox once at entry,
+           native_of cached p_ty/q_ty on hit). fork_from_options stays noun path
+           (RT-07) + native_of lift.
+         - mull_noun bridge added (#[allow(dead_code)]; the live wet.rs caller uses
+           native mull directly with native_of'd args; only test.rs uses mull_noun).
+           mull_check_wet (wet.rs) stays noun-signatured (fire/C9 boundary),
+           native_of's wet_core/noun_goal/dox before native mull. fire_wet_rib stays
+           noun-keyed.
+         - test.rs direct callers (mull_cnts_with_ports, mull_endo, mull_bake,
+           mull_balk, mull) fixed: native_of the type-noun args / route through
+           mull_noun.
+         - VALIDATION: cargo build -p honk --lib GREEN; full honk lib suite green
+           single-threaded (121 passed, 2 ignored — same as C8). Release build +
+           shadow_gate byte-parity left to the parent (per task discipline).
   C9 [ ] find/take/Port/Palo + fond family -> native (the wing-nav subsystem;
          gain/lose/cool/chip fold in here).
   C-final [ ] BOUNDARY CLOSE = the memory win: thread sut native (play/mint sut

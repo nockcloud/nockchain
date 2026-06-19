@@ -106,7 +106,13 @@ impl<'a> Ut<'a> {
                 ))
             })?;
             let noun_goal = ty_noun(self.slab);
-            let _ = self.mull(wet_core, noun_goal, dox, hoon_ast.as_ref())?;
+            // mull is now native (C7); mull_check_wet stays noun-signatured (the
+            // fire/C9 boundary), so native_of the args here.
+            let space = self.slab.noun_space();
+            let wet_core_n = native_of(wet_core, &space)?;
+            let noun_goal_n = native_of(noun_goal, &space)?;
+            let dox_n = native_of(dox, &space)?;
+            let _ = self.mull(wet_core_n, noun_goal_n, dox_n, hoon_ast.as_ref())?;
             Ok(())
         })();
         if let Some((entry_sut, entry_dox, entry_hoon)) = self.fire_wet_rib.pop() {

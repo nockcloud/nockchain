@@ -1951,7 +1951,11 @@ fn mull_cnts_mixed_ports_errors() {
         opal: Opal::Leg(ty_noun(&mut slab)),
     });
     let mut ut = Ut::new(&mut slab);
-    let result = ut.mull_cnts_with_ports(sut, gol, dox, &lug_p, &lug_q, &[]);
+    let space = ut.slab.noun_space();
+    let sut_n = native_of(sut, &space).expect("native sut");
+    let gol_n = native_of(gol, &space).expect("native gol");
+    let dox_n = native_of(dox, &space).expect("native dox");
+    let result = ut.mull_cnts_with_ports(sut_n, gol_n, dox_n, &lug_p, &lug_q, &[]);
     assert!(result.is_err(), "mixed synthetic/natural should error");
 }
 
@@ -1973,7 +1977,11 @@ fn mull_endo_mismatch_returns_noun_error() {
     let gol = ty_noun(&mut slab);
     let dox = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
-    let result = ut.mull_endo(sut, gol, dox, &palo_leg, &palo_arm, &[]);
+    let space = ut.slab.noun_space();
+    let sut_n = native_of(sut, &space).expect("native sut");
+    let gol_n = native_of(gol, &space).expect("native gol");
+    let dox_n = native_of(dox, &space).expect("native dox");
+    let result = ut.mull_endo(sut_n, gol_n, dox_n, &palo_leg, &palo_arm, &[]);
     match result {
         Err(CompilerError::Noun(_)) => {}
         Err(other) => panic!("expected Noun error, got {other:?}"),
@@ -2259,7 +2267,7 @@ fn mull_wthx_does_not_call_skin_match_static() {
     );
     let mut ut = Ut::new(&mut slab);
     ut.skin_match_static_calls = 0;
-    ut.mull(sut, gol, dox, &gen).expect("mull");
+    ut.mull_noun(sut, gol, dox, &gen).expect("mull");
     assert_eq!(ut.skin_match_static_calls, 0);
 }
 
@@ -2275,6 +2283,10 @@ fn stack_guard_wrapped_paths() {
         opal: Opal::Leg(ty_noun(&mut slab)),
     };
     let mut ut = Ut::new(&mut slab);
+    let space = ut.slab.noun_space();
+    let noun_a_n = native_of(noun_a, &space).expect("native a");
+    let noun_b_n = native_of(noun_b, &space).expect("native b");
+    let noun_c_n = native_of(noun_c, &space).expect("native c");
 
     ut.stack_guard_calls = 0;
     ut.redo_wet_payload(payload, payload).expect("redo");
@@ -2282,18 +2294,18 @@ fn stack_guard_wrapped_paths() {
 
     ut.stack_guard_calls = 0;
     let arms: HashMap<String, Hoon> = HashMap::new();
-    ut.mull_bake(noun_a, noun_b, Poly::Dry, &arms)
+    ut.mull_bake(noun_a_n.clone(), noun_b_n.clone(), Poly::Dry, &arms)
         .expect("bake");
     assert!(ut.stack_guard_calls > 0, "bake should use stack guard");
 
     ut.stack_guard_calls = 0;
     let tomes: HashMap<String, Tome> = HashMap::new();
-    ut.mull_balk(noun_b, noun_c, Poly::Dry, &tomes)
+    ut.mull_balk(noun_b_n.clone(), noun_c_n.clone(), Poly::Dry, &tomes)
         .expect("balk");
     assert!(ut.stack_guard_calls > 0, "balk should use stack guard");
 
     ut.stack_guard_calls = 0;
-    ut.mull_endo(noun_a, noun_b, noun_c, &palo_leg, &palo_leg, &[])
+    ut.mull_endo(noun_a_n, noun_b_n, noun_c_n, &palo_leg, &palo_leg, &[])
         .expect("endo");
     assert!(ut.stack_guard_calls > 0, "endo should use stack guard");
 }
