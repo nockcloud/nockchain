@@ -57,6 +57,36 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
+## LAST MILE (2026-06-20) — frame-arena-default LANDS the memory win; kernel blocked by a fond/peek corpus-gap bug
+
+frame-arena-default committed (602334f1: force_frame_arena=true on the binary's
+build-context Ut). Dumb kernel: COMPLETES in 153s at 10.1GB (vs >900s/61GB
+without) == pre-flip memory; time ~3.3x pre-flip (46s) — down from ~20x. Fixtures
+byte-parity PASS with frame-arena-default; lib/compiler_mint use the non-binary
+compile path so unaffected.
+
+BLOCKER (kernel correctness, NOT memory/frame-arena): with the frame arena now
+reaching ztd/one.hoon (the no-frame path OOMed before getting there), the native
+compile errors. Instrumented (HONK_FIND_TRACE) to the exact failure:
+  arm poly: arm $: find failed for wing [Parent(0, None), Axis(12)], way=Rite,
+  sut_tag=core, frame=true.
+The subject is a VALID core (native payload is a heap Rc, survives frames), so
+this is a native fond/peek LOGIC bug on this wing shape — NOT a frame-arena
+reclaim. Axis(12) navigates tail->head->head = into the core's PAYLOAD (the
+deepening subject); then Parent(0, None) (skip=0, name=None) resolves via
+fond_name. fond returns Pony::Unmatched/Void -> find errors. The fixtures +
+compiler_mint (69/0) do NOT exercise this shape: a CORPUS COVERAGE GAP. There may
+be MORE such kernel-only fond/peek/skin bugs behind it (the corpus passing does
+not imply the kernel compiles).
+NEXT (correctness, gates the perf islands): debug native fond_name / peek for
+[Parent(0,None), Axis(12)] on a core payload — compare to the pre-flip noun
+fond/peek semantics (git show the pre-C6+C9 fond at 066151ea~1). Candidates:
+fond_name's name=None (bare Parent) path, or peek into a core payload returning
+void at a deep axis. Then re-run the dumb-frame-arena repro (153s) and iterate on
+any further kernel-exposed bugs until full dumb byte-parity vs /tmp/dumb_preflip.jam.
+THEN the CPU islands (repo_hold cache re-key / redo / fine) to close the 3.3x time
+gap. The islands are MOOT until the kernel compiles correctly.
+
 ## RESOLUTION (2026-06-20) — memory regression SOLVED by the frame arena; CPU tail remains
 
 UPDATE superseding the "severe regression" panic below. Root-caused via
