@@ -1003,7 +1003,11 @@ pub struct LazyResolverArmEntry {
 
 #[derive(Clone, Debug)]
 pub struct LazyResolverContext {
-    pub core_type: Noun,
+    // ATOMIC FLIP perf: the lazy core is the NATIVE deepening core (the interned
+    // Rc threaded from mint_core). It is heap-resident (not slab) so the
+    // frame-arena copy_to_base no longer applies, and it shares pointer identity
+    // with the in-progress entries pushed during the same core's arm builds.
+    pub core_type: NRc<NTy>,
     pub poly: Poly,
     pub arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
     pub cached_formula_by_axis: HashMap<u64, Noun>,
@@ -1013,9 +1017,13 @@ pub struct LazyResolverContext {
 #[derive(Clone, Debug)]
 pub struct ArmInProgressEntry {
     pub key: Arc<str>,
-    pub core: Noun,
+    // ATOMIC FLIP perf: the in-progress core is the NATIVE deepening core (the
+    // interned Rc threaded down from mint_core), not a re-lifted noun. Cross-arm
+    // cycle detection compares interned Rc identity (see
+    // arm_goal_for_hoon_in_progress) instead of noun structural equality.
+    pub core: NRc<NTy>,
     pub hoon: Noun,
-    pub goal: Noun,
+    pub goal: NRc<NTy>,
     pub vet: bool,
 }
 

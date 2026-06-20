@@ -5020,18 +5020,18 @@ impl<'a> Ut<'a> {
     fn lazy_resolver_register_context(
         &mut self,
         resolver_id: u64,
-        mut core_type: Noun,
+        core_type: NRc<NTy>,
         poly: Poly,
         mut arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
     ) {
         // Lazy resolvers live for the whole compile and are resolved on demand
         // (re-minting an arm against `core_type`), including CROSS-ARM: another
         // core's arm can reference this one long after this core's frame popped.
-        // So under the frame arena both `core_type` and the arm AST nouns must
-        // be copied to the base region or they dangle. No-op without frames /
-        // for the top-level core (already base-resident).
+        // ATOMIC FLIP perf: `core_type` is now the NATIVE deepening core (a heap
+        // Rc), so it is NOT slab-resident and needs no copy_to_base — it survives
+        // any frame pop intrinsically. Only the arm AST nouns remain slab-resident
+        // and must be copied to base under the frame arena. No-op without frames.
         if self.frame_arena_enabled() {
-            core_type = unsafe { self.slab.copy_to_base(core_type) };
             for entry in arms_by_axis.values_mut() {
                 entry.hoon_noun = unsafe { self.slab.copy_to_base(entry.hoon_noun) };
             }
@@ -5085,7 +5085,7 @@ impl<'a> Ut<'a> {
                 return Ok(None);
             }
             Some((
-                ctx.core_type,
+                ctx.core_type.clone(),
                 ctx.poly,
                 ctx.arms_by_axis.get(&fragment).cloned(),
             ))
@@ -5098,7 +5098,9 @@ impl<'a> Ut<'a> {
             }
             return Ok(None);
         };
-        let lazy_goal = ty_noun(self.slab);
+        // ATOMIC FLIP perf: the lazy callback goal is native `%noun` (== ty_noun);
+        // build it natively so it threads straight to mint with no re-lift.
+        let lazy_goal = cons_noun();
         let effective_vet = if poly == Poly::Wet { false } else { self.vet };
         // A true compile cycle (a fold inside an arm requesting that same
         // arm's formula) declines; hoon-138 cannot compile such code either
@@ -5106,7 +5108,10 @@ impl<'a> Ut<'a> {
         // already-finished arms always resolve, matching hoonc.
         if self
             .arm_goal_for_hoon_in_progress(
-                core_type, arm_entry.hoon_noun, lazy_goal, effective_vet,
+                core_type.clone(),
+                arm_entry.hoon_noun,
+                lazy_goal.clone(),
+                effective_vet,
             )?
             .is_some()
         {
@@ -6700,21 +6705,19 @@ impl<'a> Ut<'a> {
 
     fn arm_goal_for_hoon_in_progress(
         &mut self,
-        core: Noun,
+        core: NRc<NTy>,
         hoon: Noun,
-        goal: Noun,
+        goal: NRc<NTy>,
         vet: bool,
-    ) -> Result<Option<Noun>> {
-        let core_raw = unsafe { core.as_raw() };
+    ) -> Result<Option<NRc<NTy>>> {
         let hoon_raw = unsafe { hoon.as_raw() };
-        let goal_raw = unsafe { goal.as_raw() };
 
+        // ATOMIC FLIP perf: core/goal are interned native Rcs, so structural
+        // equality is exactly pointer identity (hash-cons guarantees one canonical
+        // Rc per type) — Rc::ptr_eq replaces the noun as_raw/noun_eq compare.
         for entry in self.arm_goal_in_progress.iter().rev() {
-            let entry_core_raw = unsafe { entry.core.as_raw() };
             let entry_hoon_raw = unsafe { entry.hoon.as_raw() };
-            let entry_goal_raw = unsafe { entry.goal.as_raw() };
-            let core_match =
-                entry_core_raw == core_raw || noun_eq(entry.core, core, &self.slab.noun_space())?;
+            let core_match = NRc::ptr_eq(&entry.core, &core);
             if !core_match {
                 continue;
             }
@@ -6726,12 +6729,11 @@ impl<'a> Ut<'a> {
             if !hoon_match {
                 continue;
             }
-            let goal_match =
-                entry_goal_raw == goal_raw || noun_eq(entry.goal, goal, &self.slab.noun_space())?;
+            let goal_match = NRc::ptr_eq(&entry.goal, &goal);
             if !goal_match {
                 continue;
             }
-            return Ok(Some(entry.goal));
+            return Ok(Some(entry.goal.clone()));
         }
 
         Ok(None)
@@ -7093,10 +7095,20 @@ impl<'a> Ut<'a> {
         let lazy_semi = self.semi_lazy_root(resolver_id);
         let lazy_rest = T(self.slab, &[lazy_semi, tomes_map]);
         let lazy_coil = coil_from_parts(self.slab, garb, lazy_context, lazy_rest);
-        let core_type_lazy = ty_core(self.slab, payload_type, lazy_coil);
+        // ATOMIC FLIP perf: build the NATIVE lazy core (the deepening site) ONCE,
+        // bottom-up from the shared native payload, via ty_core_n (mirrors
+        // ty_core's collapse). Threading this interned Rc to the battery builder
+        // means each of N arms reuses ONE core instead of re-lifting the O(N)
+        // deepening core per arm (native_of -> O(N^2)). The noun core_type_lazy is
+        // gone: nothing below needs it (the battery builder only passed it through
+        // to native mint, which now receives the native directly). The same Rc is
+        // stored in the lazy resolver context so cross-arm in-progress cycle
+        // detection compares pointer identity.
+        let (_core_type_lazy_noun, core_native_lazy) =
+            ty_core_n(self.slab, (payload_type, payload_native.clone()), lazy_coil);
         let mut lazy_arms = HashMap::new();
         self.collect_lazy_resolver_arms_from_tomes_map(tomes_map, 1, &mut lazy_arms)?;
-        self.lazy_resolver_register_context(resolver_id, core_type_lazy, poly, lazy_arms);
+        self.lazy_resolver_register_context(resolver_id, core_native_lazy.clone(), poly, lazy_arms);
         // The resolver context stays registered after the core completes.
         // hoon-138's `++laze` resolver is a pure gate embedded in the lazy
         // seminoun: types that captured the lazy battery (e.g. `%hold`s of
@@ -7105,7 +7117,7 @@ impl<'a> Ut<'a> {
         // long-lived types, turning their batteries permanently blocked and
         // breaking constant folds that hoonc performs.
         let battery = self.build_tomes_battery_from_maps(
-            tomes_map, core_type_lazy, poly, goal_for_arms, expected_tomes_map,
+            tomes_map, core_native_lazy, poly, goal_for_arms, expected_tomes_map,
         )?;
         let context = self.core_context_from_payload(payload_type)?;
         let semi_noun = self.semi_noun_full(battery);
@@ -7340,9 +7352,14 @@ impl<'a> Ut<'a> {
         goal_for_arms: Noun,
         expected_arms_map: Option<Noun>,
         arm_key: Noun,
-    ) -> Result<Noun> {
+    ) -> Result<NRc<NTy>> {
+        // ATOMIC FLIP perf: return the per-arm mint goal NATIVELY so it threads
+        // straight into mint. The common case is %noun (cons_noun() == ty_noun);
+        // the Some branch plays the goal-core subject and keeps the native result
+        // (goal_for_arms is only native_of'd here, in the rare goal-typed mine —
+        // it is NOT the deepening core).
         let Some(expected_arms_map) = expected_arms_map else {
-            return Ok(ty_noun(self.slab));
+            return Ok(cons_noun());
         };
         let Some((_arm_axis, arm_hoon_noun)) = self.look(arm_key, expected_arms_map)? else {
             return Err(CompilerError::Noun("unexpected-arm".to_string()));
@@ -7350,7 +7367,8 @@ impl<'a> Ut<'a> {
         let arm_hoon = self.hoon_ast_lookup_result(arm_hoon_noun).map_err(|err| {
             CompilerError::Noun(format!("native mint: goal arm ast missing: {err}"))
         })?;
-        self.play_noun(goal_for_arms, arm_hoon.as_ref())
+        let goal_subject = native_of(goal_for_arms, &self.slab.noun_space())?;
+        self.play(goal_subject, arm_hoon.as_ref())
     }
 
     fn collect_lazy_resolver_arms_from_arms_map(
@@ -7452,7 +7470,10 @@ impl<'a> Ut<'a> {
     fn build_tomes_battery_from_maps(
         &mut self,
         tomes_map: Noun,
-        core_type: Noun,
+        // ATOMIC FLIP perf: the NATIVE deepening core, threaded from mint_core. It
+        // is only passed through (to recursion + build_arms_battery_from_map ->
+        // mint); never decoded here. One interned Rc shared across all N arms.
+        core_type: NRc<NTy>,
         poly: Poly,
         goal_for_arms: Noun,
         expected_tomes_map: Option<Noun>,
@@ -7482,7 +7503,7 @@ impl<'a> Ut<'a> {
             }
         }
         let chapter_battery = self.build_arms_battery_from_map(
-            arms_map, core_type, poly, goal_for_arms, expected_arms_map,
+            arms_map, core_type.clone(), poly, goal_for_arms, expected_arms_map,
         )?;
 
         let left_empty = noun_is_zero(left);
@@ -7505,7 +7526,7 @@ impl<'a> Ut<'a> {
         }
 
         let left_bat = self.build_tomes_battery_from_maps(
-            left, core_type, poly, goal_for_arms, expected_tomes_map,
+            left, core_type.clone(), poly, goal_for_arms, expected_tomes_map,
         )?;
         let right_bat = self.build_tomes_battery_from_maps(
             right, core_type, poly, goal_for_arms, expected_tomes_map,
@@ -7516,9 +7537,13 @@ impl<'a> Ut<'a> {
     fn build_arm_formula_direct(
         &mut self,
         key: Arc<str>,
-        core_type: Noun,
+        // ATOMIC FLIP perf: the NATIVE deepening core and NATIVE goal. Both go
+        // straight into native `mint` (no native_of re-lift of the O(N) core per
+        // arm — that was the O(N^2) bug). The in-progress dedup keys off the
+        // interned Rc pointer identity.
+        core_type: NRc<NTy>,
         poly: Poly,
-        goal: Noun,
+        goal: NRc<NTy>,
         hoon: &Hoon,
         hoon_noun: Noun,
     ) -> Result<Noun> {
@@ -7549,43 +7574,41 @@ impl<'a> Ut<'a> {
         let arm_vet = if skip_vet { false } else { prev_vet };
         self.vet = arm_vet;
 
-        let core_type_raw = unsafe { core_type.as_raw() };
-        let in_progress_key = (Arc::clone(&key), core_type_raw);
+        // The in-progress dedup id is the interned core Rc's pointer (one canonical
+        // Rc per type via hash-cons), replacing the old noun as_raw() identity.
+        let core_type_id = NRc::as_ptr(&core_type) as u64;
+        let in_progress_key = (Arc::clone(&key), core_type_id);
         let in_progress_entry = ArmInProgressEntry {
             key: Arc::clone(&key),
-            core: core_type,
+            core: core_type.clone(),
             hoon: hoon_noun,
-            goal,
+            goal: goal.clone(),
             vet: arm_vet,
         };
         self.arm_in_progress.insert(in_progress_key.clone());
         self.arm_goal_in_progress.push(in_progress_entry);
         self.arm_epoch = self.arm_epoch.wrapping_add(1);
-        let arm_goal = goal;
-        // core_type/arm_goal are nouns here (battery building); bridge to native mint.
-        let result = self.mint_noun(core_type, arm_goal, hoon);
+        // core_type/goal are the NATIVE deepening core + goal: thread straight to
+        // native mint (no per-arm native_of re-lift — the O(N^2) -> O(N) win).
+        let result = self.mint(core_type.clone(), goal.clone(), hoon);
         self.vet = prev_vet;
         self.arm_in_progress.remove(&in_progress_key);
         let popped = self.arm_goal_in_progress.pop();
         debug_assert_eq!(
-            popped.map(|entry| unsafe {
-                (
-                    entry.key,
-                    entry.core.as_raw(),
-                    entry.hoon.as_raw(),
-                    entry.goal.as_raw(),
-                    entry.vet,
-                )
-            }),
-            Some(unsafe {
-                (
-                    Arc::clone(&key),
-                    core_type.as_raw(),
-                    hoon_noun.as_raw(),
-                    goal.as_raw(),
-                    arm_vet,
-                )
-            })
+            popped.map(|entry| (
+                entry.key,
+                NRc::as_ptr(&entry.core),
+                unsafe { entry.hoon.as_raw() },
+                NRc::as_ptr(&entry.goal),
+                entry.vet,
+            )),
+            Some((
+                Arc::clone(&key),
+                NRc::as_ptr(&core_type),
+                unsafe { hoon_noun.as_raw() },
+                NRc::as_ptr(&goal),
+                arm_vet,
+            ))
         );
         self.arm_epoch = self.arm_epoch.wrapping_add(1);
         let (ty, formula) = match result {
@@ -7594,7 +7617,12 @@ impl<'a> Ut<'a> {
                 return Err(with_arm_context(key.as_ref(), err));
             }
         };
-        let _ty = self.prune_recursive_holds(ty, hoon_noun)?;
+        // prune_recursive_holds takes the arm RESULT type as a noun. `ty` is the
+        // native mint result (the arm's output, NOT the deepening core), so
+        // lowering it per arm is bounded and acceptable; the deepening core is
+        // never lowered.
+        let ty_noun = live_to_noun(&ty, self.slab);
+        let _ty = self.prune_recursive_holds(ty_noun, hoon_noun)?;
 
         Ok(formula)
     }
@@ -7672,9 +7700,12 @@ impl<'a> Ut<'a> {
     fn build_arm_formula_framed(
         &mut self,
         key: Arc<str>,
-        core_type: Noun,
+        // ATOMIC FLIP perf: native deepening core + native goal, passed through to
+        // build_arm_formula_direct. The frame-arena machinery is orthogonal — it
+        // wraps the mint and never decodes the (heap-resident) native core.
+        core_type: NRc<NTy>,
         poly: Poly,
-        arm_goal: Noun,
+        arm_goal: NRc<NTy>,
         hoon: &Hoon,
         hoon_noun: Noun,
     ) -> Result<Noun> {
@@ -7703,7 +7734,11 @@ impl<'a> Ut<'a> {
     fn build_arms_battery_from_map(
         &mut self,
         arms_map: Noun,
-        core_type: Noun,
+        // ATOMIC FLIP perf: native deepening core, passed through to the per-arm
+        // builder -> mint. `goal` stays a noun: it is the goal-core play SUBJECT
+        // forwarded to goal_arm_expected_type (not the small per-arm mint goal,
+        // which that helper produces natively).
+        core_type: NRc<NTy>,
         poly: Poly,
         goal: Noun,
         expected_arms_map: Option<Noun>,
@@ -7726,7 +7761,7 @@ impl<'a> Ut<'a> {
 
         let formula = self.build_arm_formula_framed(
             Arc::clone(&key),
-            core_type,
+            core_type.clone(),
             poly,
             arm_goal,
             hoon.as_ref(),
@@ -7750,8 +7785,8 @@ impl<'a> Ut<'a> {
             return Ok(T(self.slab, &[formula, left_bat]));
         }
 
-        let left_bat =
-            self.build_arms_battery_from_map(left, core_type, poly, goal, expected_arms_map)?;
+        let left_bat = self
+            .build_arms_battery_from_map(left, core_type.clone(), poly, goal, expected_arms_map)?;
         let right_bat =
             self.build_arms_battery_from_map(right, core_type, poly, goal, expected_arms_map)?;
         Ok(T(self.slab, &[formula, left_bat, right_bat]))
