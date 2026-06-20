@@ -57,7 +57,38 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
-## DECISIVE BASELINE (2026-06-20) — THE FLIP IS A SEVERE REGRESSION
+## RESOLUTION (2026-06-20) — memory regression SOLVED by the frame arena; CPU tail remains
+
+UPDATE superseding the "severe regression" panic below. Root-caused via
+instrumentation (the earlier hypotheses — coil jamming, boundary bridges as the
+MEMORY hog — were WRONG; proven: leaf jam+cue is only ~1GB, intern_node <500k):
+the 61GB was PER-ARM SCRATCH accumulating in the grow-only NounSlab. The H7 FRAME
+ARENA (HONK_FRAME_ARENA, built but opt-in) reclaims it. Results on dumb:
+  - no frame arena:   >900s, 61GB (regression).
+  - frame arena + base-resident to-noun memos (committed 43fbc4de): peak RSS
+    ~10GB == PRE-FLIP's 10.2GB. MEMORY REGRESSION SOLVED.
+The frame-arena lifetime bug (TO_NOUN_MEMO/LEAF_MEMO caching frame-resident nouns
+-> dangling "unknown tag" on pop) is fixed by copy_to_base'ing memo values to base
+(no dangling, no per-pop re-lowering; no-op on the default path). Byte-parity PASS
+with AND without the frame arena (shadow_gate); compiler_mint 69/0.
+
+REMAINING = CPU TIME (not memory): dumb with the frame arena is ~4x+ pre-flip (46s
+-> >200s) at bounded memory. Profile (frame-arena binary, sample 60s): the cost is
+the boundary BRIDGES jam (10119) + cue (8603) + native_of/intern_type_noun (6878)
++ copy_into (5138); copy_to_base itself is negligible (123). native_of is only ~70
+calls but each lifts a DEEPENING noun type, jamming every leaf — i.e. the LAST
+noun islands (repo_hold/rest_inner, the redo/wet SCC, fine()'s noun typ) still
+native_of/jam/cue deepening types. The frame arena made that memory-safe but not
+free. This is now a CONVERGENT, finite tail (not the pervasive O(N^2) it looked
+like before the frame arena bounded memory).
+NEXT (CPU): nativize repo_hold/rest_inner + redo SCC + fine() so they no longer
+native_of/jam/cue deepening types (eliminates the jam/cue/native_of hot frames);
+then wire the frame arena ON by default for the kernel path; then full
+dumb byte-parity vs /tmp/dumb_preflip.jam + the perf gate. The native-type
+migration is byte-parity-correct and the memory goal is achieved; speed is the
+last mile.
+
+## DECISIVE BASELINE (2026-06-20) — earlier panic, now superseded by the RESOLUTION above
 
 Measured the dumb-kernel compile (hoon/apps/dumbnet/outer.hoon, --prelude
 hoon/common/hoon.hoon), same machine, golden byte-match confirmed both sides:
