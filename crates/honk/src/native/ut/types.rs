@@ -133,7 +133,11 @@ where
 }
 
 pub type CoreMintBoundaryKey = (u32, u32, u32, u8, u8, u64, u64, u64);
-pub type BranSemiMemoKey = (u32, u8, u64, u64, u64, usize);
+// Native re-key (Phase-2 tail): the bran/seminoun subject is the DEEPENING type,
+// so the first field is the interned native `Rc` pointer (`NRc::as_ptr as u64`)
+// instead of a noun mug — lowering the deepening subject just to mug it was the
+// O(N^2) cost this nativization kills.
+pub type BranSemiMemoKey = (u64, u8, u64, u64, u64, usize);
 // Boundary-cache keys carry the active semantic/memo context (fan_context_key
 // for %rest/%hold scope, and for mint/mull the arm_epoch/placeholder context)
 // in addition to (mug, …, vet). These collapse to 0 in the steady state, so
@@ -161,8 +165,11 @@ pub type HoldRepoCoreMemoKey = (u32, u32, u32, u32, u32, u64);
 
 #[derive(Clone)]
 pub struct BranSemiCacheEntry {
-    pub sut: Noun,
-    pub seen_holds: Vec<Noun>,
+    // Native re-key (Phase-2 tail): the bran subject + the active hold scope are
+    // interned native types, matched by `NRc::ptr_eq`. The `semi` output stays a
+    // seminoun (the semi_* algebra is noun-based).
+    pub sut: NRc<NTy>,
+    pub seen_holds: Vec<NRc<NTy>>,
     pub semi: Noun,
 }
 

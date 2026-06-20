@@ -3849,20 +3849,6 @@ impl<'a> Ut<'a> {
         Ok(live_to_noun(&r, self.slab))
     }
 
-    /// Native-input/noun-output `play` for the noun-returning play_* helpers: run
-    /// native play (subject threads natively), lower the native result to a noun
-    /// only at the helper's noun-typed return boundary (memoized).
-    fn play_to_noun(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<Noun> {
-        let r = self.play(sut, gen)?;
-        Ok(live_to_noun(&r, self.slab))
-    }
-
-    /// play bridge: a not-yet-flipped play_* helper returned a type NOUN; lift it
-    /// to native (memoized). These calls drop as the helpers are flipped.
-    fn pb(&self, noun: Noun) -> Result<NRc<NTy>> {
-        native_of(noun, &self.slab.noun_space())
-    }
-
     fn play_inner(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         let result = {
             match gen {
@@ -3871,40 +3857,21 @@ impl<'a> Ut<'a> {
                     let tail = self.play(sut, q)?;
                     Ok(cons_cell(head, tail))
                 }
-                Hoon::Rock(aura, expr) => {
-                    let n = self.play_rock(aura, expr);
-                    self.pb(n)
-                }
-                Hoon::Sand(aura, expr) => {
-                    let n = self.play_sand(aura, expr)?;
-                    self.pb(n)
-                }
+                Hoon::Rock(aura, expr) => Ok(self.play_rock(aura, expr)),
+                Hoon::Sand(aura, expr) => self.play_sand(aura, expr),
                 Hoon::ZapZap | Hoon::Eror(_) => Ok(cons_void()),
-                Hoon::Dbug(_, inner) => {
-                    let n = self.play_dbug(sut, inner)?;
-                    self.pb(n)
-                }
-                Hoon::Note(note, inner) => {
-                    let n = self.play_note(sut, note, inner)?;
-                    self.pb(n)
-                }
+                Hoon::Dbug(_, inner) => self.play_dbug(sut, inner),
+                Hoon::Note(note, inner) => self.play_note(sut, note, inner),
                 Hoon::Lost(_) => Ok(cons_void()),
                 Hoon::TisGar(p, q) => {
                     let next = self.play(sut, p)?;
                     self.play(next, q)
                 }
                 Hoon::TisGal(_, _) | Hoon::TisHep(_, _) | Hoon::TisLus(_, _) => {
-                    let n = self.play_opened(sut, gen)?;
-                    self.pb(n)
+                    self.play_opened(sut, gen)
                 }
-                Hoon::WutCol(p, q, r) => {
-                    let n = self.play_wtcl(sut, p, q, r)?;
-                    self.pb(n)
-                }
-                Hoon::WutDot(p, q, r) => {
-                    let n = self.play_wtcl(sut, p, r, q)?;
-                    self.pb(n)
-                }
+                Hoon::WutCol(p, q, r) => self.play_wtcl(sut, p, q, r),
+                Hoon::WutDot(p, q, r) => self.play_wtcl(sut, p, r, q),
                 Hoon::TisCom(p, q) => {
                     let busked = self.busk(sut, p);
                     self.play(busked, q)
@@ -3925,10 +3892,7 @@ impl<'a> Ut<'a> {
                     let expanded = expand_wutsig(wing, q, r);
                     self.play(sut, &expanded)
                 }
-                Hoon::WutZap(_p) => {
-                    let n = ty_bool(self.slab);
-                    self.pb(n)
-                }
+                Hoon::WutZap(_p) => Ok(ty_bool_n(self.slab).1),
                 Hoon::WutKet(wing, q, r) => {
                     let test = Hoon::WutTis(
                         Box::new(Spec::Base(BaseType::Atom("$".to_string()))),
@@ -3957,18 +3921,9 @@ impl<'a> Ut<'a> {
                     );
                     self.play(sut, &expanded)
                 }
-                Hoon::Fits(_p, _wing) => {
-                    let n = ty_bool(self.slab);
-                    self.pb(n)
-                }
-                Hoon::WutHax(_skin, _wing) => {
-                    let n = ty_bool(self.slab);
-                    self.pb(n)
-                }
-                Hoon::WutTis(spec, wing) => {
-                    let n = self.play_wtts(sut, spec, wing)?;
-                    self.pb(n)
-                }
+                Hoon::Fits(_p, _wing) => Ok(ty_bool_n(self.slab).1),
+                Hoon::WutHax(_skin, _wing) => Ok(ty_bool_n(self.slab).1),
+                Hoon::WutTis(spec, wing) => self.play_wtts(sut, spec, wing),
                 Hoon::WutLus(wing, q, list) => {
                     let expanded = expand_wutlus(wing, q, list);
                     self.play(sut, &expanded)
@@ -3982,52 +3937,25 @@ impl<'a> Ut<'a> {
                     self.play(sut, &lowered)
                 }
                 Hoon::KetLus(p, _q) => self.play(sut, p),
-                Hoon::KetBar(p) => {
-                    let n = self.play_ketvar(sut, p, Vair::Iron)?;
-                    self.pb(n)
-                }
-                Hoon::KetPam(p) => {
-                    let n = self.play_ketvar(sut, p, Vair::Zinc)?;
-                    self.pb(n)
-                }
-                Hoon::KetHep(spec, q) => {
-                    let n = self.play_kthp(sut, spec, q)?;
-                    self.pb(n)
-                }
-                Hoon::KetTar(spec) => {
-                    let n = self.play_kttr(sut, spec)?;
-                    self.pb(n)
-                }
-                Hoon::KetCol(spec) => {
-                    let n = self.play_ktcl(sut, spec)?;
-                    self.pb(n)
-                }
+                Hoon::KetBar(p) => self.play_ketvar(sut, p, Vair::Iron),
+                Hoon::KetPam(p) => self.play_ketvar(sut, p, Vair::Zinc),
+                Hoon::KetHep(spec, q) => self.play_kthp(sut, spec, q),
+                Hoon::KetTar(spec) => self.play_kttr(sut, spec),
+                Hoon::KetCol(spec) => self.play_ktcl(sut, spec),
                 Hoon::KetTis(skin, p) => {
                     let lowered = Self::lower_kettis(skin, p);
                     self.play(sut, &lowered)
                 }
                 Hoon::KetSig(p) => self.play(sut, p),
-                Hoon::KetWut(p) => {
-                    let n = self.play_ketvar(sut, p, Vair::Lead)?;
-                    self.pb(n)
-                }
+                Hoon::KetWut(p) => self.play_ketvar(sut, p, Vair::Lead),
                 Hoon::DotKet(spec, _q) => {
                     let example = spec_example(spec);
                     self.play(sut, &example)
                 }
-                Hoon::DotLus(p) => {
-                    let n = self.play_dtls(sut, p)?;
-                    self.pb(n)
-                }
+                Hoon::DotLus(p) => self.play_dtls(sut, p),
                 Hoon::DotTar(_p, _q) => Ok(cons_noun()),
-                Hoon::DotTis(_p, _q) => {
-                    let n = ty_bool(self.slab);
-                    self.pb(n)
-                }
-                Hoon::DotWut(_p) => {
-                    let n = ty_bool(self.slab);
-                    self.pb(n)
-                }
+                Hoon::DotTis(_p, _q) => Ok(ty_bool_n(self.slab).1),
+                Hoon::DotWut(_p) => Ok(ty_bool_n(self.slab).1),
                 Hoon::TisBar(spec, q) => {
                     let example = self.spec_example_cached(spec);
                     let expanded =
@@ -4049,10 +3977,7 @@ impl<'a> Ut<'a> {
                     let lowered = Self::lower_tisdot(wing, p, q);
                     self.play(sut, &lowered)
                 }
-                Hoon::Wing(wing) => {
-                    let n = self.play_wing(sut, wing)?;
-                    self.pb(n)
-                }
+                Hoon::Wing(wing) => self.play_wing(sut, wing),
                 Hoon::CenHep(p, q) => {
                     let lowered = Self::lower_cenhep(p, q);
                     self.play(sut, &lowered)
@@ -4061,10 +3986,7 @@ impl<'a> Ut<'a> {
                     let lowered = Self::lower_cencol(p, hoons);
                     self.play(sut, &lowered)
                 }
-                Hoon::CenTis(wing, pairs) => {
-                    let n = self.epla(sut, wing, pairs)?;
-                    self.pb(n)
-                }
+                Hoon::CenTis(wing, pairs) => self.epla(sut, wing, pairs),
                 Hoon::CenTar(wing, p, pairs) => {
                     let lowered = Self::lower_centar(wing, p, pairs);
                     self.play(sut, &lowered)
@@ -4077,27 +3999,15 @@ impl<'a> Ut<'a> {
                     let lowered = Self::lower_censig(wing, p, hoons)?;
                     self.play(sut, &lowered)
                 }
-                Hoon::Limb(name) => {
-                    let n = self.play_limb(sut, name)?;
-                    self.pb(n)
-                }
+                Hoon::Limb(name) => self.play_limb(sut, name),
                 Hoon::Hand(typ, _nock) => {
                     let n = type_to_noun(self.slab, typ)?;
-                    self.pb(n)
+                    native_of(n, &self.slab.noun_space())
                 }
-                Hoon::Tune(tune) => {
-                    let n = self.play_tune(sut, tune)?;
-                    self.pb(n)
-                }
+                Hoon::Tune(tune) => self.play_tune(sut, tune),
                 Hoon::SigGar(_hint, q) => self.play(sut, q),
-                Hoon::BarTis(spec, q) => {
-                    let n = self.play_brtis(sut, spec.as_ref(), q)?;
-                    self.pb(n)
-                }
-                Hoon::BarCab(spec, alas, tomes) => {
-                    let n = self.play_brcb(sut, spec.as_ref(), alas, tomes)?;
-                    self.pb(n)
-                }
+                Hoon::BarTis(spec, q) => self.play_brtis(sut, spec.as_ref(), q),
+                Hoon::BarCab(spec, alas, tomes) => self.play_brcb(sut, spec.as_ref(), alas, tomes),
                 Hoon::BarCol(p, q) => {
                     let lowered = Self::lower_barcol(p, q);
                     self.play(sut, &lowered)
@@ -4142,10 +4052,7 @@ impl<'a> Ut<'a> {
                     let lowered = Self::lower_collus(p, q, r);
                     self.play(sut, &lowered)
                 }
-                Hoon::ColSig(items) => {
-                    let n = self.play_colsig(sut, items)?;
-                    self.pb(n)
-                }
+                Hoon::ColSig(items) => self.play_colsig(sut, items),
                 Hoon::SigCen(chum, p, tyre, q) => {
                     let lowered = Self::lower_sigcen(chum, p, tyre, q);
                     self.play(sut, &lowered)
@@ -4205,10 +4112,7 @@ impl<'a> Ut<'a> {
                 }
                 Hoon::BarCen(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Dry),
                 Hoon::BarPat(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Wet),
-                _ => {
-                    let n = self.play_opened(sut, gen)?;
-                    self.pb(n)
-                }
+                _ => self.play_opened(sut, gen),
             }
         };
         result
@@ -4268,13 +4172,13 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn play_colsig(&mut self, sut: NRc<NTy>, items: &[Hoon]) -> Result<Noun> {
+    fn play_colsig(&mut self, sut: NRc<NTy>, items: &[Hoon]) -> Result<NRc<NTy>> {
         match items {
-            [] => Ok(ty_atom(self.slab, "n", Some(D(0)))),
+            [] => Ok(ty_atom_n(self.slab, "n", Some(D(0))).1),
             [head, tail @ ..] => {
-                let head_ty = self.play_to_noun(sut.clone(), head)?;
+                let head_ty = self.play(sut.clone(), head)?;
                 let tail_ty = self.play_colsig(sut, tail)?;
-                cell_type(self.slab, head_ty, tail_ty)
+                Ok(cons_cell(head_ty, tail_ty))
             }
         }
     }
@@ -4306,9 +4210,9 @@ impl<'a> Ut<'a> {
         transformed
     }
 
-    fn play_brtis(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<Noun> {
+    fn play_brtis(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<NRc<NTy>> {
         let lowered = Self::lower_brtis(spec, q);
-        self.play_to_noun(sut, &lowered)
+        self.play(sut, &lowered)
     }
 
     fn play_brcb(
@@ -4317,7 +4221,7 @@ impl<'a> Ut<'a> {
         spec: &Spec,
         alas: &Alas,
         tomes: &HashMap<String, Tome>,
-    ) -> Result<Noun> {
+    ) -> Result<NRc<NTy>> {
         let transformed = if alas.is_empty() {
             tomes.clone()
         } else {
@@ -4327,21 +4231,27 @@ impl<'a> Ut<'a> {
             Box::new(Hoon::KetTar(Box::new(spec.clone()))),
             Box::new(Hoon::BarCen(None, transformed)),
         );
-        self.play_to_noun(sut, &lowered)
+        self.play(sut, &lowered)
     }
 
-    fn play_wtcl(&mut self, sut: NRc<NTy>, p: &Hoon, q: &Hoon, r: &Hoon) -> Result<Noun> {
-        // gain/lose are native (C6); thread the native subject directly.
+    fn play_wtcl(&mut self, sut: NRc<NTy>, p: &Hoon, q: &Hoon, r: &Hoon) -> Result<NRc<NTy>> {
+        // gain/lose + play are native (C6/C-final); thread the native subject
+        // directly. fork_from_options stays the NOUN path (RT-07 mug ordering):
+        // lower the native branch RESULT types + native_of the fork result
+        // (mirrors mint_wtcl). The deepening subject (sut) is never lowered.
         let fex = self.gain(sut.clone(), p)?;
         let wux = self.lose(sut, p)?;
         let mut options = Vec::with_capacity(2);
         if !matches!(&*fex, NTy::Void) {
-            options.push(self.play_to_noun(fex, q)?);
+            let q_ty = self.play(fex, q)?;
+            options.push(live_to_noun(&q_ty, self.slab));
         }
         if !matches!(&*wux, NTy::Void) {
-            options.push(self.play_to_noun(wux, r)?);
+            let r_ty = self.play(wux, r)?;
+            options.push(live_to_noun(&r_ty, self.slab));
         }
-        self.fork_from_options(options)
+        let fork_noun = self.fork_from_options(options)?;
+        native_of(fork_noun, &self.slab.noun_space())
     }
 
     // Basically a ternary if-then-else but for Hoon AFAICT
@@ -4886,8 +4796,9 @@ impl<'a> Ut<'a> {
         //   if jon is ~ or %wait => keep q.pro
         //   else rewrite to %1 noun
         let (ty, formula) = self.mint(sut.clone(), gol, gen)?;
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let bran = self.bran_canonical_semi(sut_noun)?;
+        // bran_canonical_semi is native (Phase-2 tail): thread the native subject
+        // directly — no `live_to_noun` of the deepening subject.
+        let bran = self.bran_canonical_semi(sut)?;
         let fold_key = (self.noun_mug_cached(bran), self.noun_mug_cached(formula));
         if let Some(entries) = self.ktsg_fold_cache.get(&fold_key) {
             let entries: Vec<KtsgFoldCacheEntry> = entries.iter().copied().collect();
@@ -6032,29 +5943,36 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn bran_canonical_semi(&mut self, sut: Noun) -> Result<Noun> {
-        let mut seen_holds: Vec<Noun> = Vec::new();
-        let mut seen_raw: HashSet<u64> = HashSet::new();
+    // PHASE-2 TAIL: the bran/seminoun projection now reads the NATIVE type enum
+    // (`NRc<NTy>`) directly instead of decoding type nouns + bridging face/hint/
+    // hold via `repo_noun`. The deepening subject (payload/cell/face/hint/hold
+    // chains) is never lowered: recursion threads the shared native children, the
+    // %hold cycle guard + raw-recursion guard key on the interned `Rc` pointer
+    // (`NRc::as_ptr`), and the cache re-keys on that pointer (no mug of the
+    // deepening subject). The OUTPUT stays a seminoun (semi_* algebra is noun).
+    fn bran_canonical_semi(&mut self, sut: NRc<NTy>) -> Result<Noun> {
+        let mut seen_holds: Vec<NRc<NTy>> = Vec::new();
+        let mut seen_raw: HashSet<usize> = HashSet::new();
         self.bran_canonical_semi_inner(sut, &mut seen_holds, &mut seen_raw)
     }
 
-    fn bran_seen_holds_signature(&mut self, seen_holds: &[Noun]) -> (u64, u64, usize) {
+    fn bran_seen_holds_signature(seen_holds: &[NRc<NTy>]) -> (u64, u64, usize) {
         let mut sum = 0u64;
         let mut xor = 0u64;
         for hold in seen_holds {
-            let mug = u64::from(self.noun_mug_cached(*hold));
-            let component = mug.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let id = NRc::as_ptr(hold) as u64;
+            let component = id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             sum = sum.wrapping_add(component);
-            xor ^= component.rotate_left((mug as u32) & 31);
+            xor ^= component.rotate_left((id as u32) & 31);
         }
         (sum, xor, seen_holds.len())
     }
 
-    fn bran_semi_cache_key(&mut self, sut: Noun, seen_holds: &[Noun]) -> BranSemiMemoKey {
+    fn bran_semi_cache_key(&self, sut: &NRc<NTy>, seen_holds: &[NRc<NTy>]) -> BranSemiMemoKey {
         let semantic = self.semantic_context_key();
-        let (seen_sum, seen_xor, seen_len) = self.bran_seen_holds_signature(seen_holds);
+        let (seen_sum, seen_xor, seen_len) = Self::bran_seen_holds_signature(seen_holds);
         (
-            self.noun_mug_cached(sut),
+            NRc::as_ptr(sut) as u64,
             semantic.vet_key,
             semantic.fan_context_key,
             seen_sum,
@@ -6063,61 +5981,32 @@ impl<'a> Ut<'a> {
         )
     }
 
-    fn bran_seen_holds_equal(left: &[Noun], right: &[Noun], space: &NounSpace) -> Result<bool> {
+    fn bran_seen_holds_equal(left: &[NRc<NTy>], right: &[NRc<NTy>]) -> bool {
         if left.len() != right.len() {
-            return Ok(false);
+            return false;
         }
-        for candidate in left {
-            let candidate_raw = unsafe { candidate.as_raw() };
-            let mut found = false;
-            for existing in right {
-                if unsafe { existing.raw_equals(candidate) }
-                    || unsafe { existing.as_raw() } == candidate_raw
-                    || noun_eq(*existing, *candidate, space)?
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        left.iter().zip(right.iter()).all(|(l, r)| NRc::ptr_eq(l, r))
     }
 
-    fn bran_seen_holds_contains(seen_holds: &[Noun], sut: Noun, space: &NounSpace) -> Result<bool> {
-        if !matches!(type_tag_kind(sut, space), Ok(TypeTagKind::Hold)) {
-            return Ok(false);
+    fn bran_seen_holds_contains(seen_holds: &[NRc<NTy>], sut: &NRc<NTy>) -> bool {
+        if !matches!(&**sut, NTy::Hold { .. }) {
+            return false;
         }
-        let sut_raw = unsafe { sut.as_raw() };
-        for prior in seen_holds {
-            if unsafe { prior.raw_equals(&sut) }
-                || unsafe { prior.as_raw() } == sut_raw
-                || noun_eq(*prior, sut, space)?
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        seen_holds.iter().any(|prior| NRc::ptr_eq(prior, sut))
     }
 
-    fn bran_semi_cache_lookup(&mut self, sut: Noun, seen_holds: &[Noun]) -> Result<Option<Noun>> {
+    fn bran_semi_cache_lookup(
+        &mut self,
+        sut: &NRc<NTy>,
+        seen_holds: &[NRc<NTy>],
+    ) -> Result<Option<Noun>> {
         let key = self.bran_semi_cache_key(sut, seen_holds);
         let Some(entries) = self.bran_semi_memo.get(&key) else {
             return Ok(None);
         };
-        let sut_raw = unsafe { sut.as_raw() };
         for entry in entries.iter().rev() {
-            let sut_matches = unsafe { entry.sut.raw_equals(&sut) }
-                || unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            if sut_matches
-                && Self::bran_seen_holds_equal(
-                    &entry.seen_holds,
-                    seen_holds,
-                    &self.slab.noun_space(),
-                )?
+            if NRc::ptr_eq(&entry.sut, sut)
+                && Self::bran_seen_holds_equal(&entry.seen_holds, seen_holds)
             {
                 return Ok(Some(entry.semi));
             }
@@ -6125,7 +6014,7 @@ impl<'a> Ut<'a> {
         Ok(None)
     }
 
-    fn bran_semi_cache_store(&mut self, sut: Noun, seen_holds: &[Noun], semi: Noun) {
+    fn bran_semi_cache_store(&mut self, sut: &NRc<NTy>, seen_holds: &[NRc<NTy>], semi: Noun) {
         let key = self.bran_semi_cache_key(sut, seen_holds);
         let bucket = self
             .bran_semi_memo
@@ -6134,7 +6023,7 @@ impl<'a> Ut<'a> {
             bucket.pop_front();
         }
         bucket.push_back(BranSemiCacheEntry {
-            sut,
+            sut: sut.clone(),
             seen_holds: seen_holds.to_vec(),
             semi,
         });
@@ -6142,9 +6031,9 @@ impl<'a> Ut<'a> {
 
     fn bran_canonical_semi_inner(
         &mut self,
-        sut: Noun,
-        seen_holds: &mut Vec<Noun>,
-        seen_raw: &mut HashSet<u64>,
+        sut: NRc<NTy>,
+        seen_holds: &mut Vec<NRc<NTy>>,
+        seen_raw: &mut HashSet<usize>,
     ) -> Result<Noun> {
         // The canonical bran/seminoun projection is called repeatedly while
         // compiling `^*`/`^+` casts against large subject types.  Results are
@@ -6152,53 +6041,61 @@ impl<'a> Ut<'a> {
         // hold is on `seen_holds`, encountering the same hold must collapse to
         // blocked for that particular path.  Cache only the empty-hold-context
         // cases, and never bypass the raw recursion guard.
-        let sut_raw = unsafe { sut.as_raw() };
-        if seen_raw.contains(&sut_raw) {
+        let sut_id = NRc::as_ptr(&sut) as usize;
+        if seen_raw.contains(&sut_id) {
             return self.bran_canonical_semi_inner_impl(sut, seen_holds, seen_raw);
         }
-        if Self::bran_seen_holds_contains(seen_holds, sut, &self.slab.noun_space())? {
+        if Self::bran_seen_holds_contains(seen_holds, &sut) {
             return Ok(self.semi_full_blocked());
         }
-        if let Some(cached) = self.bran_semi_cache_lookup(sut, seen_holds)? {
+        if let Some(cached) = self.bran_semi_cache_lookup(&sut, seen_holds)? {
             return Ok(cached);
         }
 
-        let out = self.bran_canonical_semi_inner_impl(sut, seen_holds, seen_raw)?;
-        self.bran_semi_cache_store(sut, seen_holds, out);
+        let out = self.bran_canonical_semi_inner_impl(sut.clone(), seen_holds, seen_raw)?;
+        self.bran_semi_cache_store(&sut, seen_holds, out);
         Ok(out)
     }
 
     fn bran_canonical_semi_inner_impl(
         &mut self,
-        sut: Noun,
-        seen_holds: &mut Vec<Noun>,
-        seen_raw: &mut HashSet<u64>,
+        sut: NRc<NTy>,
+        seen_holds: &mut Vec<NRc<NTy>>,
+        seen_raw: &mut HashSet<usize>,
     ) -> Result<Noun> {
-        let sut_raw = unsafe { sut.as_raw() };
-        if !seen_raw.insert(sut_raw) {
+        let sut_id = NRc::as_ptr(&sut) as usize;
+        if !seen_raw.insert(sut_id) {
             return Ok(self.semi_full_blocked());
         }
-        let tag = type_tag(sut, &self.slab.noun_space())?;
-        let out = match tag.as_str() {
-            "noun" | "void" => Ok(self.semi_full_blocked()),
-            "atom" => {
-                let (_aura, bits) = type_atom_parts(sut, &self.slab.noun_space())?;
+        let out = match &*sut {
+            NTy::Noun | NTy::Void => Ok(self.semi_full_blocked()),
+            NTy::Atom { .. } => {
+                // Atoms are leaf-only (no deepening): lower the small atom type
+                // and reuse the existing noun decoder (mirrors atom_nest).
+                let sut_noun = live_to_noun(&sut, self.slab);
+                let (_aura, bits) = type_atom_parts(sut_noun, &self.slab.noun_space())?;
                 Ok(match bits {
                     Some(noun) => self.semi_full_complete(noun),
                     None => self.semi_full_blocked(),
                 })
             }
-            "cell" => {
-                let (head, tail) = type_cell_parts(sut, &self.slab.noun_space())?;
+            NTy::Cell(head, tail) => {
+                let head = head.clone();
+                let tail = tail.clone();
                 let hed = self.bran_canonical_semi_inner(head, seen_holds, seen_raw)?;
                 let tal = self.bran_canonical_semi_inner(tail, seen_holds, seen_raw)?;
                 self.semi_combine(hed, tal)
             }
-            "core" => {
-                let (payload, coil) = type_core_parts(sut, &self.slab.noun_space())?;
-                let (_garb, _context, rest) = coil_parts(coil, &self.slab.noun_space())?;
+            NTy::Core {
+                payload, rest, ..
+            } => {
+                // payload + context are native (recurse native); only the bounded
+                // `rest` leaf (battery seminoun + tomes) is lowered to read the
+                // coil's seminoun head.
+                let payload = payload.clone();
+                let rest_noun = live_leaf_to_noun(rest, self.slab);
                 let space = self.slab.noun_space();
-                let rest_cell = rest.in_space(&space).as_cell().map_err(|err| {
+                let rest_cell = rest_noun.in_space(&space).as_cell().map_err(|err| {
                     CompilerError::Decode(format!("bran core rest not cell: {err}"))
                 })?;
                 let coil_semi = rest_cell.head().noun();
@@ -6206,30 +6103,25 @@ impl<'a> Ut<'a> {
                 let _ = self.semi_parts(coil_semi)?;
                 self.semi_combine(coil_semi, payload_semi)
             }
-            "face" | "hint" => match self.repo_noun(sut) {
+            NTy::Face { .. } | NTy::Hint { .. } => match self.repo(sut.clone()) {
                 Ok(inner) => self.bran_canonical_semi_inner(inner, seen_holds, seen_raw),
                 Err(_) => Ok(self.semi_full_blocked()),
             },
-            "fork" => Ok(self.semi_full_blocked()),
-            "hold" => {
-                for prior in seen_holds.iter() {
-                    if unsafe { prior.raw_equals(&sut) }
-                        || noun_eq(*prior, sut, &self.slab.noun_space())?
-                    {
-                        return Ok(self.semi_full_blocked());
-                    }
+            NTy::Fork { .. } => Ok(self.semi_full_blocked()),
+            NTy::Hold { .. } => {
+                if seen_holds.iter().any(|prior| NRc::ptr_eq(prior, &sut)) {
+                    return Ok(self.semi_full_blocked());
                 }
-                seen_holds.push(sut);
-                let out = match self.repo_noun(sut) {
+                seen_holds.push(sut.clone());
+                let out = match self.repo(sut.clone()) {
                     Ok(inner) => self.bran_canonical_semi_inner(inner, seen_holds, seen_raw),
                     Err(_) => Ok(self.semi_full_blocked()),
                 };
                 seen_holds.pop();
                 out
             }
-            _ => Ok(self.semi_full_blocked()),
         };
-        seen_raw.remove(&sut_raw);
+        seen_raw.remove(&sut_id);
         out
     }
 
@@ -6289,51 +6181,50 @@ impl<'a> Ut<'a> {
         Ok((ty, formula))
     }
 
-    fn play_wtts(&mut self, _sut: NRc<NTy>, _spec: &Spec, _wing: &WingType) -> Result<Noun> {
-        Ok(ty_bool(self.slab))
+    fn play_wtts(&mut self, _sut: NRc<NTy>, _spec: &Spec, _wing: &WingType) -> Result<NRc<NTy>> {
+        Ok(ty_bool_n(self.slab).1)
     }
 
-    fn play_ketvar(&mut self, sut: NRc<NTy>, p: &Hoon, vair: Vair) -> Result<Noun> {
-        let p_ty = self.play_to_noun(sut, p)?;
-        self.wrap_type_noun(p_ty, vair)
+    fn play_ketvar(&mut self, sut: NRc<NTy>, p: &Hoon, vair: Vair) -> Result<NRc<NTy>> {
+        // play + wrap_type are native; thread the native subject/result directly.
+        let p_ty = self.play(sut, p)?;
+        self.wrap_type(p_ty, vair)
     }
 
-    fn play_dbug(&mut self, sut: NRc<NTy>, inner: &Hoon) -> Result<Noun> {
+    fn play_dbug(&mut self, sut: NRc<NTy>, inner: &Hoon) -> Result<NRc<NTy>> {
         // Canonical `++play` for `%dbug` preserves the inner type and only adds tracing.
-        self.play_to_noun(sut, inner)
+        self.play(sut, inner)
     }
 
-    fn play_note(&mut self, sut: NRc<NTy>, note: &Note, inner: &Hoon) -> Result<Noun> {
+    fn play_note(&mut self, sut: NRc<NTy>, note: &Note, inner: &Hoon) -> Result<NRc<NTy>> {
         // Canonical `++play`:
         //   [%note *]  (hint [sut p.gen] $(gen q.gen))
         // play + hint_type are native; thread the native subject directly.
         let payload = self.play(sut.clone(), inner)?;
         let note_noun = note_to_noun(self.slab, note)?;
-        let hinted = self.hint_type(sut, note_noun, payload)?;
-        Ok(live_to_noun(&hinted, self.slab))
+        self.hint_type(sut, note_noun, payload)
     }
 
-    fn play_kthp(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<Noun> {
+    fn play_kthp(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<NRc<NTy>> {
         let gen = Hoon::KetHep(Box::new(spec.clone()), Box::new(q.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_kttr(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<Noun> {
+    fn play_kttr(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<NRc<NTy>> {
         let gen = Hoon::KetTar(Box::new(spec.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_ktcl(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<Noun> {
+    fn play_ktcl(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<NRc<NTy>> {
         let gen = Hoon::KetCol(Box::new(spec.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_dtls(&mut self, _sut: NRc<NTy>, _p: &Hoon) -> Result<Noun> {
-        let atom_ty = ty_atom(self.slab, "$", None);
-        Ok(atom_ty)
+    fn play_dtls(&mut self, _sut: NRc<NTy>, _p: &Hoon) -> Result<NRc<NTy>> {
+        Ok(ty_atom_n(self.slab, "$", None).1)
     }
 
-    fn play_wing(&mut self, sut: NRc<NTy>, wing: &WingType) -> Result<Noun> {
+    fn play_wing(&mut self, sut: NRc<NTy>, wing: &WingType) -> Result<NRc<NTy>> {
         self.epla(sut, wing, &[])
     }
 
@@ -6498,22 +6389,19 @@ impl<'a> Ut<'a> {
         sut: NRc<NTy>,
         wing: &WingType,
         pairs: &[(WingType, Hoon)],
-    ) -> Result<Noun> {
+    ) -> Result<NRc<NTy>> {
         let port = self.cnts_base_port(sut.clone(), wing)?;
         let palo = match port {
             Port::Palo(palo) => palo,
             Port::Synthetic { typ, .. } => {
                 if pairs.is_empty() {
-                    return Ok(live_to_noun(&typ, self.slab));
+                    return Ok(typ);
                 }
                 return Err(CompilerError::Noun("hoon".to_string()));
             }
         };
         match palo.opal {
-            Opal::Leg(typ) => {
-                let ty = self.play_cnts_apply_leg_patches(sut, typ, pairs)?;
-                Ok(live_to_noun(&ty, self.slab))
-            }
+            Opal::Leg(typ) => self.play_cnts_apply_leg_patches(sut, typ, pairs),
             Opal::Arm { arms, .. } => {
                 let mut hag = arms;
                 for (sub_wing, expr) in pairs {
@@ -6521,21 +6409,23 @@ impl<'a> Ut<'a> {
                     let (_axis, next_hag) = self.toss(sub_wing, patch_type, &hag)?;
                     hag = next_hag;
                 }
-                // fire stays on the NOUN path (C9): lower the arm core types.
+                // fire stays on the NOUN path (C9): lower the arm core types +
+                // native_of the fired result type.
                 let hag_noun: Vec<(Noun, Noun)> = hag
                     .iter()
                     .map(|(core, foot)| (live_to_noun(core, self.slab), *foot))
                     .collect();
-                self.fire(&hag_noun)
+                let fired = self.fire(&hag_noun)?;
+                native_of(fired, &self.slab.noun_space())
             }
         }
     }
 
-    fn epla(&mut self, sut: NRc<NTy>, hyp: &WingType, rig: &[(WingType, Hoon)]) -> Result<Noun> {
+    fn epla(&mut self, sut: NRc<NTy>, hyp: &WingType, rig: &[(WingType, Hoon)]) -> Result<NRc<NTy>> {
         self.play_cnts(sut, hyp, rig)
     }
 
-    fn play_limb(&mut self, sut: NRc<NTy>, name: &str) -> Result<Noun> {
+    fn play_limb(&mut self, sut: NRc<NTy>, name: &str) -> Result<NRc<NTy>> {
         // Canonical hoon-138 open() lowering:
         //   [%limb p] => [%cnts [p ~] ~]
         let wing = vec![Limb::Term(name.to_string())];
@@ -6549,12 +6439,12 @@ impl<'a> Ut<'a> {
         Ok((typ_native, nock_noun))
     }
 
-    fn play_tune(&mut self, sut: NRc<NTy>, tune: &TermOrTune) -> Result<Noun> {
+    fn play_tune(&mut self, sut: NRc<NTy>, tune: &TermOrTune) -> Result<NRc<NTy>> {
+        // play_tune wraps the WHOLE subject in a %face; native now: the subject
+        // threads through as a SHARED native Rc inside the new %face (no lowering).
         let tool = term_or_tune_to_noun(self.slab, tune)?;
-        // play_tune wraps the WHOLE subject in a %face; ty_face_tool needs a noun
-        // subject. Lower it (memoized) — %tune is off the deepening hot path.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        Ok(ty_face_tool(self.slab, tool, sut_noun))
+        let tool_leaf = NLeaf::from_noun(tool, &self.slab.noun_space());
+        Ok(cons_face(tool_leaf, sut))
     }
 
     fn mint_siggar(
@@ -7890,10 +7780,10 @@ impl<'a> Ut<'a> {
         Ok((ty, formula))
     }
 
-    fn play_opened(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<Noun> {
+    fn play_opened(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         let opened = open(gen.clone());
         if &opened != gen {
-            return self.play_to_noun(sut, &opened);
+            return self.play(sut, &opened);
         }
         Err(CompilerError::UnsupportedExpr(format!(
             "native play: unsupported {gen:?}"
@@ -7927,21 +7817,21 @@ impl<'a> Ut<'a> {
         Ok((ty, formula))
     }
 
-    fn play_rock(&mut self, aura: &str, expr: &NounExpr) -> Noun {
+    fn play_rock(&mut self, aura: &str, expr: &NounExpr) -> NRc<NTy> {
         match expr {
             NounExpr::ParsedAtom(atom) => {
                 let value = parsed_atom_to_noun(self.slab, atom);
-                ty_atom(self.slab, aura, Some(value))
+                ty_atom_n(self.slab, aura, Some(value)).1
             }
             NounExpr::Cell(head, tail) => {
                 let head = self.play_rock(aura, head);
                 let tail = self.play_rock(aura, tail);
-                ty_cell(self.slab, head, tail)
+                cons_cell(head, tail)
             }
         }
     }
 
-    fn play_sand(&mut self, aura: &str, expr: &NounExpr) -> Result<Noun> {
+    fn play_sand(&mut self, aura: &str, expr: &NounExpr) -> Result<NRc<NTy>> {
         match expr {
             NounExpr::ParsedAtom(atom) => {
                 if aura == "n" {
@@ -7949,15 +7839,15 @@ impl<'a> Ut<'a> {
                         return Err(CompilerError::Noun("sand-null".to_string()));
                     }
                     let value = parsed_atom_to_noun(self.slab, atom);
-                    return Ok(ty_atom(self.slab, aura, Some(value)));
+                    return Ok(ty_atom_n(self.slab, aura, Some(value)).1);
                 }
                 if aura == "f" {
                     if !atom_is_flag(atom) {
                         return Err(CompilerError::Noun("sand-flag".to_string()));
                     }
-                    return Ok(ty_bool(self.slab));
+                    return Ok(ty_bool_n(self.slab).1);
                 }
-                Ok(ty_atom(self.slab, aura, None))
+                Ok(ty_atom_n(self.slab, aura, None).1)
             }
             _ => Ok(self.play_rock(aura, expr)),
         }
