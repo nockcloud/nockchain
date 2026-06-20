@@ -290,7 +290,22 @@ steps and status:
        template) -> removes the boundary sut lowering -> the O(N^2)->O(N) win.
        VALIDATE: full dumb-kernel byte-parity vs /tmp/dumb_preflip.jam + perf +
        NounSlab no longer grows monotonically.
-    2 [ ] play sut param Noun->NRc; update callers; delete play_noun/pb.
+    2 [DONE] play sut param Noun->NRc (C-final.2). play/play_inner/play_core + ALL
+       play_* helpers (colsig/brtis/brcb/wtcl/wtts/ketvar/dbug/note/kthp/kttr/ktcl/
+       dtls/wing/cnts/cnts_apply_leg_patches/limb/tune/opened) take NRc<NTy>; busk
+       flipped native too (cons_face, shared payload). Internal callers (mint_inner
+       Rock/Sand, mint_fits/ktsl/kthp/sigzap/zpcom/zpgl/tscm, nest_core deep-arms,
+       chip/gain_skin/lose_skin spec+over, ALL mull arms) now thread native sut to
+       play directly — every `live_to_noun(&sut)`-for-play lowering REMOVED (grep
+       clean). play_noun KEPT as the noun-in/noun-out bridge (now native_of's sut
+       at entry) for the 2 binary prelude callers; added play_to_noun (native-in/
+       noun-out) for the noun-returning play_* helpers; pb kept (helper noun-lift).
+       Play has NO own boundary cache -> nothing to re-key on the play side. One
+       residual lowering REMAINS in repo.rs rest_inner (the %hold resolution path
+       carries each leg's inner subject as a NOUN leaf -> native_of per hold; NOT
+       on the main subject-deepening chain). VALIDATE: lib build GREEN; compiler_mint
+       69/0; lib 122/0/1; shadow_gate byte-parity PASS (4 fixtures). Dumb-kernel
+       perf/byte-parity = parent's next run (first measurable memory win).
     3 [ ] delete now-dead bridges (repo_noun/peek_noun/wrap_type_noun/fuse_noun/
        crop_noun/miss_noun/nest_noun/find_noun/fend_noun/feel_noun/gain_noun/
        lose_noun/cnts_base_port_noun/mull_noun + nest_mug_lookup/register).

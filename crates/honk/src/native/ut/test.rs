@@ -673,10 +673,19 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
 
     let mut ut = Ut::new(&mut slab);
     ut.set_vet(false);
+    // The mull cache is native-keyed (C8/C-final); native_of the noun sut/gol/ref
+    // for the mull_cache_store/lookup calls (the other caches stay noun-keyed).
+    let space = ut.slab.noun_space();
+    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    let ref_n = crate::native::ir::intern::native_of(ref_type, &space).expect("native ref");
+    let ty_n = crate::native::ir::intern::native_of(ty, &space).expect("native ty");
+    let inner_ty_n =
+        crate::native::ir::intern::native_of(inner_ty, &space).expect("native inner");
     let rest_legs_noun = ut.rest_legs_noun(&rest_legs);
     ut.mint_boundary_store_exact(sut, gol, mint_gen, ty, formula)
         .expect("mint boundary store");
-    ut.mull_cache_store(sut, gol, ref_type, mull_gen, ty, inner_ty)
+    ut.mull_cache_store(&sut_n, &gol_n, &ref_n, mull_gen, ty_n, inner_ty_n)
         .expect("mull boundary store");
     ut.redo_boundary_store(sut, redo_ref, redo_out)
         .expect("redo boundary store");
@@ -689,7 +698,7 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
         .expect("mint boundary lookup")
         .is_some());
     assert!(ut
-        .mull_cache_lookup(sut, gol, ref_type, mull_gen)
+        .mull_cache_lookup(&sut_n, &gol_n, &ref_n, mull_gen)
         .expect("mull boundary lookup")
         .is_some());
     assert!(ut
@@ -726,7 +735,7 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
                 .expect("inner mint boundary lookup")
                 .is_none());
             assert!(ut
-                .mull_cache_lookup(sut, gol, ref_type, mull_gen)
+                .mull_cache_lookup(&sut_n, &gol_n, &ref_n, mull_gen)
                 .expect("inner mull boundary lookup")
                 .is_none());
             assert!(ut
@@ -759,7 +768,7 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
         .expect("post mint boundary lookup")
         .is_some());
     assert!(ut
-        .mull_cache_lookup(sut, gol, ref_type, mull_gen)
+        .mull_cache_lookup(&sut_n, &gol_n, &ref_n, mull_gen)
         .expect("post mull boundary lookup")
         .is_some());
     assert!(ut
@@ -786,7 +795,7 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
             .expect("repeat inner mint boundary lookup")
             .is_none());
         assert!(ut
-            .mull_cache_lookup(sut, gol, ref_type, mull_gen)
+            .mull_cache_lookup(&sut_n, &gol_n, &ref_n, mull_gen)
             .expect("repeat inner mull boundary lookup")
             .is_none());
         assert!(ut
@@ -1659,6 +1668,9 @@ fn strict_play_limb_dollar_is_not_subject_alias() {
     let mut slab = NounSlab::new();
     let sut = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
+    // play family takes a native subject now (C-final.2).
+    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+        .expect("native sut");
 
     assert!(
         ut.play_limb(sut, "$").is_err(),
@@ -1706,6 +1718,8 @@ fn strict_play_wing_dollar_on_non_core_is_not_subject_alias() {
     let sut = cell_type(&mut slab, head, tail).expect("cell type");
     let wing = vec![Limb::Term("$".to_string())];
     let mut ut = Ut::new(&mut slab);
+    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+        .expect("native sut");
 
     assert!(
         ut.play_wing(sut, &wing).is_err(),
@@ -1742,6 +1756,8 @@ fn strict_play_wing_dollar_prefixed_axis_is_not_subject_alias_projection() {
     let sut = cell_type(&mut slab, head, tail).expect("cell type");
     let wing = vec![Limb::Term("$".to_string()), Limb::Axis(2)];
     let mut ut = Ut::new(&mut slab);
+    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+        .expect("native sut");
 
     assert!(
         ut.play_wing(sut, &wing).is_err(),
@@ -1922,6 +1938,8 @@ fn strict_play_wing_does_not_use_compat_fallback_ladders() {
     let sut = ty_noun(&mut slab);
     let wing = vec![Limb::Term("definitely_missing".to_string())];
     let mut ut = Ut::new(&mut slab);
+    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+        .expect("native sut");
 
     assert!(ut.play_wing(sut, &wing).is_err());
 }

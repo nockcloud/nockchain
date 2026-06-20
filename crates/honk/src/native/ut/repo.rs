@@ -75,7 +75,12 @@ impl<'a> Ut<'a> {
                     "native rest: hold ast missing tag={tag} decode_err={err}"
                 ))
             })?;
-            played.push(self.play(*inner, hoon.as_ref())?.to_noun(self.slab));
+            // play takes a native subject now (C-final.2). The %hold resolution
+            // (repo_hold/rest) still carries each leg's inner subject as a NOUN
+            // leaf, so bridge it via native_of here. This lowering is confined to
+            // the hold path (NOT the main subject-deepening play chain).
+            let inner_native = native_of(*inner, &self.slab.noun_space())?;
+            played.push(self.play(inner_native, hoon.as_ref())?.to_noun(self.slab));
         }
         self.fork_from_options(played)
     }

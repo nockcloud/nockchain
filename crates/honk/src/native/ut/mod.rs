@@ -3557,10 +3557,9 @@ impl<'a> Ut<'a> {
         // ATOMIC FLIP (C-final.1a): mint reads/returns the native enum (type slot;
         // the formula slot stays Noun). C-final.1b: the mint boundary cache is now
         // native-re-keyed on the interned (sut, gol) `Rc` pointers, so we no
-        // longer lower sut/gol just to compute the cache key. `sut_noun` is still
-        // lowered below because `play` takes a noun subject (NOT flipped here).
+        // longer lower sut/gol just to compute the cache key. C-final.2: play now
+        // takes a native subject too, so mint no longer lowers sut for play.
         let cache_sig = Self::mint_cache_signature(gen);
-        let sut_noun = live_to_noun(&sut, self.slab);
         if let Some(gen_sig) = cache_sig {
             if let Some(cached) = self.mint_cache_lookup(&sut, &gol, gen_sig)? {
                 return Ok(cached);
@@ -3602,7 +3601,7 @@ impl<'a> Ut<'a> {
                 Ok((ty, formula))
             }
             Hoon::Rock(_, expr) | Hoon::Sand(_, expr) => {
-                let ty = self.play(sut_noun, gen)?;
+                let ty = self.play(sut.clone(), gen)?;
                 let ty = self.nice(sut, gol, ty)?;
                 let value = noun_expr_to_noun(self.slab, expr);
                 let formula = T(self.slab, &[D(1), value]);
@@ -3871,18 +3870,28 @@ impl<'a> Ut<'a> {
         path.join("/")
     }
 
-    pub fn play(&mut self, sut: Noun, gen: &Hoon) -> Result<NRc<NTy>> {
+    pub fn play(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         // Canonical ++play runs with vet disabled for the entire evaluation
         // scope; restore it afterward (safe save/restore — see with_vet_off).
-        // ATOMIC FLIP step 2: play RETURNS native Rc<Type> (sut stays a noun input
-        // for now — bridged via native_of inside leaf arms; sut->native is a later
-        // step). Not-yet-flipped callers `to_noun` the result.
+        // ATOMIC FLIP (C-final.2): play TAKES native sut and RETURNS native
+        // Rc<Type>. No compile path lowers the deepening subject to a noun for
+        // play anymore — the subject threads natively (the O(N^2)->O(N) win).
         self.with_vet_off(|ut| ut.play_inner(sut, gen))
     }
 
-    /// Noun-returning `play` for not-yet-flipped callers/helpers: the native
-    /// result materialized to a noun at the boundary. Drops as callers flip.
-    fn play_noun(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+    /// Noun-input/noun-output bridge for external callers that still hold a noun
+    /// subject (binary prelude seed, fire, tests): native_of the noun sut, run
+    /// native play, lower the native result back to a noun at the boundary.
+    pub fn play_noun(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+        let sut = native_of(sut, &self.slab.noun_space())?;
+        let r = self.play(sut, gen)?;
+        Ok(live_to_noun(&r, self.slab))
+    }
+
+    /// Native-input/noun-output `play` for the noun-returning play_* helpers: run
+    /// native play (subject threads natively), lower the native result to a noun
+    /// only at the helper's noun-typed return boundary (memoized).
+    fn play_to_noun(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<Noun> {
         let r = self.play(sut, gen)?;
         Ok(live_to_noun(&r, self.slab))
     }
@@ -3893,11 +3902,11 @@ impl<'a> Ut<'a> {
         native_of(noun, &self.slab.noun_space())
     }
 
-    fn play_inner(&mut self, sut: Noun, gen: &Hoon) -> Result<NRc<NTy>> {
+    fn play_inner(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<NRc<NTy>> {
         let result = {
             match gen {
                 Hoon::Pair(p, q) => {
-                    let head = self.play(sut, p)?;
+                    let head = self.play(sut.clone(), p)?;
                     let tail = self.play(sut, q)?;
                     Ok(cons_cell(head, tail))
                 }
@@ -3921,7 +3930,6 @@ impl<'a> Ut<'a> {
                 Hoon::Lost(_) => Ok(cons_void()),
                 Hoon::TisGar(p, q) => {
                     let next = self.play(sut, p)?;
-                    let next = next.to_noun(self.slab);
                     self.play(next, q)
                 }
                 Hoon::TisGal(_, _) | Hoon::TisHep(_, _) | Hoon::TisLus(_, _) => {
@@ -4194,12 +4202,12 @@ impl<'a> Ut<'a> {
                     self.play(sut, &lowered)
                 }
                 Hoon::SigZap(p, q) => {
-                    let _ = self.play(sut, p)?;
+                    let _ = self.play(sut.clone(), p)?;
                     self.play(sut, q)
                 }
                 Hoon::ZapCom(p, _q) => self.play(sut, p),
                 Hoon::ZapMic(p, q) => {
-                    let pt = self.play(sut, p)?;
+                    let pt = self.play(sut.clone(), p)?;
                     let qt = self.play(sut, q)?;
                     Ok(cons_cell(pt, qt))
                 }
@@ -4209,7 +4217,8 @@ impl<'a> Ut<'a> {
                 }
                 Hoon::ZapTis(_p) => Ok(cons_noun()),
                 Hoon::ZapPat(wings, q, r) => {
-                    if self.feel_noun(sut, wings)? {
+                    // feel is native (C9); thread the native subject directly.
+                    if self.feel(sut.clone(), wings)? {
                         self.play(sut, q)
                     } else {
                         self.play(sut, r)
@@ -4230,8 +4239,8 @@ impl<'a> Ut<'a> {
                     }
                 },
                 Hoon::Axis(axis) => {
-                    let n = self.peek_noun(sut, Way::Free, *axis)?;
-                    self.pb(n)
+                    // peek is native (C2); thread the native subject directly.
+                    self.peek(sut, Way::Free, *axis)
                 }
                 Hoon::BarCen(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Dry),
                 Hoon::BarPat(prefix, tomes) => self.play_core(sut, prefix, tomes, Poly::Wet),
@@ -4298,11 +4307,11 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn play_colsig(&mut self, sut: Noun, items: &[Hoon]) -> Result<Noun> {
+    fn play_colsig(&mut self, sut: NRc<NTy>, items: &[Hoon]) -> Result<Noun> {
         match items {
             [] => Ok(ty_atom(self.slab, "n", Some(D(0)))),
             [head, tail @ ..] => {
-                let head_ty = self.play_noun(sut, head)?;
+                let head_ty = self.play_to_noun(sut.clone(), head)?;
                 let tail_ty = self.play_colsig(sut, tail)?;
                 cell_type(self.slab, head_ty, tail_ty)
             }
@@ -4336,14 +4345,14 @@ impl<'a> Ut<'a> {
         transformed
     }
 
-    fn play_brtis(&mut self, sut: Noun, spec: &Spec, q: &Hoon) -> Result<Noun> {
+    fn play_brtis(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<Noun> {
         let lowered = Self::lower_brtis(spec, q);
-        self.play_noun(sut, &lowered)
+        self.play_to_noun(sut, &lowered)
     }
 
     fn play_brcb(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         spec: &Spec,
         alas: &Alas,
         tomes: &HashMap<String, Tome>,
@@ -4357,18 +4366,19 @@ impl<'a> Ut<'a> {
             Box::new(Hoon::KetTar(Box::new(spec.clone()))),
             Box::new(Hoon::BarCen(None, transformed)),
         );
-        self.play_noun(sut, &lowered)
+        self.play_to_noun(sut, &lowered)
     }
 
-    fn play_wtcl(&mut self, sut: Noun, p: &Hoon, q: &Hoon, r: &Hoon) -> Result<Noun> {
-        let fex = self.gain_noun(sut, p)?;
-        let wux = self.lose_noun(sut, p)?;
+    fn play_wtcl(&mut self, sut: NRc<NTy>, p: &Hoon, q: &Hoon, r: &Hoon) -> Result<Noun> {
+        // gain/lose are native (C6); thread the native subject directly.
+        let fex = self.gain(sut.clone(), p)?;
+        let wux = self.lose(sut, p)?;
         let mut options = Vec::with_capacity(2);
-        if type_tag(fex, &self.slab.noun_space())? != "void" {
-            options.push(self.play_noun(fex, q)?);
+        if !matches!(&*fex, NTy::Void) {
+            options.push(self.play_to_noun(fex, q)?);
         }
-        if type_tag(wux, &self.slab.noun_space())? != "void" {
-            options.push(self.play_noun(wux, r)?);
+        if !matches!(&*wux, NTy::Void) {
+            options.push(self.play_to_noun(wux, r)?);
         }
         self.fork_from_options(options)
     }
@@ -4419,21 +4429,21 @@ impl<'a> Ut<'a> {
     }
 
     fn mint_tscm(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, p: &Hoon, q: &Hoon) -> Result<(NRc<NTy>, Noun)> {
-        // busk takes/returns a noun type (it conses a %face leaf); lower sut,
-        // native_of the busked subject for the native mint recursion.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let busked = self.busk(sut_noun, p);
-        let busked = native_of(busked, &self.slab.noun_space())?;
+        // busk is native now (C-final.2): the subject threads through as a shared
+        // native Rc inside the new %face — no lowering.
+        let busked = self.busk(sut, p);
         self.mint(busked, gol, q)
     }
 
-    fn busk(&mut self, sut: Noun, gen: &Hoon) -> Noun {
-        // Canonical ++busk: [%face [~ [gen ~]] sut]
+    fn busk(&mut self, sut: NRc<NTy>, gen: &Hoon) -> NRc<NTy> {
+        // Canonical ++busk: [%face [~ [gen ~]] sut]. Native now: the subject
+        // threads through as a SHARED native Rc inside the new %face (no lowering).
         let gen_noun = self.hoon_noun_for_node(gen);
         self.cache_hoon_ast_for_node(gen);
         let pair = T(self.slab, &[gen_noun, D(0)]);
         let tool = T(self.slab, &[D(0), pair]);
-        ty_face_tool(self.slab, tool, sut)
+        let tool_leaf = NLeaf::from_noun(tool, &self.slab.noun_space());
+        cons_face(tool_leaf, sut)
     }
 
     fn mint_wtpm(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, list: &[Hoon]) -> Result<(NRc<NTy>, Noun)> {
@@ -4497,10 +4507,8 @@ impl<'a> Ut<'a> {
         p: &Hoon,
         wing: &WingType,
     ) -> Result<(NRc<NTy>, Noun)> {
-        // play takes a noun subject (C-final); find is native (C9). fish takes a
-        // native type directly.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let ref_type = self.play(sut_noun, p)?;
+        // play + find are native (C-final.2 / C9). fish takes a native type directly.
+        let ref_type = self.play(sut.clone(), p)?;
         let port = self.find(sut.clone(), Way::Read, wing)?;
         let formula = match &port {
             // Match hoon-138 `%fits`: when `find` returns a leg, fish directly at that axis
@@ -4878,8 +4886,7 @@ impl<'a> Ut<'a> {
     }
 
     fn mint_ktsl(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, p: &Hoon, q: &Hoon) -> Result<(NRc<NTy>, Noun)> {
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let played = self.play(sut_noun, p)?;
+        let played = self.play(sut.clone(), p)?;
         let hif = self.nice(sut.clone(), gol, played)?;
         let (_q_ty, q_formula) = self.mint(sut, hif.clone(), q)?;
         Ok((hif, q_formula))
@@ -4889,8 +4896,7 @@ impl<'a> Ut<'a> {
         // Canonical hoon-138 open() lowering:
         //   [%kthp p q] => [%ktls ~(example ax p) q]
         let example = self.spec_example_cached(spec);
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let hif = self.play(sut_noun, example.as_ref())?;
+        let hif = self.play(sut.clone(), example.as_ref())?;
         let hif = self.nice(sut.clone(), gol, hif)?;
         let (_q_ty, q_formula) = self.mint(sut, hif.clone(), q)?;
         Ok((hif, q_formula))
@@ -6317,54 +6323,51 @@ impl<'a> Ut<'a> {
         Ok((ty, formula))
     }
 
-    fn play_wtts(&mut self, _sut: Noun, _spec: &Spec, _wing: &WingType) -> Result<Noun> {
+    fn play_wtts(&mut self, _sut: NRc<NTy>, _spec: &Spec, _wing: &WingType) -> Result<Noun> {
         Ok(ty_bool(self.slab))
     }
 
-    fn play_ketvar(&mut self, sut: Noun, p: &Hoon, vair: Vair) -> Result<Noun> {
-        let p_ty = self.play_noun(sut, p)?;
+    fn play_ketvar(&mut self, sut: NRc<NTy>, p: &Hoon, vair: Vair) -> Result<Noun> {
+        let p_ty = self.play_to_noun(sut, p)?;
         self.wrap_type_noun(p_ty, vair)
     }
 
-    fn play_dbug(&mut self, sut: Noun, inner: &Hoon) -> Result<Noun> {
+    fn play_dbug(&mut self, sut: NRc<NTy>, inner: &Hoon) -> Result<Noun> {
         // Canonical `++play` for `%dbug` preserves the inner type and only adds tracing.
-        self.play_noun(sut, inner)
+        self.play_to_noun(sut, inner)
     }
 
-    fn play_note(&mut self, sut: Noun, note: &Note, inner: &Hoon) -> Result<Noun> {
+    fn play_note(&mut self, sut: NRc<NTy>, note: &Note, inner: &Hoon) -> Result<Noun> {
         // Canonical `++play`:
         //   [%note *]  (hint [sut p.gen] $(gen q.gen))
-        // play stays noun (C-final); hint_type is native -> bridge sut/payload in,
-        // lower the result.
-        let space = self.slab.noun_space();
-        let sut_n = native_of(sut, &space)?;
-        let payload = self.play(sut, inner)?;
+        // play + hint_type are native; thread the native subject directly.
+        let payload = self.play(sut.clone(), inner)?;
         let note_noun = note_to_noun(self.slab, note)?;
-        let hinted = self.hint_type(sut_n, note_noun, payload)?;
+        let hinted = self.hint_type(sut, note_noun, payload)?;
         Ok(live_to_noun(&hinted, self.slab))
     }
 
-    fn play_kthp(&mut self, sut: Noun, spec: &Spec, q: &Hoon) -> Result<Noun> {
+    fn play_kthp(&mut self, sut: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<Noun> {
         let gen = Hoon::KetHep(Box::new(spec.clone()), Box::new(q.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_kttr(&mut self, sut: Noun, spec: &Spec) -> Result<Noun> {
+    fn play_kttr(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<Noun> {
         let gen = Hoon::KetTar(Box::new(spec.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_ktcl(&mut self, sut: Noun, spec: &Spec) -> Result<Noun> {
+    fn play_ktcl(&mut self, sut: NRc<NTy>, spec: &Spec) -> Result<Noun> {
         let gen = Hoon::KetCol(Box::new(spec.clone()));
         self.play_opened(sut, &gen)
     }
 
-    fn play_dtls(&mut self, _sut: Noun, _p: &Hoon) -> Result<Noun> {
+    fn play_dtls(&mut self, _sut: NRc<NTy>, _p: &Hoon) -> Result<Noun> {
         let atom_ty = ty_atom(self.slab, "$", None);
         Ok(atom_ty)
     }
 
-    fn play_wing(&mut self, sut: Noun, wing: &WingType) -> Result<Noun> {
+    fn play_wing(&mut self, sut: NRc<NTy>, wing: &WingType) -> Result<Noun> {
         self.epla(sut, wing, &[])
     }
 
@@ -6509,13 +6512,13 @@ impl<'a> Ut<'a> {
 
     fn play_cnts_apply_leg_patches(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         mut typ: NRc<NTy>,
         pairs: &[(WingType, Hoon)],
     ) -> Result<NRc<NTy>> {
         for (sub_wing, expr) in pairs {
-            // play takes a noun subject (C-final): pass the noun sut; returns native.
-            let patch_type = self.play(sut, expr)?;
+            // play is native (C-final): thread the native subject directly.
+            let patch_type = self.play(sut.clone(), expr)?;
             let (_axis, edited) = self.tack(typ, sub_wing, patch_type)?;
             typ = edited;
         }
@@ -6526,11 +6529,11 @@ impl<'a> Ut<'a> {
     // HOON138_NOTE:implements the native `%cnts` play path using canonical `et/play` and `elbo`
     fn play_cnts(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         wing: &WingType,
         pairs: &[(WingType, Hoon)],
     ) -> Result<Noun> {
-        let port = self.cnts_base_port_noun(sut, wing)?;
+        let port = self.cnts_base_port(sut.clone(), wing)?;
         let palo = match port {
             Port::Palo(palo) => palo,
             Port::Synthetic { typ, .. } => {
@@ -6548,7 +6551,7 @@ impl<'a> Ut<'a> {
             Opal::Arm { arms, .. } => {
                 let mut hag = arms;
                 for (sub_wing, expr) in pairs {
-                    let patch_type = self.play(sut, expr)?;
+                    let patch_type = self.play(sut.clone(), expr)?;
                     let (_axis, next_hag) = self.toss(sub_wing, patch_type, &hag)?;
                     hag = next_hag;
                 }
@@ -6562,11 +6565,11 @@ impl<'a> Ut<'a> {
         }
     }
 
-    fn epla(&mut self, sut: Noun, hyp: &WingType, rig: &[(WingType, Hoon)]) -> Result<Noun> {
+    fn epla(&mut self, sut: NRc<NTy>, hyp: &WingType, rig: &[(WingType, Hoon)]) -> Result<Noun> {
         self.play_cnts(sut, hyp, rig)
     }
 
-    fn play_limb(&mut self, sut: Noun, name: &str) -> Result<Noun> {
+    fn play_limb(&mut self, sut: NRc<NTy>, name: &str) -> Result<Noun> {
         // Canonical hoon-138 open() lowering:
         //   [%limb p] => [%cnts [p ~] ~]
         let wing = vec![Limb::Term(name.to_string())];
@@ -6580,9 +6583,12 @@ impl<'a> Ut<'a> {
         Ok((typ_native, nock_noun))
     }
 
-    fn play_tune(&mut self, sut: Noun, tune: &TermOrTune) -> Result<Noun> {
+    fn play_tune(&mut self, sut: NRc<NTy>, tune: &TermOrTune) -> Result<Noun> {
         let tool = term_or_tune_to_noun(self.slab, tune)?;
-        Ok(ty_face_tool(self.slab, tool, sut))
+        // play_tune wraps the WHOLE subject in a %face; ty_face_tool needs a noun
+        // subject. Lower it (memoized) — %tune is off the deepening hot path.
+        let sut_noun = live_to_noun(&sut, self.slab);
+        Ok(ty_face_tool(self.slab, tool, sut_noun))
     }
 
     fn mint_siggar(
@@ -6608,14 +6614,12 @@ impl<'a> Ut<'a> {
     }
 
     fn mint_sigzap(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, p: &Hoon, q: &Hoon) -> Result<(NRc<NTy>, Noun)> {
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let _ = self.play(sut_noun, p)?;
+        let _ = self.play(sut.clone(), p)?;
         self.mint(sut, gol, q)
     }
 
     fn mint_zpcom(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, p: &Hoon, q: &Hoon) -> Result<(NRc<NTy>, Noun)> {
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let ty = self.play(sut_noun, p)?;
+        let ty = self.play(sut.clone(), p)?;
         let ty = self.nice(sut, gol, ty)?;
         let q_noun = hoon_to_noun(self.slab, q);
         let formula = T(self.slab, &[D(1), q_noun]);
@@ -6638,8 +6642,7 @@ impl<'a> Ut<'a> {
 
     fn mint_zpgl(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, spec: &Spec, q: &Hoon) -> Result<(NRc<NTy>, Noun)> {
         let typ_expr = Hoon::KetTar(Box::new(spec.clone()));
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let typ = self.play(sut_noun, &typ_expr)?;
+        let typ = self.play(sut.clone(), &typ_expr)?;
         let typ = self.nice(sut.clone(), gol, typ)?;
 
         // Mirror hoon-138 `%zpgl` mint shape without introducing an extra binding.
@@ -7187,24 +7190,24 @@ impl<'a> Ut<'a> {
 
     fn play_core(
         &mut self,
-        sut: Noun,
+        sut: NRc<NTy>,
         prefix: &Option<String>,
         tomes: &HashMap<String, Tome>,
         poly: Poly,
     ) -> Result<NRc<NTy>> {
-        // ATOMIC FLIP step 1: play_core RETURNS native Rc<Type>. The payload (sut)
-        // is still a noun from a not-yet-flipped caller, so it is bridged to native
-        // via native_of at this (shrinking) boundary; callers that still want a
-        // noun `to_noun` the result. coil stays an opaque noun leaf (Phase 1).
+        // ATOMIC FLIP (C-final.2): play_core TAKES native sut and RETURNS native
+        // Rc<Type>. The native core embeds the SHARED native payload (the
+        // subject-deepening win); the noun coil/context still needs a noun payload,
+        // so sut is lowered ONCE here (memoized) only for the opaque coil leaf.
         let tomes_map = self.tomes_map_from_ast(tomes)?;
-        let payload_type = sut;
+        let payload_native = sut.clone();
+        let payload_type = live_to_noun(&sut, self.slab);
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
         let context = self.core_context_from_payload(payload_type)?;
         // Canonical hoon-138 `%play` builds cores with `*seminoun` (blocked by default).
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let coil = coil_from_parts(self.slab, garb, context, rest);
-        let payload_native = native_of(payload_type, &self.slab.noun_space())?;
         let (_noun, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
         Ok(native)
     }
@@ -7884,10 +7887,10 @@ impl<'a> Ut<'a> {
         Ok((ty, formula))
     }
 
-    fn play_opened(&mut self, sut: Noun, gen: &Hoon) -> Result<Noun> {
+    fn play_opened(&mut self, sut: NRc<NTy>, gen: &Hoon) -> Result<Noun> {
         let opened = open(gen.clone());
         if &opened != gen {
-            return self.play_noun(sut, &opened);
+            return self.play_to_noun(sut, &opened);
         }
         Err(CompilerError::UnsupportedExpr(format!(
             "native play: unsupported {gen:?}"
@@ -8911,10 +8914,8 @@ impl<'a> Ut<'a> {
                 "native nest deep: arm ast missing tag={tag} decode_err={err}"
             ))
         })?;
-        let sut_dox_noun = live_to_noun(&sut_dox, self.slab);
-        let dab_ty = self.play(sut_dox_noun, dab_hoon.as_ref())?;
-        let ref_dox_noun = live_to_noun(&ref_dox, self.slab);
-        let hem_ty = self.play(ref_dox_noun, hem_hoon.as_ref())?;
+        let dab_ty = self.play(sut_dox.clone(), dab_hoon.as_ref())?;
+        let hem_ty = self.play(ref_dox.clone(), hem_hoon.as_ref())?;
         self.nest_inner(
             dab_ty,
             hem_ty,
@@ -9307,9 +9308,8 @@ impl<'a> Ut<'a> {
             Hoon::Dbug(_, inner) | Hoon::Note(_, inner) => self.chip(how, sut, inner.as_ref()),
             Hoon::WutTis(spec, wing) => {
                 let example = self.spec_example_cached(spec);
-                // play takes a noun subject (C-final): lower; returns native.
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let ref_type = self.play(sut_noun, example.as_ref())?;
+                // play is native (C-final.2); thread the native subject directly.
+                let ref_type = self.play(sut.clone(), example.as_ref())?;
                 self.cool(how, sut, wing, ref_type)
             }
             Hoon::WutHax(skin, wing) => {
@@ -9462,14 +9462,12 @@ impl<'a> Ut<'a> {
                 Ok(cons_face(tool_leaf, inner_ty))
             }
             Skin::Over(wing, inner) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let next_sut = self.play(sut_noun, &Hoon::Wing(wing.clone()))?;
+                let next_sut = self.play(sut, &Hoon::Wing(wing.clone()))?;
                 self.gain_skin_inner(next_sut, ref_, inner, seen)
             }
             Skin::Spec(spec, inner) => {
                 let example = self.spec_example_cached(spec);
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let hit = self.play(sut_noun, example.as_ref())?;
+                let hit = self.play(sut.clone(), example.as_ref())?;
                 let inner_ty = self.gain_skin_inner(sut, ref_.clone(), inner, seen)?;
                 if !self.nest(hit.clone(), inner_ty)? {
                     return Err(CompilerError::Noun("native mint: gain spec".to_string()));
@@ -9766,14 +9764,12 @@ impl<'a> Ut<'a> {
             Skin::Help(_, inner) => self.lose_skin_inner(sut, ref_, inner, seen),
             Skin::Name(_, inner) => self.lose_skin_inner(sut, ref_, inner, seen),
             Skin::Over(wing, inner) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let next_sut = self.play(sut_noun, &Hoon::Wing(wing.clone()))?;
+                let next_sut = self.play(sut, &Hoon::Wing(wing.clone()))?;
                 self.lose_skin_inner(next_sut, ref_, inner, seen)
             }
             Skin::Spec(spec, inner) => {
                 let example = self.spec_example_cached(spec);
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let hit = self.play(sut_noun, example.as_ref())?;
+                let hit = self.play(sut.clone(), example.as_ref())?;
                 let inner_ty = self.lose_skin_inner(sut, ref_.clone(), inner, seen)?;
                 if !self.nest(hit.clone(), inner_ty)? {
                     return Err(CompilerError::Noun("native mint: lose spec".to_string()));
@@ -10834,8 +10830,7 @@ impl<'a> Ut<'a> {
 
             // ---- Constants: %sand, %rock ----
             Hoon::Sand(_, _) | Hoon::Rock(_, _) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let ty = self.play(sut_noun, gen)?;
+                let ty = self.play(sut.clone(), gen)?;
                 self.mull_beth(sut, gol, ty)
             }
 
@@ -10888,11 +10883,9 @@ impl<'a> Ut<'a> {
 
             // ---- Cast: %ktls ----
             Hoon::KetLus(p, q) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let p_sut = self.play(sut_noun, p)?;
+                let p_sut = self.play(sut.clone(), p)?;
                 let p_sut = self.mull_nice(sut.clone(), gol, p_sut)?;
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let q_dox = self.play(dox_noun, p)?;
+                let q_dox = self.play(dox.clone(), p)?;
                 let _q_result = self.mull(sut, p_sut.clone(), dox, q)?;
                 Ok((p_sut, q_dox))
             }
@@ -10937,8 +10930,7 @@ impl<'a> Ut<'a> {
 
             // ---- Type-print hint: %sgzp ----
             Hoon::SigZap(p, q) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let _ = self.play(sut_noun, p)?;
+                let _ = self.play(sut.clone(), p)?;
                 self.mull(sut, gol, dox, q)
             }
 
@@ -10960,12 +10952,9 @@ impl<'a> Ut<'a> {
 
             // ---- Merge/busk: %tscm ----
             Hoon::TisCom(p, q) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let boc_noun = self.busk(sut_noun, p);
-                let boc = native_of(boc_noun, &self.slab.noun_space())?;
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let nuf_noun = self.busk(dox_noun, p);
-                let nuf = native_of(nuf_noun, &self.slab.noun_space())?;
+                // busk is native now (C-final.2): thread the native subjects directly.
+                let boc = self.busk(sut, p);
+                let nuf = self.busk(dox, p);
                 self.mull(boc, gol, nuf, q)
             }
 
@@ -10984,8 +10973,7 @@ impl<'a> Ut<'a> {
                             cons_void()
                         } else {
                             // sut-side void, dox-side non-void: play dox side
-                            let fex_q_n = live_to_noun(&fex_q, self.slab);
-                            self.play(fex_q_n, q)?
+                            self.play(fex_q, q)?
                         };
                         (cons_void(), q_ty)
                     } else if matches!(&*fex_q, NTy::Void) {
@@ -11004,8 +10992,7 @@ impl<'a> Ut<'a> {
                         let q_ty = if matches!(&*wux_q, NTy::Void) {
                             cons_void()
                         } else {
-                            let wux_q_n = live_to_noun(&wux_q, self.slab);
-                            self.play(wux_q_n, r)?
+                            self.play(wux_q, r)?
                         };
                         (cons_void(), q_ty)
                     } else if matches!(&*wux_q, NTy::Void) {
@@ -11030,19 +11017,17 @@ impl<'a> Ut<'a> {
 
             // ---- Type test: %fits ----
             Hoon::Fits(p, wing) => {
-                // Play the pattern from both perspectives
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let waz_p = self.play(sut_noun, p)?;
-                let waz_q = self.play(dox_noun, p)?;
+                // Play the pattern from both perspectives. play + mint are native
+                // (C-final): thread the native subjects directly.
+                let waz_p = self.play(sut.clone(), p)?;
+                let waz_q = self.play(dox.clone(), p)?;
 
-                // Mint the wing from both to get axes (via cove). Bridge through
-                // mint_noun (mull lowered sut/dox already); take the formula (slot 1).
-                let noun_gol = ty_noun(self.slab);
+                // Mint the wing from both to get axes (via cove); take the formula.
+                let noun_gol = cons_noun();
                 let wing_hoon = Hoon::Wing(wing.clone());
-                let (_sut_ty, sut_formula) = self.mint_noun(sut_noun, noun_gol, &wing_hoon)?;
+                let (_sut_ty, sut_formula) = self.mint(sut.clone(), noun_gol.clone(), &wing_hoon)?;
                 let syx_p = self.cove(sut_formula)?;
-                let (_dox_ty, dox_formula) = self.mint_noun(dox_noun, noun_gol, &wing_hoon)?;
+                let (_dox_ty, dox_formula) = self.mint(dox.clone(), noun_gol, &wing_hoon)?;
                 let syx_q = self.cove(dox_formula)?;
 
                 // Generate fish (runtime type test) from both
@@ -11081,11 +11066,9 @@ impl<'a> Ut<'a> {
 
             // ---- Quote: %zpcm ----
             Hoon::ZapCom(p, _q) => {
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let p_sut = self.play(sut_noun, p)?;
+                let p_sut = self.play(sut.clone(), p)?;
                 let p_sut = self.mull_nice(sut.clone(), gol, p_sut)?;
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let q_dox = self.play(dox_noun, p)?;
+                let q_dox = self.play(dox.clone(), p)?;
                 Ok((p_sut, q_dox))
             }
 
@@ -11109,10 +11092,8 @@ impl<'a> Ut<'a> {
             Hoon::ZapMic(p, q) => {
                 let noun_gol = cons_noun();
                 let vos = self.mull(sut.clone(), noun_gol, dox.clone(), q)?;
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let dox_noun = live_to_noun(&dox, self.slab);
-                let p_play_sut = self.play(sut_noun, p)?;
-                let p_play_dox = self.play(dox_noun, p)?;
+                let p_play_sut = self.play(sut.clone(), p)?;
+                let p_play_dox = self.play(dox.clone(), p)?;
                 let p_ty = cons_cell(p_play_sut, vos.0);
                 let p_ty = self.mull_nice(sut.clone(), gol, p_ty)?;
                 let q_ty = cons_cell(p_play_dox, vos.1);
@@ -11124,8 +11105,7 @@ impl<'a> Ut<'a> {
                 // hoon-138: (beth (play [%kttr p.gen]))
                 // Note: hoon-138 has a comment "XX is this right?" here.
                 let kttr = Hoon::KetTar(Box::new(spec.as_ref().clone()));
-                let sut_noun = live_to_noun(&sut, self.slab);
-                let ty = self.play(sut_noun, &kttr)?;
+                let ty = self.play(sut.clone(), &kttr)?;
                 self.mull_beth(sut, gol, ty)
             }
 

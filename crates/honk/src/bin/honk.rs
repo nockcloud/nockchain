@@ -2523,9 +2523,10 @@ fn seed_honc_type_with_ut(
     let ty = if skip_play {
         sut
     } else {
-        // ATOMIC FLIP: play returns native; materialize to a noun at this boundary
-        // (the prelude vase still carries a noun type for now).
-        ut.play(sut, prelude)?.to_noun(ut.slab)
+        // ATOMIC FLIP (C-final.2): play takes a native subject. This boundary
+        // still holds a noun `sut` (empty_subject_type) and wants a noun type, so
+        // route through the noun-in/noun-out play_noun bridge.
+        ut.play_noun(sut, prelude)?
     };
     ut.set_miss_memo_persistence(false);
     Ok(NativeVase {
@@ -2691,7 +2692,7 @@ fn evaluate_honc_isolated(
         ut.exact_hoon_ast_lookup_enabled = true;
         ut.set_vet(false);
         ut.set_miss_memo_persistence(true);
-        let _ = ut.play(sut, prelude)?;
+        let _ = ut.play_noun(sut, prelude)?;
 
         let sut = empty_subject_type(&mut *ut.slab);
         let gol = ty_noun(&mut *ut.slab);
