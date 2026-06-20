@@ -57,6 +57,43 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
+## DECISIVE BASELINE (2026-06-20) — THE FLIP IS A SEVERE REGRESSION
+
+Measured the dumb-kernel compile (hoon/apps/dumbnet/outer.hoon, --prelude
+hoon/common/hoon.hoon), same machine, golden byte-match confirmed both sides:
+  - PRE-FLIP  (e6e653e2 = "native-types INC6", native SHADOW / noun-primary):
+      46.17 s,  10.18 GB peak RSS,  COMPLETES (golden matches).
+  - POST-FLIP (Phase 1 + Phase 2, native-PRIMARY, this branch):
+      >900 s (timeout, did NOT complete),  61.07 GB peak RSS.
+=> The flip regressed the real kernel compile ~20x in time and ~6x in memory, and
+it no longer completes. This is worse than the original 32 GB OOM it set out to fix.
+
+ROOT CAUSE: the boundary form makes native `Rc<Type>` the primary representation
+but keeps a noun side reachable via live_to_noun/native_of bridges + jammed leaves.
+Every place a DEEPENING type is lowered to a noun (the remaining noun bridges:
+repo_hold's rest/Hold cache-key live_to_noun(&subject) [explicitly deferred] +
+fork-result native_of, the redo/fire noun paths, noun-keyed caches) caches an
+O(size) noun in the per-compile, never-freed TO_NOUN_MEMO. Summed over the
+deepening chain that is O(N^2) bytes -> 61 GB. The grow-only NounSlab + unbounded
+per-compile to-noun memo is an inherently O(N^2) memory model while ANY noun bridge
+touches deepening types.
+
+NON-CONVERGENCE: 7 profiling-driven fixes (cache re-keys, core threading, Phase-2
+coil context, play_* native, bran native) each removed their profiled hotspot but
+the regression persisted (time/memory stayed catastrophic) — the next bridge took
+over each time. Incremental hotspot removal has NOT converged.
+
+STRATEGIC DECISION POINT (do not blind-grind further): the byte-parity native-type
+migration is CORRECT but the native-primary boundary-form strategy, as implemented,
+is a severe perf/memory regression. Options: (A) eliminate EVERY remaining
+deepening-type->noun lowering — next known lever is the repo_hold/rest/Hold cache
+native re-key (the deferred subject-lowering) — but convergence is uncertain and
+the grow-only-memo model is the deeper issue; (B) rethink the memory model (bound
+or free the to-noun memo; don't bridge deepening types at all); (C) the e6e653e2
+noun-primary shadow baseline (46 s/10 GB, completes) was materially BETTER — re-
+evaluate whether native-primary is the right premise, or target the original 32 GB
+OOM case more surgically. Needs a human call before more engineering.
+
 ## PERF DIAGNOSTIC LOG (2026-06-20) — Phase 1 + Phase 2 done; chasing the dumb O(N^2)
 
 Phase 1 (native skeleton) + Phase 2 (native coil context) are committed +
