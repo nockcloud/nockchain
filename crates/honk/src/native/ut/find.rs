@@ -518,15 +518,18 @@ impl<'a> Ut<'a> {
                     }
                     Ok(acc)
                 }
-                NTy::Core { payload, coil } => {
+                NTy::Core {
+                    payload, garb, rest, ..
+                } => {
                     let Some(name_str) = name else {
                         return Ok(here(sut.clone(), &axe, skip, lon));
                     };
                     let payload = payload.clone();
-                    // Lower the coil leaf for the noun coil decoders (garb/tomes).
-                    let coil_noun = live_leaf_to_noun(coil, ut.slab);
+                    // garb/rest are tiny/bounded; lower to noun for the noun decoders.
+                    // The context (deepening subject) is not needed here.
+                    let garb = live_leaf_to_noun(garb, ut.slab);
+                    let rest = live_leaf_to_noun(rest, ut.slab);
                     let space = ut.slab.noun_space();
-                    let (garb, _context, rest) = coil_parts(coil_noun, &space)?;
                     let poly = garb_poly(garb, &space)?;
                     let vair = garb_vair(garb, &space)?;
                     let cog = term_to_noun(ut.slab, name_str);

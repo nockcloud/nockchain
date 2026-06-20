@@ -41,9 +41,17 @@ pub enum Type {
     Atom { aura: Leaf, bits: Leaf },
     /// `[%cell head tail]` — both native.
     Cell(Rc<Type>, Rc<Type>),
-    /// `[%core payload coil]` — payload native; coil (garb/context/battery)
-    /// carried (Phase-2 nativizes).
-    Core { payload: Rc<Type>, coil: Leaf },
+    /// `[%core payload coil]` — payload native; coil = `[garb [context rest]]`.
+    /// Phase 2: the coil's `context` (the deepening subject) is a SHARED native
+    /// `Rc<Type>` child so it is never jammed/copied on the hot path; only the
+    /// tiny `garb` and the bounded `rest` (battery seminoun + tomes) stay carried
+    /// as leaves.
+    Core {
+        payload: Rc<Type>,
+        garb: Leaf,
+        context: Rc<Type>,
+        rest: Leaf,
+    },
     /// `[%face tool inner]` — inner native; tool carried.
     Face { tool: Leaf, inner: Rc<Type> },
     /// `[%hint [inner note] payload]` — payload native; `[inner note]` carried.
@@ -80,10 +88,21 @@ impl Type {
                 let tn = t.to_noun(dst);
                 T(dst, &[D(tas("cell")), hn, tn])
             }
-            Type::Core { payload, coil } => {
+            Type::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => {
                 let p = payload.to_noun(dst);
-                let c = coil.to_noun(dst);
-                T(dst, &[D(tas("core")), p, c])
+                // Rebuild the coil noun = [garb [context rest]] (mirrors
+                // coil_from_parts: [garb [context rest]]).
+                let g = garb.to_noun(dst);
+                let ctx = context.to_noun(dst);
+                let r = rest.to_noun(dst);
+                let tail = T(dst, &[ctx, r]);
+                let coil = T(dst, &[g, tail]);
+                T(dst, &[D(tas("core")), p, coil])
             }
             Type::Face { tool, inner } => {
                 let tl = tool.to_noun(dst);
@@ -141,9 +160,14 @@ impl Type {
             Type::Cell(rc(Type::from_noun(h, space)?), rc(Type::from_noun(t, space)?))
         } else if tag.eq_bytes(b"core") {
             let (payload, coil) = pair(tail)?;
+            // coil = [garb [context rest]]
+            let (garb, coil_tail) = pair(coil)?;
+            let (context, rest) = pair(coil_tail)?;
             Type::Core {
                 payload: rc(Type::from_noun(payload, space)?),
-                coil: Leaf::from_noun(coil, space),
+                garb: Leaf::from_noun(garb, space),
+                context: rc(Type::from_noun(context, space)?),
+                rest: Leaf::from_noun(rest, space),
             }
         } else if tag.eq_bytes(b"face") {
             let (tool, inner) = pair(tail)?;

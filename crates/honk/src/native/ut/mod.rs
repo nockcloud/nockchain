@@ -7050,11 +7050,11 @@ impl<'a> Ut<'a> {
         // Canonical layered-core construction keeps prior arms in payload/context ancestry.
         // New core tomes contain only the newly declared arms; inherited arms are resolved via
         // `%core` payload traversal in `fond`, not by copying old tomes into the new battery.
-        // ATOMIC FLIP (C-final.1a): mint_core TAKES native sut/gol. The core_mint
-        // cache stays noun/mug-keyed (lower sut/gol once here for the key,
-        // native_of the cached type on a hit) until step 1b. The payload native
-        // is sut directly (shared subject -> the deepening win).
-        let sut_noun = live_to_noun(&sut, self.slab);
+        // PHASE 2 (native coil context): mint_core TAKES native sut/gol and the
+        // core_mint cache is native-Rc-keyed, so the deepening subject `sut` is
+        // NEVER lowered to a noun. `gol` (the goal, not the deepening subject) is
+        // lowered once for goal_core_for_mine's noun-side walk. The core payload
+        // AND context are both the SHARED native `sut`.
         let gol_noun = live_to_noun(&gol, self.slab);
         let tomes_map = self.tomes_map_from_ast(tomes)?;
         if let Some((cached_ty, cached_formula)) =
@@ -7065,8 +7065,6 @@ impl<'a> Ut<'a> {
         }
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
         // Match hoon-138/hoonc layered-core payload layout and formula shape.
-        let payload_type = sut_noun;
-        let payload_native = sut.clone();
         let payload_formula = slot_formula_axis(self.slab, 1);
         let goal_core_for_arms = self.goal_core_for_mine(gol_noun, tomes_map)?;
         let (goal_for_arms, expected_tomes_map) = match goal_core_for_arms {
@@ -7090,22 +7088,25 @@ impl<'a> Ut<'a> {
 
         // Canonical hoon-138 `++mine` compiles arm formulas against a `%lazy`
         // battery seminoun (`++laze`) in a single pass.
-        let lazy_context = self.core_context_from_payload(payload_type)?;
         let resolver_id = self.lazy_resolver_new_id();
         let lazy_semi = self.semi_lazy_root(resolver_id);
         let lazy_rest = T(self.slab, &[lazy_semi, tomes_map]);
-        let lazy_coil = coil_from_parts(self.slab, garb, lazy_context, lazy_rest);
-        // ATOMIC FLIP perf: build the NATIVE lazy core (the deepening site) ONCE,
-        // bottom-up from the shared native payload, via ty_core_n (mirrors
-        // ty_core's collapse). Threading this interned Rc to the battery builder
-        // means each of N arms reuses ONE core instead of re-lifting the O(N)
-        // deepening core per arm (native_of -> O(N^2)). The noun core_type_lazy is
-        // gone: nothing below needs it (the battery builder only passed it through
-        // to native mint, which now receives the native directly). The same Rc is
-        // stored in the lazy resolver context so cross-arm in-progress cycle
-        // detection compares pointer identity.
-        let (_core_type_lazy_noun, core_native_lazy) =
-            ty_core_n(self.slab, (payload_type, payload_native.clone()), lazy_coil);
+        // PHASE 2: build the NATIVE lazy core (the deepening site) ONCE, native-only
+        // (cons_core), with payload AND context = the SHARED native `sut`. No noun
+        // core, no sut lowering. Threading this interned Rc to the battery builder
+        // means each of N arms reuses ONE core; the context is a shared Rc (never
+        // jammed/copied) — this is the O(N^2) fix. The same Rc is stored in the
+        // lazy resolver context so cross-arm in-progress cycle detection compares
+        // pointer identity.
+        let core_native_lazy = {
+            let space = self.slab.noun_space();
+            cons_core(
+                sut.clone(),
+                NLeaf::from_noun(garb, &space),
+                sut.clone(),
+                NLeaf::from_noun(lazy_rest, &space),
+            )
+        };
         let mut lazy_arms = HashMap::new();
         self.collect_lazy_resolver_arms_from_tomes_map(tomes_map, 1, &mut lazy_arms)?;
         self.lazy_resolver_register_context(resolver_id, core_native_lazy.clone(), poly, lazy_arms);
@@ -7119,18 +7120,21 @@ impl<'a> Ut<'a> {
         let battery = self.build_tomes_battery_from_maps(
             tomes_map, core_native_lazy, poly, goal_for_arms, expected_tomes_map,
         )?;
-        let context = self.core_context_from_payload(payload_type)?;
         let semi_noun = self.semi_noun_full(battery);
         let rest = T(self.slab, &[semi_noun, tomes_map]);
-        let coil = coil_from_parts(self.slab, garb, context, rest);
-        let core_type = ty_core(self.slab, payload_type, coil);
-        // ATOMIC FLIP step 4: mint_core RETURNS the core's native Rc<Type> — this
-        // is THE subject-deepening site. The noun core_type is still built for the
-        // nice validation + the (noun) core_mint_cache; the native is built
-        // bottom-up via ty_core_n from the payload's native (shared subject). nice
-        // is identity-on-success, so the returned native matches the validated ty.
-        let _ = core_type;
-        let (_n2, core_native) = ty_core_n(self.slab, (payload_type, payload_native.clone()), coil);
+        // PHASE 2: mint_core RETURNS the core's native Rc<Type> — THE
+        // subject-deepening site — built native-only via cons_core with payload AND
+        // context = the SHARED native `sut`. No noun core is built (nice is native +
+        // identity-on-success; the cache is native-keyed) and `sut` is never lowered.
+        let core_native = {
+            let space = self.slab.noun_space();
+            cons_core(
+                sut.clone(),
+                NLeaf::from_noun(garb, &space),
+                sut.clone(),
+                NLeaf::from_noun(rest, &space),
+            )
+        };
         let battery_formula = T(self.slab, &[D(1), battery]);
         let formula = cons(self.slab, battery_formula, payload_formula)?;
         // nice is native now (C-final.1a); validate the native core type.
@@ -7168,20 +7172,23 @@ impl<'a> Ut<'a> {
         tomes: &HashMap<String, Tome>,
         poly: Poly,
     ) -> Result<NRc<NTy>> {
-        // ATOMIC FLIP (C-final.2): play_core TAKES native sut and RETURNS native
-        // Rc<Type>. The native core embeds the SHARED native payload (the
-        // subject-deepening win); the noun coil/context still needs a noun payload,
-        // so sut is lowered ONCE here (memoized) only for the opaque coil leaf.
+        // PHASE 2 (native coil context): play_core TAKES native sut and RETURNS
+        // native Rc<Type>. The native core embeds the SHARED native payload AND the
+        // SHARED native context (both = sut), so the deepening subject is NEVER
+        // lowered to a noun. Only the tiny garb + bounded rest are built as nouns
+        // for the carried leaves; cons_core mirrors ty_core's void-collapse.
         let tomes_map = self.tomes_map_from_ast(tomes)?;
-        let payload_native = sut.clone();
-        let payload_type = live_to_noun(&sut, self.slab);
         let garb = self.garb_from_parts(prefix.as_deref(), poly, Vair::Gold);
-        let context = self.core_context_from_payload(payload_type)?;
         // Canonical hoon-138 `%play` builds cores with `*seminoun` (blocked by default).
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
-        let coil = coil_from_parts(self.slab, garb, context, rest);
-        let (_noun, native) = ty_core_n(self.slab, (payload_type, payload_native), coil);
+        let space = self.slab.noun_space();
+        let native = cons_core(
+            sut.clone(),
+            NLeaf::from_noun(garb, &space),
+            sut.clone(),
+            NLeaf::from_noun(rest, &space),
+        );
         Ok(native)
     }
 
@@ -8258,12 +8265,26 @@ impl<'a> Ut<'a> {
     /// Native `core_dox` (C8): build the doppelganger context-core from a carried
     /// coil leaf without lowering the (possibly deep) payload. `core_dox` ignores
     /// the payload, so a `%noun` placeholder is byte-identical.
-    fn core_dox_native(&mut self, coil: &NLeaf) -> Result<NRc<NTy>> {
-        let coil_noun = live_leaf_to_noun(coil, self.slab);
-        let dummy = ty_noun(self.slab);
-        let core_noun = ty_core(self.slab, dummy, coil_noun);
-        let dox_noun = self.core_dox(core_noun)?;
-        native_of(dox_noun, &self.slab.noun_space())
+    /// Native `core_dox`: `++dox` rebuilds the core as `core(context, garb', rest)`
+    /// where `garb'` forces vair=gold and payload becomes the context. PHASE 2:
+    /// built native-only with the SHARED native `context` (no native_of of the
+    /// deepening subject). `garb`/`rest` are lowered (tiny/bounded) so garb_with_vair
+    /// can rewrite the garb; the new garb leaf round-trips byte-identically.
+    fn core_dox_native(
+        &mut self,
+        garb: &NLeaf,
+        context: &NRc<NTy>,
+        rest: &NLeaf,
+    ) -> Result<NRc<NTy>> {
+        let garb_noun = live_leaf_to_noun(garb, self.slab);
+        let new_garb = self.garb_with_vair(garb_noun, Vair::Gold)?;
+        let space = self.slab.noun_space();
+        Ok(cons_core(
+            context.clone(),
+            NLeaf::from_noun(new_garb, &space),
+            context.clone(),
+            rest.clone(),
+        ))
     }
 
     fn nest_inner(
@@ -8573,15 +8594,30 @@ impl<'a> Ut<'a> {
         gil: &mut NestPairSet,
         memo: &mut FastHashMap<NestMemoKey, bool>,
     ) -> Result<bool> {
-        let (sut_payload, sut_coil) = match &*sut {
-            NTy::Core { payload, coil } => (payload.clone(), coil.clone()),
+        let (sut_payload, sut_garb, sut_context_n, sut_rest) = match &*sut {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => (payload.clone(), garb.clone(), context.clone(), rest.clone()),
             _ => return Err(CompilerError::Noun("nest_core: sut not a core".to_string())),
         };
-        let (ref_payload, ref_coil) = match &*ref_ {
-            NTy::Core { payload, coil } => (payload.clone(), coil.clone()),
+        let (ref_payload, ref_garb, ref_context_n, ref_rest) = match &*ref_ {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => (payload.clone(), garb.clone(), context.clone(), rest.clone()),
             _ => return Err(CompilerError::Noun("nest_core: ref not a core".to_string())),
         };
-        if sut_coil == ref_coil {
+        // coil-equal short-circuit: garb/rest leaf-equal AND context ptr-equal
+        // (interned natives are canonical, so structural equality == ptr identity).
+        if sut_garb == ref_garb
+            && NRc::ptr_eq(&sut_context_n, &ref_context_n)
+            && sut_rest == ref_rest
+        {
             return self.nest_inner(
                 sut_payload,
                 ref_payload,
@@ -8592,17 +8628,19 @@ impl<'a> Ut<'a> {
                 memo,
             );
         }
-        let sut_coil_noun = live_leaf_to_noun(&sut_coil, self.slab);
-        let ref_coil_noun = live_leaf_to_noun(&ref_coil, self.slab);
-        let (sut_garb, sut_context, sut_rest) = coil_parts(sut_coil_noun, &self.slab.noun_space())?;
-        let (ref_garb, ref_context, ref_rest) = coil_parts(ref_coil_noun, &self.slab.noun_space())?;
-        let sut_poly = garb_poly(sut_garb, &self.slab.noun_space())?;
-        let ref_poly = garb_poly(ref_garb, &self.slab.noun_space())?;
+        // PHASE 2: garb/rest are tiny/bounded — lower to noun for the noun coil
+        // decoders. The CONTEXT is already native (the deepening win: no native_of,
+        // no lowering of the deepening subject). The Leaf garb/rest are kept for the
+        // native core_dox rebuild below.
+        let sut_garb_noun = live_leaf_to_noun(&sut_garb, self.slab);
+        let ref_garb_noun = live_leaf_to_noun(&ref_garb, self.slab);
+        let sut_rest_noun = live_leaf_to_noun(&sut_rest, self.slab);
+        let ref_rest_noun = live_leaf_to_noun(&ref_rest, self.slab);
+        let sut_poly = garb_poly(sut_garb_noun, &self.slab.noun_space())?;
+        let ref_poly = garb_poly(ref_garb_noun, &self.slab.noun_space())?;
         if sut_poly != ref_poly {
             return Ok(false);
         }
-        let sut_context_n = native_of(sut_context, &self.slab.noun_space())?;
-        let ref_context_n = native_of(ref_context, &self.slab.noun_space())?;
         if !self.nest_meet(
             sut_context_n.clone(),
             sut_payload,
@@ -8625,11 +8663,11 @@ impl<'a> Ut<'a> {
         )? {
             return Ok(false);
         }
-        let sut_vair = garb_vair(sut_garb, &self.slab.noun_space())?;
-        let ref_vair = garb_vair(ref_garb, &self.slab.noun_space())?;
+        let sut_vair = garb_vair(sut_garb_noun, &self.slab.noun_space())?;
+        let ref_vair = garb_vair(ref_garb_noun, &self.slab.noun_space())?;
         if !self.deem_variance(
-            sut_context_n,
-            ref_context_n,
+            sut_context_n.clone(),
+            ref_context_n.clone(),
             sut_vair,
             ref_vair,
             depth,
@@ -8640,8 +8678,8 @@ impl<'a> Ut<'a> {
         )? {
             return Ok(false);
         }
-        let sut_tomes = rest_tomes(sut_rest, &self.slab.noun_space())?;
-        let ref_tomes = rest_tomes(ref_rest, &self.slab.noun_space())?;
+        let sut_tomes = rest_tomes(sut_rest_noun, &self.slab.noun_space())?;
+        let ref_tomes = rest_tomes(ref_rest_noun, &self.slab.noun_space())?;
         if sut_poly == Poly::Wet {
             if !noun_eq(sut_tomes, ref_tomes, &self.slab.noun_space())? {
                 return Ok(false);
@@ -8654,8 +8692,8 @@ impl<'a> Ut<'a> {
             return Ok(true);
         }
         let result = (|| -> Result<bool> {
-            let sut_dox = self.core_dox_native(&sut_coil)?;
-            let ref_dox = self.core_dox_native(&ref_coil)?;
+            let sut_dox = self.core_dox_native(&sut_garb, &sut_context_n, &sut_rest)?;
+            let ref_dox = self.core_dox_native(&ref_garb, &ref_context_n, &ref_rest)?;
             self.nest_deep_tomes(
                 sut_tomes,
                 ref_tomes,
@@ -8935,18 +8973,25 @@ impl<'a> Ut<'a> {
                 let tail = self.wrap_type(tail, vair)?;
                 Ok(cons_cell(head, tail))
             }
-            NTy::Core { payload, coil } => {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => {
                 let payload = payload.clone();
-                let coil_noun = live_leaf_to_noun(coil, self.slab);
-                let (garb, context, rest) = coil_parts(coil_noun, &self.slab.noun_space())?;
-                let current_vair = garb_vair(garb, &self.slab.noun_space())?;
+                let context = context.clone();
+                let rest = rest.clone();
+                // garb is tiny; lower it to rewrite the vair. context (deepening
+                // subject) and rest stay native/leaf — no lowering of the subject.
+                let garb_noun = live_leaf_to_noun(garb, self.slab);
+                let current_vair = garb_vair(garb_noun, &self.slab.noun_space())?;
                 if current_vair != Vair::Gold && vair != Vair::Lead {
                     return Err(CompilerError::Noun("wrap-core".to_string()));
                 }
-                let new_garb = self.garb_with_vair(garb, vair)?;
-                let new_coil = coil_from_parts(self.slab, new_garb, context, rest);
-                let coil_leaf = NLeaf::from_noun(new_coil, &self.slab.noun_space());
-                Ok(cons_core(payload, coil_leaf))
+                let new_garb = self.garb_with_vair(garb_noun, vair)?;
+                let new_garb_leaf = NLeaf::from_noun(new_garb, &self.slab.noun_space());
+                Ok(cons_core(payload, new_garb_leaf, context, rest))
             }
             NTy::Face { tool, inner } => {
                 let tool = tool.clone();
@@ -9227,15 +9272,22 @@ impl<'a> Ut<'a> {
                     Ok(cons_cell(head_ty, new_tail))
                 }
             }
-            NTy::Core { payload, coil } => {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => {
                 if cap == 2 {
                     let repo = self.repo(sut.clone())?;
                     self.take_axis(repo, step, tail, duz, vil)
                 } else {
                     let payload = payload.clone();
-                    let coil = coil.clone();
+                    let garb = garb.clone();
+                    let context = context.clone();
+                    let rest = rest.clone();
                     let new_payload = self.take_axis(payload, mas, tail, duz, vil)?;
-                    Ok(cons_core(new_payload, coil))
+                    Ok(cons_core(new_payload, garb, context, rest))
                 }
             }
             NTy::Face { tool, inner } => {
@@ -9575,9 +9627,16 @@ impl<'a> Ut<'a> {
                 let tail_ty = self.gain_skin_inner(sut, ref_tail, tail, seen)?;
                 Ok(cons_cell(head_ty, tail_ty))
             }
-            NTy::Core { payload, coil } => {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => {
                 let payload = payload.clone();
-                let coil = coil.clone();
+                let garb = garb.clone();
+                let context = context.clone();
+                let rest = rest.clone();
                 let head_ty = self.gain_skin_inner(sut.clone(), payload, head, seen)?;
                 if matches!(&*head_ty, NTy::Void) {
                     return Ok(cons_void());
@@ -9586,7 +9645,7 @@ impl<'a> Ut<'a> {
                 // (`[%cell head %noun]`).  More specific tail skins refine the core as an
                 // ordinary cell and must not leave the arm namespace available.
                 if matches!(tail, Skin::Base(BaseType::NounExpr)) {
-                    Ok(cons_core(head_ty, coil))
+                    Ok(cons_core(head_ty, garb, context, rest))
                 } else {
                     let noun = cons_noun();
                     let tail_ty = self.gain_skin_inner(sut, noun, tail, seen)?;
@@ -9863,16 +9922,23 @@ impl<'a> Ut<'a> {
                 let fork = self.fork_from_options(opts)?;
                 native_of(fork, &self.slab.noun_space())
             }
-            NTy::Core { payload, coil } => {
+            NTy::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => {
                 let payload = payload.clone();
-                let coil = coil.clone();
+                let garb = garb.clone();
+                let context = context.clone();
+                let rest = rest.clone();
                 let head_ty = self.lose_skin_inner(sut.clone(), payload, head, seen)?;
                 if matches!(&*head_ty, NTy::Void) {
                     return Ok(cons_void());
                 }
                 // hoon-138 `ar:lose` uses the same core-vs-cell split as `ar:gain` here.
                 if matches!(tail, Skin::Base(BaseType::NounExpr)) {
-                    Ok(cons_core(head_ty, coil))
+                    Ok(cons_core(head_ty, garb, context, rest))
                 } else {
                     let noun = cons_noun();
                     let tail_ty = self.lose_skin_inner(sut, noun, tail, seen)?;
@@ -10607,14 +10673,14 @@ impl<'a> Ut<'a> {
                     let child = if cap == 2 { head.clone() } else { tail.clone() };
                     go(ut, child, way, mas, seen_holds)
                 }
-                NTy::Core { payload, coil } => {
+                NTy::Core { payload, garb, .. } => {
                     let (cap, mas) = axis_cap_mas(axis)?;
                     if cap != 3 {
                         return Ok(cons_noun());
                     }
                     let payload = payload.clone();
-                    let coil_noun = live_leaf_to_noun(coil, ut.slab);
-                    let (garb, _context, _rest) = coil_parts(coil_noun, &ut.slab.noun_space())?;
+                    // garb is tiny; the context (deepening subject) is not needed here.
+                    let garb = live_leaf_to_noun(garb, ut.slab);
                     let vair = garb_vair(garb, &ut.slab.noun_space())?;
                     let (sam, con) = peel(way, vair);
                     let tow = if mas == 1 { 1 } else { axis_cap_mas(mas)?.0 };
@@ -11275,25 +11341,35 @@ impl<'a> Ut<'a> {
         hud: Poly,
         tomes: &HashMap<String, Tome>,
     ) -> Result<(NRc<NTy>, NRc<NTy>)> {
-        // The core payload (sut/dox) stays native (the win); the coil is built
-        // from LEAF parts (all noun helpers). core_context_from_payload needs a
-        // NOUN payload, so lower sut/dox; build the native core via ty_core_n.1.
+        // PHASE 2: the core payload AND context (sut/dox) are both SHARED native
+        // Rc<Type> — never lowered to a noun. Only the tiny garb + bounded rest are
+        // built as noun leaves; cons_core mirrors ty_core's void-collapse.
         let tomes_map = self.tomes_map_from_ast(tomes)?;
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let dox_noun = live_to_noun(&dox, self.slab);
         // Construct yet = core(sut, [nym hud gold], sut, laze, dom)
         let garb = self.garb_from_parts(nym, hud, Vair::Gold);
-        let context_yet = self.core_context_from_payload(sut_noun)?;
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
-        let coil_yet = coil_from_parts(self.slab, garb, context_yet, rest);
-        let yet = ty_core_n(self.slab, (sut_noun, sut), coil_yet).1;
+        let yet = {
+            let space = self.slab.noun_space();
+            cons_core(
+                sut.clone(),
+                NLeaf::from_noun(garb, &space),
+                sut.clone(),
+                NLeaf::from_noun(rest, &space),
+            )
+        };
 
         // Construct hum = core(dox, [nym hud gold], dox, laze, dom)
         let garb_hum = self.garb_from_parts(nym, hud, Vair::Gold);
-        let context_hum = self.core_context_from_payload(dox_noun)?;
-        let coil_hum = coil_from_parts(self.slab, garb_hum, context_hum, rest);
-        let hum = ty_core_n(self.slab, (dox_noun, dox), coil_hum).1;
+        let hum = {
+            let space = self.slab.noun_space();
+            cons_core(
+                dox.clone(),
+                NLeaf::from_noun(garb_hum, &space),
+                dox.clone(),
+                NLeaf::from_noun(rest, &space),
+            )
+        };
 
         // Validate arms: balk(sut=yet) hum hud dom
         self.mull_balk(yet.clone(), hum.clone(), hud, tomes)?;
@@ -12826,14 +12902,23 @@ fn ty_hold_n(slab: &mut NounSlab, inner: (Noun, NRc<NTy>), hoon: Noun) -> (Noun,
 }
 
 #[allow(dead_code)]
-fn ty_core_n(slab: &mut NounSlab, payload: (Noun, NRc<NTy>), coil: Noun) -> (Noun, NRc<NTy>) {
+fn ty_core_n(
+    slab: &mut NounSlab,
+    payload: (Noun, NRc<NTy>),
+    garb: Noun,
+    context: (Noun, NRc<NTy>),
+    rest: Noun,
+) -> (Noun, NRc<NTy>) {
+    let coil = coil_from_parts(slab, garb, context.0, rest);
     let noun = ty_core(slab, payload.0, coil);
     let kind = type_tag_kind(noun, &slab.noun_space());
     let native = match kind {
         Ok(TypeTagKind::Void) => live_intern(NTy::Void),
         _ => live_intern(NTy::Core {
             payload: payload.1,
-            coil: NLeaf::from_noun(coil, &slab.noun_space()),
+            garb: NLeaf::from_noun(garb, &slab.noun_space()),
+            context: context.1,
+            rest: NLeaf::from_noun(rest, &slab.noun_space()),
         }),
     };
     (noun, native)
@@ -12929,14 +13014,13 @@ mod native_ctor_tests {
 
         // core non-collapse
         let payload2 = ty_atom_n(&mut slab, "ud", None);
-        let ctx = ty_noun_n(&mut slab).0;
-        let coil = coil_from_parts(&mut slab, D(0), ctx, D(0));
-        let (n, t) = ty_core_n(&mut slab, payload2, coil);
+        let ctx = ty_noun_n(&mut slab);
+        let (n, t) = ty_core_n(&mut slab, payload2, D(0), ctx, D(0));
         check(&slab, n, &t);
         // core(void, _) -> void
         let pv2 = ty_void_n(&mut slab);
-        let coil2 = coil_from_parts(&mut slab, D(0), D(0), D(0));
-        let (n, t) = ty_core_n(&mut slab, pv2, coil2);
+        let ctx2 = ty_noun_n(&mut slab);
+        let (n, t) = ty_core_n(&mut slab, pv2, D(0), ctx2, D(0));
         check(&slab, n, &t);
         assert!(matches!(&*t, NTy::Void));
 

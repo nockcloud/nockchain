@@ -80,9 +80,14 @@ pub fn intern_type_noun(
         )
     } else if tag.eq_bytes(b"core") {
         let (payload, coil) = pair(tail, space)?;
+        // coil = [garb [context rest]]
+        let (garb, coil_tail) = pair(coil, space)?;
+        let (context, rest) = pair(coil_tail, space)?;
         Type::Core {
             payload: intern_type_noun(table, memo, payload, space)?,
-            coil: Leaf::from_noun(coil, space),
+            garb: Leaf::from_noun(garb, space),
+            context: intern_type_noun(table, memo, context, space)?,
+            rest: Leaf::from_noun(rest, space),
         }
     } else if tag.eq_bytes(b"face") {
         let (tool, inner) = pair(tail, space)?;
@@ -538,11 +543,18 @@ pub fn cons_noun() -> Rc<Type> {
 }
 
 /// Collapse-aware native `%core`: `core(void,_)` -> void (mirrors ty_core_n).
-pub fn cons_core(payload: Rc<Type>, coil: Leaf) -> Rc<Type> {
+/// The coil is carried decomposed: tiny `garb`/bounded `rest` as leaves and the
+/// `context` (deepening subject) as a SHARED native `Rc<Type>`.
+pub fn cons_core(payload: Rc<Type>, garb: Leaf, context: Rc<Type>, rest: Leaf) -> Rc<Type> {
     if matches!(&*payload, Type::Void) {
         return live_intern(Type::Void);
     }
-    live_intern(Type::Core { payload, coil })
+    live_intern(Type::Core {
+        payload,
+        garb,
+        context,
+        rest,
+    })
 }
 
 /// Collapse-aware native `%face`: `face(_,void)` -> void (mirrors ty_face_tool_n).
@@ -686,9 +698,16 @@ impl TypeTable {
                 bits: bits.clone(),
             },
             Type::Cell(h, tl) => Type::Cell(self.intern(h), self.intern(tl)),
-            Type::Core { payload, coil } => Type::Core {
+            Type::Core {
+                payload,
+                garb,
+                context,
+                rest,
+            } => Type::Core {
                 payload: self.intern(payload),
-                coil: coil.clone(),
+                garb: garb.clone(),
+                context: self.intern(context),
+                rest: rest.clone(),
             },
             Type::Face { tool, inner } => Type::Face {
                 tool: tool.clone(),
@@ -748,9 +767,16 @@ fn node_hash(t: &Type) -> u64 {
             p(a, &mut h);
             p(b, &mut h);
         }
-        Type::Core { payload, coil } => {
+        Type::Core {
+            payload,
+            garb,
+            context,
+            rest,
+        } => {
             p(payload, &mut h);
-            coil.hash(&mut h);
+            garb.hash(&mut h);
+            p(context, &mut h);
+            rest.hash(&mut h);
         }
         Type::Face { tool, inner } => {
             tool.hash(&mut h);
@@ -776,9 +802,20 @@ fn node_eq(a: &Type, b: &Type) -> bool {
         (Void, Void) | (Noun, Noun) => true,
         (Atom { aura: a1, bits: b1 }, Atom { aura: a2, bits: b2 }) => a1 == a2 && b1 == b2,
         (Cell(h1, t1), Cell(h2, t2)) => Rc::ptr_eq(h1, h2) && Rc::ptr_eq(t1, t2),
-        (Core { payload: p1, coil: c1 }, Core { payload: p2, coil: c2 }) => {
-            Rc::ptr_eq(p1, p2) && c1 == c2
-        }
+        (
+            Core {
+                payload: p1,
+                garb: g1,
+                context: ctx1,
+                rest: r1,
+            },
+            Core {
+                payload: p2,
+                garb: g2,
+                context: ctx2,
+                rest: r2,
+            },
+        ) => Rc::ptr_eq(p1, p2) && g1 == g2 && Rc::ptr_eq(ctx1, ctx2) && r1 == r2,
         (Face { tool: t1, inner: i1 }, Face { tool: t2, inner: i2 }) => {
             t1 == t2 && Rc::ptr_eq(i1, i2)
         }
