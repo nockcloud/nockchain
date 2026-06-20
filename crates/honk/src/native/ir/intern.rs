@@ -478,6 +478,19 @@ pub fn live_enabled() -> bool {
     }
 }
 
+/// Invalidate the per-compile noun-valued memos at a FRAME-ARENA pop. Their KEYS
+/// are interned `Rc`/`Arc` pointers (which persist for the whole compile — the
+/// intern table holds them), but their VALUES are nouns allocated in the
+/// just-reclaimed arm frame, so they would dangle ("unknown tag" on the next
+/// decode). The native intern table itself (Rc nodes, heap) and NEST_CACHE (bool
+/// values) are frame-independent and MUST persist across the pop. Called from
+/// `Ut::invalidate_frame_caches` so the flip's lowering memos honor the same
+/// per-arm-frame lifetime as the Ut-side scratch caches.
+pub fn live_invalidate_frame() {
+    TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
+    LEAF_MEMO.with(|m| m.borrow_mut().clear());
+}
+
 /// Reset the live table (call at the start of each top-level compile so stale
 /// noun pointers from a prior compile can't alias). Unconditional: the native
 /// construction helpers (`live_intern`/`native_of`) use the table regardless of
@@ -507,6 +520,13 @@ pub fn live_to_noun(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
         return noun;
     }
     let noun = native.to_noun(dst);
+    // Frame-arena safety: this memo is compile-lifetime, but `to_noun`
+    // materialized into the current (possibly per-arm) frame. Relocate the result
+    // to the base region so the memo entry survives frame pops — no dangling, and
+    // (crucially) no per-pop re-lowering. `copy_to_base` is a no-op when no frame
+    // is active (default path), and shares senior base nodes (so the memoized
+    // noun DAG stays bounded, O(distinct natives)).
+    let noun = unsafe { dst.copy_to_base(noun) };
     TO_NOUN_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
     noun
 }
@@ -600,6 +620,9 @@ pub fn live_leaf_to_noun(leaf: &Leaf, dst: &mut NounSlab) -> Noun {
                 return noun;
             }
             let noun = leaf.to_noun(dst);
+            // Relocate to base so the compile-lifetime memo survives frame pops
+            // (see live_to_noun). No-op when no frame is active.
+            let noun = unsafe { dst.copy_to_base(noun) };
             LEAF_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
             noun
         }

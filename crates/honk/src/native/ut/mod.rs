@@ -7546,6 +7546,10 @@ impl<'a> Ut<'a> {
     /// key-limit eviction already relies on. Whole-compile-lifetime stores are
     /// NOT cleared here; their nouns are copied to the base region at insert.
     fn invalidate_frame_caches(&mut self) {
+        // Native-types flip: the to-noun / leaf-to-noun memos are now
+        // base-resident (live_to_noun/live_leaf_to_noun copy_to_base their
+        // result), so they survive frame pops WITHOUT dangling and WITHOUT
+        // per-arm re-lowering — no invalidation needed here.
         self.boundary_memo.clear();
         self.lookup_memo.clear();
         self.hold_memo.clear();
