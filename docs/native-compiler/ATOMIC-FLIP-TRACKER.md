@@ -57,6 +57,30 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
+## PERF DIAGNOSTIC LOG (2026-06-20) — Phase 1 + Phase 2 done; chasing the dumb O(N^2)
+
+Phase 1 (native skeleton) + Phase 2 (native coil context) are committed +
+byte-parity-exact (shadow_gate PASS, compiler_mint 69/0, lib 122/0/1 at every
+step). The dumb kernel compile is still slow (>200s timeout). Profiling-driven
+fixes applied (each removed its profiled hotspot but total time stayed ~198s — the
+classic pervasive-O(N^2) / can't-see-under-the-timeout signature):
+  - C-final.1b/4a: re-key mint/core_mint/mull/fuse/crop/fish caches native.
+  - C-final.4b: thread native core through the arm-battery (no per-arm native_of).
+  - Phase 2: Core carries context as shared Rc (no per-core context jam).
+  - Phase 2 tail: play_* helpers return native (drop play_to_noun/pb round-trip);
+    bran_canonical_semi native (drop repo_noun + blow_ktsg's live_to_noun(&sut)).
+KEY DATA: compiling a tiny input with `--prelude hoon.hoon` takes ~1.3s (the
+prelude loads from embedded cold-state, NOT recompiled) — so the O(N^2) is in
+`outer.hoon` (the dumbnet kernel) + its imports (ztd/...), NOT the hoon.hoon
+prelude. The time has been STABLE at ~198s across all fixes (each capped at the
+200s timeout, so the true time was never observed). NEXT: a 900s completion run
+(in flight) for the REAL time + peak RSS + byte-parity, and the pre-flip
+(e6e653e2) baseline, to determine whether this is a flip regression or a
+pre-existing slow/large kernel compile — and whether the MEMORY (the original OOM
+goal) is bounded even if time is not yet competitive. Until those numbers land, do
+not conclude. The architectural migration (native types end-to-end) IS done; the
+open question is purely the kernel-compile perf profile.
+
 ## CURRENT STATUS (2026-06-20) — correctness COMPLETE; perf tail remaining
 
 The functional migration is DONE: mint/play + EVERY type consumer (repo/peek/
