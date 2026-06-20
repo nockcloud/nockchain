@@ -206,6 +206,28 @@ std::thread_local! {
     static MULL_CACHE: std::cell::RefCell<
         HashMap<(usize, usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Rc<Type>)>,
     > = std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `fuse`, keyed on the interned `Rc`
+    /// pointers of (sut, ref) plus the semantic fields the old noun key carried
+    /// verbatim (vet, fan). The TYPE components (sut/ref) are now ptr-identity
+    /// instead of mug, so the deepening subject is never lowered to a noun just to
+    /// build the cache key. VALUE is the native result type `Rc<Type>`.
+    /// Per-compile / `live_reset` lifetime contract (same as `NEST_CACHE`).
+    static FUSE_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), Rc<Type>>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `crop`, keyed identically to
+    /// `FUSE_CACHE` ((sut_ptr, ref_ptr, vet, fan)). VALUE is the native result
+    /// type `Rc<Type>`. Per-compile / `live_reset` lifetime contract.
+    static CROP_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), Rc<Type>>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// Per-compile boundary cache for native `fish`
+    /// (`type_test_formula_on_axis`), keyed on the interned `Rc` pointer of the
+    /// TYPE (sut) plus the semantic fields the old noun key carried verbatim
+    /// (axis, vet, fan). The deepening subject is never lowered to a noun for the
+    /// key. VALUE is the NOCK FORMULA `Noun` (fish returns a formula, not a type);
+    /// the formula lives in the one compile slab, and this per-compile cache is
+    /// cleared by `live_reset`, so the stored `Noun` cannot outlive its slab.
+    static FISH_CACHE: std::cell::RefCell<HashMap<(usize, u64, u8, u64), Noun>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Look up a native `core_mint` result by interned (sut, gol) pointers + the
@@ -391,6 +413,52 @@ pub fn nest_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, resu
     });
 }
 
+/// Look up a native `fuse` result by interned (sut, ref) pointers + (vet, fan).
+/// Returns the native result type directly — no `native_of`.
+pub fn fuse_cache_lookup(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64) -> Option<Rc<Type>> {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    FUSE_CACHE.with(|m| m.borrow().get(&key).cloned())
+}
+
+/// Store a native `fuse` result by interned (sut, ref) pointers + (vet, fan).
+pub fn fuse_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: Rc<Type>) {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    FUSE_CACHE.with(|m| {
+        m.borrow_mut().insert(key, result);
+    });
+}
+
+/// Look up a native `crop` result by interned (sut, ref) pointers + (vet, fan).
+/// Returns the native result type directly — no `native_of`.
+pub fn crop_cache_lookup(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64) -> Option<Rc<Type>> {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    CROP_CACHE.with(|m| m.borrow().get(&key).cloned())
+}
+
+/// Store a native `crop` result by interned (sut, ref) pointers + (vet, fan).
+pub fn crop_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: Rc<Type>) {
+    let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
+    CROP_CACHE.with(|m| {
+        m.borrow_mut().insert(key, result);
+    });
+}
+
+/// Look up a native `fish` result by interned (sut) pointer + (axis, vet, fan).
+/// Returns the cached NOCK FORMULA `Noun` directly.
+pub fn fish_cache_lookup(sut: &Rc<Type>, axis: u64, vet: u8, fan: u64) -> Option<Noun> {
+    let key = (Rc::as_ptr(sut) as usize, axis, vet, fan);
+    FISH_CACHE.with(|m| m.borrow().get(&key).copied())
+}
+
+/// Store a native `fish` result (formula `Noun`) by interned (sut) pointer +
+/// (axis, vet, fan).
+pub fn fish_cache_store(sut: &Rc<Type>, axis: u64, vet: u8, fan: u64, result: Noun) {
+    let key = (Rc::as_ptr(sut) as usize, axis, vet, fan);
+    FISH_CACHE.with(|m| {
+        m.borrow_mut().insert(key, result);
+    });
+}
+
 /// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
 pub fn live_enabled() -> bool {
     use std::sync::atomic::Ordering;
@@ -417,6 +485,9 @@ pub fn live_reset() {
     CORE_MINT_CACHE.with(|m| m.borrow_mut().clear());
     MINT_CACHE.with(|m| m.borrow_mut().clear());
     MULL_CACHE.with(|m| m.borrow_mut().clear());
+    FUSE_CACHE.with(|m| m.borrow_mut().clear());
+    CROP_CACHE.with(|m| m.borrow_mut().clear());
+    FISH_CACHE.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to

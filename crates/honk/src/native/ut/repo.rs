@@ -64,7 +64,13 @@ impl<'a> Ut<'a> {
         self.with_active_rest_leg_ids(&[leg_id], body)
     }
 
-    pub(super) fn rest_inner(&mut self, legs: &[(Noun, Noun)]) -> Result<Noun> {
+    /// C-final.4: `rest_inner` now takes each leg's inner subject as a NATIVE
+    /// type (`NRc<NTy>`) and threads it straight to `play` (which takes a native
+    /// subject since C-final.2). This eliminates the previous
+    /// `subject -> live_to_noun -> native_of -> play` round-trip on the %hold
+    /// resolution path. The fork is still built on the noun path (RT-07
+    /// mug-ordering) and lifted to native by the caller (`repo_hold`).
+    pub(super) fn rest_inner(&mut self, legs: &[(NRc<NTy>, Noun)]) -> Result<Noun> {
         let mut played = Vec::with_capacity(legs.len());
         for (inner, hoon_noun) in legs {
             let space = self.slab.noun_space();
@@ -75,12 +81,7 @@ impl<'a> Ut<'a> {
                     "native rest: hold ast missing tag={tag} decode_err={err}"
                 ))
             })?;
-            // play takes a native subject now (C-final.2). The %hold resolution
-            // (repo_hold/rest) still carries each leg's inner subject as a NOUN
-            // leaf, so bridge it via native_of here. This lowering is confined to
-            // the hold path (NOT the main subject-deepening play chain).
-            let inner_native = native_of(*inner, &self.slab.noun_space())?;
-            played.push(self.play(inner_native, hoon.as_ref())?.to_noun(self.slab));
+            played.push(self.play(inner.clone(), hoon.as_ref())?.to_noun(self.slab));
         }
         self.fork_from_options(played)
     }
@@ -90,11 +91,18 @@ impl<'a> Ut<'a> {
     // HOON138_NOTE:native direct helper for canonical `++rest`; cache policy still wraps this path
     pub(super) fn rest(&mut self, sut: Noun, legs: &[(Noun, Noun)]) -> Result<Noun> {
         let legs_noun = self.rest_legs_noun(legs);
+        // C-final.4: rest_inner takes native inner subjects; the test path carries
+        // noun legs, so lift each inner to native here (mirrors the old internal
+        // native_of in rest_inner exactly).
+        let mut native_legs = Vec::with_capacity(legs.len());
+        for (inner, hoon_noun) in legs {
+            native_legs.push((native_of(*inner, &self.slab.noun_space())?, *hoon_noun));
+        }
         self.with_rest_legs(legs, |ut| {
             if let Some(cached) = ut.rest_boundary_lookup(sut, legs_noun)? {
                 return Ok(cached);
             }
-            let result = ut.rest_inner(legs)?;
+            let result = ut.rest_inner(&native_legs)?;
             ut.rest_boundary_store(sut, legs_noun, result)?;
             Ok(result)
         })
@@ -113,18 +121,29 @@ impl<'a> Ut<'a> {
         self.with_rest_legs(&leg, body)
     }
 
-    fn repo_hold(&mut self, typ: Noun, inner: Noun, hoon_noun: Noun) -> Result<NRc<NTy>> {
-        let legs = [(inner, hoon_noun)];
+    fn repo_hold(
+        &mut self,
+        typ: Noun,
+        subject: NRc<NTy>,
+        inner: Noun,
+        hoon_noun: Noun,
+    ) -> Result<NRc<NTy>> {
+        // C-final.4: `subject` is the leg's NATIVE inner type (the deepening
+        // subject), threaded straight to `play` via `rest_inner`. The noun `inner`
+        // (= live_to_noun(subject)) is retained ONLY for the still-noun-keyed
+        // leg_id intern + rest_boundary cache (re-key deferred). The noun
+        // `legs` for the cache stays (inner_noun, hoon_noun).
+        let native_legs = [(subject, hoon_noun)];
         let leg_id = self.hold_repo_fan_leg_id_for_hold_type(typ, inner, hoon_noun)?;
-        let legs_noun = self.rest_legs_noun(&legs);
-        // ATOMIC FLIP (consumer): repo_hold returns native. Its rest_inner/play
-        // back-edge + the rest_boundary cache stay noun-keyed (Phase 1); the noun
-        // result is lifted to native at the boundary.
+        let legs_noun = self.rest_legs_noun(&[(inner, hoon_noun)]);
+        // ATOMIC FLIP (consumer): repo_hold returns native. The rest_boundary
+        // cache stays noun-keyed (Phase 1); the noun fork result (RT-07 ordering)
+        // is lifted to native at the boundary.
         let result_noun = self.with_rest_leg_id(leg_id, |ut| {
             if let Some(cached) = ut.rest_boundary_lookup(typ, legs_noun)? {
                 return Ok(cached);
             }
-            let result = ut.rest_inner(&legs)?;
+            let result = ut.rest_inner(&native_legs)?;
             ut.rest_boundary_store(typ, legs_noun, result)?;
             Ok(result)
         })?;
@@ -195,10 +214,14 @@ impl<'a> Ut<'a> {
             NTy::Hold { subject, gene } => {
                 let subject = subject.clone();
                 let gene = gene.clone();
+                // `inner`/`typ_noun` lowered ONLY for the still-noun-keyed leg_id +
+                // rest_boundary cache key (re-key deferred); the native `subject`
+                // threads straight to `play` (C-final.4), dropping the prior
+                // subject -> noun -> native round-trip before play.
                 let inner = live_to_noun(&subject, self.slab);
                 let hoon = live_leaf_to_noun(&gene, self.slab);
                 let typ_noun = live_to_noun(&typ, self.slab);
-                self.repo_hold(typ_noun, inner, hoon)
+                self.repo_hold(typ_noun, subject, inner, hoon)
             }
             NTy::Noun => {
                 let atom = ty_atom(self.slab, "$", None);

@@ -3213,89 +3213,73 @@ impl<'a> Ut<'a> {
         )
     }
 
-    fn crop_boundary_lookup(&mut self, sut: Noun, ref_: Noun) -> Result<Option<Noun>> {
-        let key = self.unary_type_boundary_key(sut, ref_);
-        let Some(bucket) = self.boundary_memo.crop.get(&key) else {
-            return Ok(None);
-        };
-        let sut_raw = unsafe { sut.as_raw() };
-        let ref_raw = unsafe { ref_.as_raw() };
-        for entry in bucket.iter().rev() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let ref_match = unsafe { entry.ref_.as_raw() } == ref_raw
-                || noun_eq(entry.ref_, ref_, &self.slab.noun_space())?;
-            if sut_match && ref_match {
-                return Ok(Some(entry.result));
-            }
-        }
-        Ok(None)
+    /// C-final.4: native-re-keyed `crop` boundary cache. TYPE components
+    /// (sut/ref) keyed on interned `Rc` pointer identity; the semantic fields
+    /// (vet, fan) are carried VERBATIM from the old `unary_type_boundary_key`.
+    /// VALUE is the native result type. No `live_to_noun` on store / `native_of`
+    /// on hit.
+    fn crop_boundary_lookup(
+        &mut self,
+        sut: &NRc<NTy>,
+        ref_: &NRc<NTy>,
+    ) -> Result<Option<NRc<NTy>>> {
+        let semantic = self.semantic_context_key();
+        Ok(native_crop_cache_lookup(
+            sut,
+            ref_,
+            semantic.vet_key,
+            semantic.fan_context_key,
+        ))
     }
 
-    fn crop_boundary_store(&mut self, sut: Noun, ref_: Noun, result: Noun) -> Result<()> {
-        let key = self.unary_type_boundary_key(sut, ref_);
-        let bucket = self
-            .boundary_memo
-            .crop
-            .ensure_key(key, Self::TYPE_BINARY_BOUNDARY_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        let ref_raw = unsafe { ref_.as_raw() };
-        for entry in bucket.iter() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let ref_match = unsafe { entry.ref_.as_raw() } == ref_raw
-                || noun_eq(entry.ref_, ref_, &self.slab.noun_space())?;
-            if sut_match && ref_match {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::TYPE_BINARY_BOUNDARY_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        bucket.push_back(UnaryTypeBoundaryEntry { sut, ref_, result });
+    fn crop_boundary_store(
+        &mut self,
+        sut: &NRc<NTy>,
+        ref_: &NRc<NTy>,
+        result: NRc<NTy>,
+    ) -> Result<()> {
+        let semantic = self.semantic_context_key();
+        native_crop_cache_store(
+            sut,
+            ref_,
+            semantic.vet_key,
+            semantic.fan_context_key,
+            result,
+        );
         Ok(())
     }
 
-    fn fuse_boundary_lookup(&mut self, sut: Noun, ref_: Noun) -> Result<Option<Noun>> {
-        let key = self.unary_type_boundary_key(sut, ref_);
-        let Some(bucket) = self.boundary_memo.fuse.get(&key) else {
-            return Ok(None);
-        };
-        let sut_raw = unsafe { sut.as_raw() };
-        let ref_raw = unsafe { ref_.as_raw() };
-        for entry in bucket.iter().rev() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let ref_match = unsafe { entry.ref_.as_raw() } == ref_raw
-                || noun_eq(entry.ref_, ref_, &self.slab.noun_space())?;
-            if sut_match && ref_match {
-                return Ok(Some(entry.result));
-            }
-        }
-        Ok(None)
+    /// C-final.4: native-re-keyed `fuse` boundary cache. TYPE components
+    /// (sut/ref) keyed on interned `Rc` pointer identity; the semantic fields
+    /// (vet, fan) carried VERBATIM from the old `unary_type_boundary_key`.
+    fn fuse_boundary_lookup(
+        &mut self,
+        sut: &NRc<NTy>,
+        ref_: &NRc<NTy>,
+    ) -> Result<Option<NRc<NTy>>> {
+        let semantic = self.semantic_context_key();
+        Ok(native_fuse_cache_lookup(
+            sut,
+            ref_,
+            semantic.vet_key,
+            semantic.fan_context_key,
+        ))
     }
 
-    fn fuse_boundary_store(&mut self, sut: Noun, ref_: Noun, result: Noun) -> Result<()> {
-        let key = self.unary_type_boundary_key(sut, ref_);
-        let bucket = self
-            .boundary_memo
-            .fuse
-            .ensure_key(key, Self::TYPE_BINARY_BOUNDARY_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        let ref_raw = unsafe { ref_.as_raw() };
-        for entry in bucket.iter() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            let ref_match = unsafe { entry.ref_.as_raw() } == ref_raw
-                || noun_eq(entry.ref_, ref_, &self.slab.noun_space())?;
-            if sut_match && ref_match {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::TYPE_BINARY_BOUNDARY_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        bucket.push_back(UnaryTypeBoundaryEntry { sut, ref_, result });
+    fn fuse_boundary_store(
+        &mut self,
+        sut: &NRc<NTy>,
+        ref_: &NRc<NTy>,
+        result: NRc<NTy>,
+    ) -> Result<()> {
+        let semantic = self.semantic_context_key();
+        native_fuse_cache_store(
+            sut,
+            ref_,
+            semantic.vet_key,
+            semantic.fan_context_key,
+            result,
+        );
         Ok(())
     }
 
@@ -3427,52 +3411,29 @@ impl<'a> Ut<'a> {
         Ok(())
     }
 
-    fn fish_boundary_lookup(&mut self, sut: Noun, axis: u64) -> Result<Option<Noun>> {
+    /// C-final.4: native-re-keyed `fish` boundary cache. The TYPE component (sut)
+    /// is keyed on interned `Rc` pointer identity; (axis, vet, fan) carried
+    /// VERBATIM from the old key. VALUE is the NOCK FORMULA (noun) — formula stays
+    /// a noun, no `live_to_noun` of the deepening type for the key.
+    fn fish_boundary_lookup(&mut self, sut: &NRc<NTy>, axis: u64) -> Result<Option<Noun>> {
         let semantic = self.semantic_context_key();
-        let key = (
-            self.noun_mug_cached(sut),
+        Ok(native_fish_cache_lookup(
+            sut,
             axis,
             semantic.vet_key,
             semantic.fan_context_key,
-        );
-        let Some(bucket) = self.boundary_memo.fish.get(&key) else {
-            return Ok(None);
-        };
-        let sut_raw = unsafe { sut.as_raw() };
-        for entry in bucket.iter().rev() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            if sut_match && entry.axis == axis {
-                return Ok(Some(entry.result));
-            }
-        }
-        Ok(None)
+        ))
     }
 
-    fn fish_boundary_store(&mut self, sut: Noun, axis: u64, result: Noun) -> Result<()> {
+    fn fish_boundary_store(&mut self, sut: &NRc<NTy>, axis: u64, result: Noun) -> Result<()> {
         let semantic = self.semantic_context_key();
-        let key = (
-            self.noun_mug_cached(sut),
+        native_fish_cache_store(
+            sut,
             axis,
             semantic.vet_key,
             semantic.fan_context_key,
+            result,
         );
-        let bucket = self
-            .boundary_memo
-            .fish
-            .ensure_key(key, Self::FISH_CACHE_KEY_LIMIT);
-        let sut_raw = unsafe { sut.as_raw() };
-        for entry in bucket.iter() {
-            let sut_match = unsafe { entry.sut.as_raw() } == sut_raw
-                || noun_eq(entry.sut, sut, &self.slab.noun_space())?;
-            if sut_match && entry.axis == axis {
-                return Ok(());
-            }
-        }
-        if bucket.len() >= Self::FISH_CACHE_BUCKET_LIMIT {
-            bucket.pop_front();
-        }
-        bucket.push_back(FishCacheEntry { sut, axis, result });
         Ok(())
     }
 
@@ -4698,16 +4659,16 @@ impl<'a> Ut<'a> {
 
     fn type_test_formula_on_axis(&mut self, typ: NRc<NTy>, axis: u64) -> Result<Noun> {
         // ATOMIC FLIP (consumer C7): fish reads the native type enum. The RETURN
-        // is a NOCK FORMULA (noun), not a type. The fish boundary cache stays
-        // noun/mug-keyed (lower typ once here) until C-final; deepening children
+        // is a NOCK FORMULA (noun), not a type. C-final.4: the fish boundary cache
+        // is native-re-keyed on the interned `Rc` pointer of `typ`, so the
+        // deepening subject is no longer lowered to a noun here. Deepening children
         // stay native; leaf-carried parts (atom value, coil via repo) lowered.
-        let typ_noun = live_to_noun(&typ, self.slab);
-        if let Some(cached) = self.fish_boundary_lookup(typ_noun, axis)? {
+        if let Some(cached) = self.fish_boundary_lookup(&typ, axis)? {
             return Ok(cached);
         }
         let mut seen_holds: Vec<NRc<NTy>> = Vec::new();
-        let result = self.type_test_formula_on_axis_inner(typ, axis, &mut seen_holds)?;
-        self.fish_boundary_store(typ_noun, axis, result)?;
+        let result = self.type_test_formula_on_axis_inner(typ.clone(), axis, &mut seen_holds)?;
+        self.fish_boundary_store(&typ, axis, result)?;
         Ok(result)
     }
 
@@ -9974,17 +9935,15 @@ impl<'a> Ut<'a> {
     }
 
     fn fuse(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<NRc<NTy>> {
-        // ATOMIC FLIP (consumer C4): native. fuse_boundary stays noun-keyed in
-        // Phase 1 (lowered via memoized live_to_noun); re-keyed native at C-final.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let ref_noun = live_to_noun(&ref_, self.slab);
-        if let Some(cached) = self.fuse_boundary_lookup(sut_noun, ref_noun)? {
-            return native_of(cached, &self.slab.noun_space());
+        // ATOMIC FLIP (consumer C4): native. C-final.4: the fuse boundary cache is
+        // native-re-keyed on the interned (sut, ref) `Rc` pointers, so the
+        // deepening subject is no longer lowered to a noun here.
+        if let Some(cached) = self.fuse_boundary_lookup(&sut, &ref_)? {
+            return Ok(cached);
         }
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
-        let result = self.fuse_inner(sut, ref_, &mut seen)?;
-        let result_noun = live_to_noun(&result, self.slab);
-        self.fuse_boundary_store(sut_noun, ref_noun, result_noun)?;
+        let result = self.fuse_inner(sut.clone(), ref_.clone(), &mut seen)?;
+        self.fuse_boundary_store(&sut, &ref_, result.clone())?;
         Ok(result)
     }
 
@@ -10068,9 +10027,9 @@ impl<'a> Ut<'a> {
         memo: &mut FastHashMap<(u64, u64, u8), bool>,
     ) -> Result<bool> {
         if NRc::ptr_eq(&sut, &ref_) {
-            let void = ty_void(self.slab);
-            let sut_noun = live_to_noun(&sut, self.slab);
-            return self.nest_noun(void, sut_noun);
+            // C-final.4: nest is native; call it directly on the deepening type
+            // instead of lowering to a noun for nest_noun.
+            return self.nest(cons_void(), sut.clone());
         }
         if matches!(&*ref_, NTy::Void) {
             return Ok(true);
@@ -10078,9 +10037,8 @@ impl<'a> Ut<'a> {
         match &*sut {
             NTy::Void => Ok(true),
             NTy::Noun => {
-                let void = ty_void(self.slab);
-                let ref_noun = live_to_noun(&ref_, self.slab);
-                self.nest_noun(void, ref_noun)
+                // C-final.4: native nest directly (no live_to_noun bridge).
+                self.nest(cons_void(), ref_.clone())
             }
             NTy::Atom { .. } | NTy::Cell(..) => self.miss_sint(sut, ref_, seen, memo),
             NTy::Core { .. } => {
@@ -10263,17 +10221,15 @@ impl<'a> Ut<'a> {
     }
 
     fn crop(&mut self, sut: NRc<NTy>, ref_: NRc<NTy>) -> Result<NRc<NTy>> {
-        // ATOMIC FLIP (consumer C5): native. crop_boundary stays noun-keyed
-        // (memoized live_to_noun) until C-final.
-        let sut_noun = live_to_noun(&sut, self.slab);
-        let ref_noun = live_to_noun(&ref_, self.slab);
-        if let Some(cached) = self.crop_boundary_lookup(sut_noun, ref_noun)? {
-            return native_of(cached, &self.slab.noun_space());
+        // ATOMIC FLIP (consumer C5): native. C-final.4: the crop boundary cache is
+        // native-re-keyed on the interned (sut, ref) `Rc` pointers, so the
+        // deepening subject is no longer lowered to a noun here.
+        if let Some(cached) = self.crop_boundary_lookup(&sut, &ref_)? {
+            return Ok(cached);
         }
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
-        let result = self.crop_inner(sut, ref_, &mut seen)?;
-        let result_noun = live_to_noun(&result, self.slab);
-        self.crop_boundary_store(sut_noun, ref_noun, result_noun)?;
+        let result = self.crop_inner(sut.clone(), ref_.clone(), &mut seen)?;
+        self.crop_boundary_store(&sut, &ref_, result.clone())?;
         Ok(result)
     }
 
@@ -12744,8 +12700,11 @@ use std::rc::Rc as NRc;
 use crate::native::ir::intern::{
     cons_cell, cons_core, cons_face, cons_hint, cons_noun, cons_void,
     core_mint_cache_lookup as native_core_mint_cache_lookup,
-    core_mint_cache_store as native_core_mint_cache_store, live_intern, live_leaf_to_noun,
-    live_to_noun, mint_cache_lookup as native_mint_cache_lookup,
+    core_mint_cache_store as native_core_mint_cache_store,
+    crop_cache_lookup as native_crop_cache_lookup, crop_cache_store as native_crop_cache_store,
+    fish_cache_lookup as native_fish_cache_lookup, fish_cache_store as native_fish_cache_store,
+    fuse_cache_lookup as native_fuse_cache_lookup, fuse_cache_store as native_fuse_cache_store,
+    live_intern, live_leaf_to_noun, live_to_noun, mint_cache_lookup as native_mint_cache_lookup,
     mint_cache_store as native_mint_cache_store, mull_cache_lookup as native_mull_cache_lookup,
     mull_cache_store as native_mull_cache_store, native_of, nest_cache_lookup, nest_cache_store,
 };
