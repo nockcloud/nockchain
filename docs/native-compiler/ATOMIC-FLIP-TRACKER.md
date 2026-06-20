@@ -57,6 +57,44 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 10. [ ] boundary: emit nouns only at output + typed-Dynock; delete noun ty_* ctors
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
+## CURRENT STATUS (2026-06-20) — correctness COMPLETE; perf tail remaining
+
+The functional migration is DONE: mint/play + EVERY type consumer (repo/peek/
+wrap_type/fuse/crop/miss/nest/mull/fish/find/take/fond/gain/lose/cool/chip) operate
+on native `Rc<Type>`. Committed + byte-parity-verified at each step (shadow_gate 4
+fixtures + compiler_mint 69/0 single-threaded semantic-parity incl metamorphic +
+strict-source + ket-variance + representative; full lib 122/0/1). Commits this
+push: C8 4327128, C7 cfce3f6b, C6+C9 066151ea (+ the live_reset keystone that
+fixed the entire cross-compile aliasing class — compiler_mint 12-15 failing -> 0),
+C-final.1a 6a29ffc7 (mint family native), 1b 346a8e39 (mint/core_mint/mull caches
+native-keyed), .2 62ec3778 (play sut native), .4a 4ed24dd4 (fuse/crop/fish caches
+native + repo/miss bridge drops).
+
+PERF WIN NOT YET REALIZED: the dumb kernel still compiles O(N^2) (>200s, still
+inside the prelude hoon.hoon at timeout). Profiling (sample 60s) attributes the
+residual to native_of/intern_type_noun (2795) + slab_mug (394), from the LAST
+noun-bridged hot paths that still round-trip the deepening hold expansion:
+  - repo.rs repo_hold / rest_inner: native_of(the hold-expansion fork RESULT) +
+    the repo Hold-arm still lowers subject/gene/typ via live_to_noun for the
+    noun-keyed leg_id intern + rest_boundary cache key. (rest_inner now threads
+    the native leg subject to play — 4a — but the result lift + cache keys remain.)
+  - wet.rs redo SCC (redo_dext/redo_sint/redo_done + redo_wet_payload): fully
+    noun-based, calls repo_noun/peek_noun/miss_noun/nest_noun -> native_of per call.
+  - rest/Hold caches (rest_boundary, repo_raw/hold_type/hold_repo) still noun/mug-
+    keyed -> lower the deepening subject for keys.
+REMAINING PERF PLAN (each: build + compiler_mint 69/0 + shadow_gate, then re-profile
++ dumb): (i) nativize the redo (wet) SCC (drop repo_noun/peek_noun/miss_noun/
+nest_noun -> native; thread native sut); (ii) nativize repo_hold/rest_inner fully
+(build the expansion fork without native_of'ing the deepening result; re-key the
+leg_id + rest_boundary on native identity); (iii) re-key rest/Hold caches native;
+(iv) THEN dumb byte-parity vs /tmp/dumb_preflip.jam (19873112 B) + perf (must drop
+well under the pre-flip baseline; NounSlab no longer grows monotonically).
+CLEANUP (after the win): delete the now-dead bridges (repo_noun/peek_noun/
+wrap_type_noun/fuse_noun/crop_noun/miss_noun/nest_noun/find_noun/fend_noun/
+feel_noun/gain_noun/lose_noun/cnts_base_port_noun/mull_noun + nest_mug_*) + the
+old noun boundary caches + the noun ty_* ctors/_n variants + SKELETON decoders
+(keep leaf decoders + live_leaf_to_noun = Phase-1 residue).
+
 ## STATE (update every turn)
 
 - Branch: feature branch (non-compiling intermediate accepted, but kept compiling
