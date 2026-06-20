@@ -70,10 +70,36 @@ C-final.1a 6a29ffc7 (mint family native), 1b 346a8e39 (mint/core_mint/mull cache
 native-keyed), .2 62ec3778 (play sut native), .4a 4ed24dd4 (fuse/crop/fish caches
 native + repo/miss bridge drops).
 
-PERF WIN NOT YET REALIZED: the dumb kernel still compiles O(N^2) (>200s, still
-inside the prelude hoon.hoon at timeout). Profiling (sample 60s) attributes the
-residual to native_of/intern_type_noun (2795) + slab_mug (394), from the LAST
-noun-bridged hot paths that still round-trip the deepening hold expansion:
+PERF WIN BLOCKED ON PHASE 2 (pivotal finding, 2026-06-20, proven by profiling):
+the dumb kernel compiles O(N^2) (>250s, still inside the prelude at timeout) and
+this is a Phase-1 REPRESENTATIONAL limit, NOT a remaining noun-bridge. ROOT CAUSE:
+`core_context_from_payload` returns the payload = THE DEEPENING SUBJECT, and the
+native `Type::Core { payload: Rc, coil: Leaf }` carries the coil (which contains
+that context) as a JAMMED Leaf. So every native Core construction
+(ty_core_n/cons_core -> Leaf::from_noun -> Jammer::jam) jams a FRESH COPY of the
+deepening subject per core -> O(N^2) jam time + O(N^2) bytes. Pre-flip the noun
+coil POINTED to the shared subject noun (no copy, O(1)); Phase-1's coil-as-Leaf
+UN-SHARES it. Profiling (sample 70s) confirms: self-time is dominated by jam/cue/
+copy_into/IntMap (the jammer), via ty_core_n->Leaf::from_noun->Jammer::jam and
+native_of->Type::from_noun->Leaf::from_noun; native_of itself is only ~5%. The
+cache re-keys (1b/4a) and the per-arm native_of removal (4b) were real cleanups
+but addressed the WRONG cost (~5%), so the dumb kernel is unchanged.
+CONSEQUENCE: Phase 1 is byte-parity-correct + kills the noun-rep bug class + makes
+the type SKELETON native (payload/cell/face/hint/hold-subject chains shared as Rc),
+but it is a PERF REGRESSION vs pre-flip for core-heavy code (the coil context is
+duplicated/jammed per core) and is NOT shippable as-is. THE WIN REQUIRES PHASE 2:
+re-architect `Type::Core` to carry the coil CONTEXT as a shared native `Rc<Type>`
+child (and garb/battery/tomes as leaves), so the deepening context is shared +
+hash-consed, never jammed. This also lets the intern table dedup across cores. Same
+treatment later for `Fork{set}` and `Hold{gene}` (Phase-2 leaf nativization, per
+the original migration plan §3.3). Phase 2 is a substantial project (Type enum +
+from_noun/to_noun + intern node_eq/hash + every coil consumer peek/nest_core/
+core_dox/fond/fire/coil_parts-callers + the constructors) — comparable to one
+consumer-flip phase. Until Phase 2, the branch is byte-correct but slower than
+master on core-heavy kernels; do NOT ship Phase 1 alone.
+
+(superseded) earlier perf plan — the noun-bridged paths below are NOT the
+dominant cost; left for reference:
   - repo.rs repo_hold / rest_inner: native_of(the hold-expansion fork RESULT) +
     the repo Hold-arm still lowers subject/gene/typ via live_to_noun for the
     noun-keyed leg_id intern + rest_boundary cache key. (rest_inner now threads
