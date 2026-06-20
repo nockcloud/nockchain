@@ -867,6 +867,7 @@ fn build_context_with_shared_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
+    ut.force_frame_arena = true; // frame-arena-default: reclaim per-arm scratch (bounds kernel-compile memory)
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();
     let mut eval_context = create_eval_context();
@@ -1002,6 +1003,7 @@ fn build_context_with_dynamic_wrapper_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
+    ut.force_frame_arena = true; // frame-arena-default: reclaim per-arm scratch (bounds kernel-compile memory)
     let mut eval_context = create_eval_context();
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();
