@@ -3,6 +3,43 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::sync::Arc;
 
+// TEMP perf instrumentation (HONK_STATS=1). Counts the recursive-type
+// elaboration hot path to distinguish depth from redundancy. Removed after the
+// RT-05 perf fix lands.
+#[derive(Default)]
+pub struct NativePerfStats {
+    pub mint_calls: u64,
+    pub mint_hits: u64,
+    pub repo_calls: u64,
+    pub fire_wet_calls: u64,
+    pub redo_calls: u64,
+    pub redo_max_depth: u64,
+    pub redo_depth: u64,
+    pub tonoun_calls: u64,
+    pub mint_depth: u64,
+}
+thread_local! {
+    pub static NATIVE_PERF: std::cell::RefCell<NativePerfStats> =
+        std::cell::RefCell::new(NativePerfStats::default());
+}
+#[inline]
+pub fn perf_on() -> bool {
+    std::env::var("HONK_STATS").map(|v| v == "1").unwrap_or(false)
+}
+pub fn perf_dump(tag: &str) {
+    if !perf_on() {
+        return;
+    }
+    NATIVE_PERF.with(|s| {
+        let s = s.borrow();
+        eprintln!(
+            "[HONK_STATS {tag}] mint={} (hits={}) repo={} fire_wet={} redo={} redo_max_depth={} tonoun={}",
+            s.mint_calls, s.mint_hits, s.repo_calls, s.fire_wet_calls, s.redo_calls,
+            s.redo_max_depth, s.tonoun_calls
+        );
+    });
+}
+
 use hatch::ast::hoon::{
     Alas, BaseType, Beer, Block, Chum, Coil, Cord, FaceType, Garb, Gate, Hoon, Knot, Limb, Mane,
     Manx, Marl, Mart, Marx, Nock, NockHint, Note, NounExpr, ParsedAtom, Path, Pint,
@@ -167,6 +204,12 @@ pub struct Ut<'a> {
     pub arm_epoch: u64,
     pub lazy_resolver_next_id: u64,
     pub lazy_resolvers: HashMap<u64, LazyResolverContext>,
+    // RT-05 canonical lazy-core identity: maps a recursive core's structural key
+    // (interned-sut ptr, tomes_sig, poly) to ONE canonical resolver id, so
+    // structurally-equal lazy cores intern to one `Rc` and every pointer-keyed
+    // recursion cut converges. Shares `lazy_resolvers`' whole-compile lifetime
+    // (never cleared by `clear_build_transients`).
+    pub lazy_resolver_canonical_ids: HashMap<(usize, u64, u8), u64>,
     // Hybrid oracle-sut parity compilation can opt into exact AST recovery from structurally equal
     // hoon nouns. Keep this disabled on the normal compiler path.
     pub exact_hoon_ast_lookup_enabled: bool,
@@ -1856,6 +1899,7 @@ impl<'a> Ut<'a> {
             arm_epoch: 0,
             lazy_resolver_next_id: 1,
             lazy_resolvers: HashMap::new(),
+            lazy_resolver_canonical_ids: HashMap::new(),
             exact_hoon_ast_lookup_enabled: false,
             hoon_identity_cache_raw: HashMap::new(),
             hoon_identity_cache_order: VecDeque::new(),
@@ -3490,10 +3534,27 @@ impl<'a> Ut<'a> {
         gol: NRc<NTy>,
         gen: &Hoon,
     ) -> Result<(NRc<NTy>, Noun)> {
-        match self.mint_inner(sut, gol, gen) {
+        let outer = if perf_on() {
+            NATIVE_PERF.with(|s| {
+                let mut s = s.borrow_mut();
+                let was = s.mint_depth == 0;
+                s.mint_depth += 1;
+                was
+            })
+        } else {
+            false
+        };
+        let r = match self.mint_inner(sut, gol, gen) {
             Ok(value) => Ok(value),
             Err(err) => Err(self.decorate_error(err)),
+        };
+        if perf_on() {
+            NATIVE_PERF.with(|s| s.borrow_mut().mint_depth -= 1);
+            if outer {
+                perf_dump("mint-top");
+            }
         }
+        r
     }
 
     /// Noun-bridged `mint` for not-yet-flipped callers (C-final.1a): lift sut/gol
@@ -3520,9 +3581,15 @@ impl<'a> Ut<'a> {
         // native-re-keyed on the interned (sut, gol) `Rc` pointers, so we no
         // longer lower sut/gol just to compute the cache key. C-final.2: play now
         // takes a native subject too, so mint no longer lowers sut for play.
+        if perf_on() {
+            NATIVE_PERF.with(|s| s.borrow_mut().mint_calls += 1);
+        }
         let cache_sig = Self::mint_cache_signature(gen);
         if let Some(gen_sig) = cache_sig {
             if let Some(cached) = self.mint_cache_lookup(&sut, &gol, gen_sig)? {
+                if perf_on() {
+                    NATIVE_PERF.with(|s| s.borrow_mut().mint_hits += 1);
+                }
                 return Ok(cached);
             }
         }
@@ -4925,6 +4992,36 @@ impl<'a> Ut<'a> {
         if self.lazy_resolver_next_id == 0 {
             self.lazy_resolver_next_id = 1;
         }
+        id
+    }
+
+    /// RT-05 canonical lazy-core identity: return ONE stable resolver id per
+    /// structurally-equal recursive core so `cons_core` interns their lazy forms to
+    /// a single `Rc` and every pointer-keyed recursion cut (mint_cache,
+    /// arm_goal_for_hoon_in_progress, fond hold_path, fish, bran) converges. The
+    /// lazy core's structural identity is exactly `(sut, garb, tomes_map)`, i.e.
+    /// `(Rc::as_ptr(sut), tomes_sig, poly)` — `garb = f(prefix, poly)` folds into
+    /// `tomes_sig` (which already xors `prefix_signature`), and the resolver this id
+    /// keys is fully determined by `(core_type, poly, arms-from-tomes)` (the lazy
+    /// callback goal is always `%noun`, `vet` is read at resolve time, and `gol` is
+    /// not captured). A fresh monotonic id per call made structurally-equal lazy
+    /// cores pointer-distinct, so the deepening subject churned and the cuts only
+    /// fired at the redo-gil backstop depth instead of the natural settling depth —
+    /// O(depth) redundant Type<->Noun boundary work per recursive type. The id is
+    /// transient (completed cores carry an id-free `[%full ~]` semi), so reusing it
+    /// never changes emitted bytes. `sut` is interned (held by the TypeTable for the
+    /// whole compile), so `Rc::as_ptr(sut)` is a stable structural key.
+    fn lazy_resolver_canonical_id(&mut self, sut: &NRc<NTy>, tomes_sig: u64, poly: Poly) -> u64 {
+        let poly_key = match poly {
+            Poly::Dry => 0u8,
+            Poly::Wet => 1u8,
+        };
+        let key = (NRc::as_ptr(sut) as usize, tomes_sig, poly_key);
+        if let Some(&id) = self.lazy_resolver_canonical_ids.get(&key) {
+            return id;
+        }
+        let id = self.lazy_resolver_new_id();
+        self.lazy_resolver_canonical_ids.insert(key, id);
         id
     }
 
@@ -6639,6 +6736,28 @@ impl<'a> Ut<'a> {
         self.cnts_base_port(sut_n, wing)
     }
 
+    /// CONTENT-keyed `native_of` for the recursive-type hot path (redo/repo/fire
+    /// rebuild structurally-equal nouns at fresh addresses every level). The
+    /// address-keyed decode memo misses on those, forcing a full re-walk + re-jam
+    /// of the Jammed leaves (fork treaps, batteries) — the dominant decode cost.
+    /// Here a fresh-but-equal noun reuses the prior interned `Rc` after one
+    /// `noun_eq` verify, skipping the decode entirely. Returns EXACTLY what
+    /// `native_of` would (the canonical interned `Rc`), so it is byte-exact; mug
+    /// collisions just fall through to a real decode.
+    fn native_of_cached(&mut self, noun: Noun) -> Result<NRc<NTy>> {
+        let mug = self.noun_mug_cached(noun) as u64;
+        for cand in native_of_mug_candidates(mug) {
+            let cand_noun = live_to_noun(&cand, self.slab);
+            let space = self.slab.noun_space();
+            if noun_eq(noun, cand_noun, &space)? {
+                return Ok(cand);
+            }
+        }
+        let rc = native_of(noun, &self.slab.noun_space())?;
+        native_of_mug_insert(mug, rc.clone());
+        Ok(rc)
+    }
+
     // HOON138:arm=ut:et:mint lines=9250-9257 map=envelope status=partial reviewed=2026-03-06
     // HOON138_NOTE:implements the native `%cnts` mint path using canonical `et/mint` and `ergo`
     fn mint_cnts(
@@ -6978,7 +7097,12 @@ impl<'a> Ut<'a> {
 
         // Canonical hoon-138 `++mine` compiles arm formulas against a `%lazy`
         // battery seminoun (`++laze`) in a single pass.
-        let resolver_id = self.lazy_resolver_new_id();
+        // RT-05: a CONTENT-ADDRESSED resolver id (keyed on the lazy core's
+        // structural identity) so structurally-equal recursive cores intern to one
+        // `Rc` and the pointer-keyed cuts converge at the natural settling depth.
+        let tomes_sig =
+            (self.noun_mug_cached(tomes_map) ^ Self::prefix_signature(prefix.as_deref())) as u64;
+        let resolver_id = self.lazy_resolver_canonical_id(&sut, tomes_sig, poly);
         let lazy_semi = self.semi_lazy_root(resolver_id);
         let lazy_rest = T(self.slab, &[lazy_semi, tomes_map]);
         // PHASE 2: build the NATIVE lazy core (the deepening site) ONCE, native-only
@@ -6997,9 +7121,21 @@ impl<'a> Ut<'a> {
                 NLeaf::from_noun(lazy_rest, &space),
             )
         };
-        let mut lazy_arms = HashMap::new();
-        self.collect_lazy_resolver_arms_from_tomes_map(tomes_map, 1, &mut lazy_arms)?;
-        self.lazy_resolver_register_context(resolver_id, core_native_lazy.clone(), poly, lazy_arms);
+        // RT-05: with a content-addressed id the same canonical core can be reached
+        // again (e.g. distinct gol/vet but identical lazy-core identity). Register
+        // exactly once — the resolver content is determined by the id-key, and
+        // re-registering would reset its `cached_formula_by_axis`/`in_progress_axes`,
+        // dropping the cross-arm formula cache and the in-progress guard.
+        if !self.lazy_resolvers.contains_key(&resolver_id) {
+            let mut lazy_arms = HashMap::new();
+            self.collect_lazy_resolver_arms_from_tomes_map(tomes_map, 1, &mut lazy_arms)?;
+            self.lazy_resolver_register_context(
+                resolver_id,
+                core_native_lazy.clone(),
+                poly,
+                lazy_arms,
+            );
+        }
         // The resolver context stays registered after the core completes.
         // hoon-138's `++laze` resolver is a pure gate embedded in the lazy
         // seminoun: types that captured the lazy battery (e.g. `%hold`s of
@@ -12721,7 +12857,8 @@ use crate::native::ir::intern::{
     fuse_cache_lookup as native_fuse_cache_lookup, fuse_cache_store as native_fuse_cache_store,
     live_intern, live_leaf_to_noun, live_to_noun, mint_cache_lookup as native_mint_cache_lookup,
     mint_cache_store as native_mint_cache_store, mull_cache_lookup as native_mull_cache_lookup,
-    mull_cache_store as native_mull_cache_store, native_of, nest_cache_lookup, nest_cache_store,
+    mull_cache_store as native_mull_cache_store, native_of, native_of_mug_candidates,
+    native_of_mug_insert, nest_cache_lookup, nest_cache_store,
 };
 use crate::native::ir::leaf::Leaf as NLeaf;
 use crate::native::ir::ty::Type as NTy;

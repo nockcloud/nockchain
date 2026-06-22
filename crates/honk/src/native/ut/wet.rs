@@ -109,9 +109,11 @@ impl<'a> Ut<'a> {
             // mull is now native (C7); mull_check_wet stays noun-signatured (the
             // fire/C9 boundary), so native_of the args here.
             let space = self.slab.noun_space();
-            let wet_core_n = native_of(wet_core, &space)?;
-            let noun_goal_n = native_of(noun_goal, &space)?;
-            let dox_n = native_of(dox, &space)?;
+            let _ = &space;
+            // wet_core/dox are freshly redone cores; content-key their decode.
+            let wet_core_n = self.native_of_cached(wet_core)?;
+            let noun_goal_n = native_of(noun_goal, &self.slab.noun_space())?;
+            let dox_n = self.native_of_cached(dox)?;
             let _ = self.mull(wet_core_n, noun_goal_n, dox_n, hoon_ast.as_ref())?;
             Ok(())
         })();
@@ -238,6 +240,29 @@ impl<'a> Ut<'a> {
     }
 
     fn redo_dext_impl(&mut self, sut: Noun, reference: Noun, state: RedoState) -> Result<Noun> {
+        if super::perf_on() {
+            super::NATIVE_PERF.with(|s| {
+                let mut s = s.borrow_mut();
+                s.redo_calls += 1;
+                s.redo_depth += 1;
+                if s.redo_depth > s.redo_max_depth {
+                    s.redo_max_depth = s.redo_depth;
+                }
+            });
+        }
+        let r = self.redo_dext_impl_inner(sut, reference, state);
+        if super::perf_on() {
+            super::NATIVE_PERF.with(|s| s.borrow_mut().redo_depth -= 1);
+        }
+        r
+    }
+
+    fn redo_dext_impl_inner(
+        &mut self,
+        sut: Noun,
+        reference: Noun,
+        state: RedoState,
+    ) -> Result<Noun> {
         let space = self.slab.noun_space();
         if noun_eq(sut, reference, &space)?
             || matches!(
@@ -288,12 +313,22 @@ impl<'a> Ut<'a> {
                         self.redo_sint(sut, reduced_ref, true, next_state)?;
                     return self.redo_done(sut, &fan_state);
                 }
-                if self.redo_gil_contains(&next_state.gil, sut, reduced_ref)? {
+                // RT-05 recursion-cut: hoon-138 ++redo:dext keys its %hold loop set
+                // on the ORIGINAL reference ([sut ref]); honk only tracked the
+                // post-`sint` `reduced_ref`, which changes every level, so the
+                // recursive back-edge never matched and the hold unrolled forever.
+                // Track BOTH so a repeated (sut, ref) closes the cycle: the cut
+                // returns the unchanged %hold, `play` reproduces the identical hold
+                // noun, and the fork mug-set collapses it (matching ++rest).
+                if self.redo_gil_contains(&next_state.gil, sut, reduced_ref)?
+                    || self.redo_gil_contains(&next_state.gil, sut, reference)?
+                {
                     return self.redo_done(sut, &next_state);
                 }
                 let repo = self.repo_noun(sut)?;
                 let mut recurse_state = next_state;
                 recurse_state.gil.push((sut, reduced_ref));
+                recurse_state.gil.push((sut, reference));
                 let redone = self.redo_dext(repo, reduced_ref, recurse_state)?;
                 if noun_eq(redone, repo, &self.slab.noun_space())? {
                     Ok(sut)

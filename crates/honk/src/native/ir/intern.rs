@@ -23,10 +23,10 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use nockapp::noun::slab::NounSlab;
-use nockvm::noun::{Noun, NounSpace};
+use nockvm::noun::{Noun, NounSpace, D, T};
 
 use super::leaf::Leaf;
-use super::ty::Type;
+use super::ty::{tas, Type};
 use crate::errors::{CompilerError, Result};
 use crate::native::noun::noun_pair;
 
@@ -288,6 +288,39 @@ std::thread_local! {
     /// cleared by `live_reset`, so the stored `Noun` cannot outlive its slab.
     static FISH_CACHE: std::cell::RefCell<HashMap<(usize, u64, u8, u64), Noun>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Per-compile CONTENT-keyed decode cache for `native_of`: noun mug -> the
+    /// canonical interned `Rc<Type>`(s) decoded from a structurally-equal noun.
+    /// The address-keyed decode memo (`InternMemo`) only hits when the SAME slab
+    /// noun is decoded twice; the redo/repo/fire path rebuilds structurally-equal
+    /// nouns at FRESH addresses every recursion level, so it re-walks AND re-jams
+    /// the Jammed leaves (a `%fork`'s whole treap, a `%core`'s battery) each time —
+    /// the dominant decode cost on the recursive-type hot path. Keying on content
+    /// (mug) lets a fresh-but-equal noun reuse the prior `Rc` after one `noun_eq`
+    /// verify (mug collisions fall through to a full decode), skipping the walk +
+    /// leaf re-jam. Keys are content (not addresses), values are persistent interned
+    /// `Rc`s, so this is NOT subject to the frame-address-recycling staleness that
+    /// the address memo guards against — same per-compile / `live_reset` lifetime as
+    /// the table itself (cleared together, so no orphaned-Rc cross-wiring).
+    static NATIVE_OF_MUG_MEMO: std::cell::RefCell<HashMap<u64, Vec<Rc<Type>>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Content-keyed `native_of` fast path (see `NATIVE_OF_MUG_MEMO`). Returns the
+/// memoized candidate `Rc`s for a noun mug (a tiny bucket; collisions are rare).
+pub fn native_of_mug_candidates(mug: u64) -> Vec<Rc<Type>> {
+    NATIVE_OF_MUG_MEMO.with(|m| m.borrow().get(&mug).cloned().unwrap_or_default())
+}
+
+/// Record a decoded `(mug -> Rc)` association for the content-keyed `native_of`
+/// cache. Idempotent per `Rc` within a bucket.
+pub fn native_of_mug_insert(mug: u64, rc: Rc<Type>) {
+    NATIVE_OF_MUG_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        let bucket = m.entry(mug).or_default();
+        if !bucket.iter().any(|existing| Rc::ptr_eq(existing, &rc)) {
+            bucket.push(rc);
+        }
+    });
 }
 
 /// Look up a native `core_mint` result by interned (sut, gol) pointers + the
@@ -592,6 +625,7 @@ pub fn live_reset() {
     FUSE_CACHE.with(|m| m.borrow_mut().clear());
     CROP_CACHE.with(|m| m.borrow_mut().clear());
     FISH_CACHE.with(|m| m.borrow_mut().clear());
+    NATIVE_OF_MUG_MEMO.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
@@ -605,15 +639,81 @@ pub fn live_to_noun(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
     if let Some(noun) = TO_NOUN_MEMO.with(|m| m.borrow().get(&ptr).copied()) {
         return noun;
     }
-    let noun = native.to_noun(dst);
-    // Frame-arena safety: this memo is compile-lifetime, but `to_noun`
-    // materialized into the current (possibly per-arm) frame. Relocate the result
-    // to the base region so the memo entry survives frame pops — no dangling, and
-    // (crucially) no per-pop re-lowering. `copy_to_base` is a no-op when no frame
-    // is active (default path), and shares senior base nodes (so the memoized
-    // noun DAG stays bounded, O(distinct natives)).
+    // Stack guard: this per-node recursion descends as deep as the type and runs
+    // INSIDE other deep recursions (redo/repo, reached via `native_of_cached`'s
+    // verify). Without growing the stack a deep recursive type overflows the guard
+    // page (SIGBUS on macOS, no Rust panic). `maybe_grow` is a cheap pointer
+    // compare when headroom remains; 64MB chunks dwarf any real type depth.
+    let noun = stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || live_to_noun_node(native, dst));
     let noun = unsafe { dst.copy_to_base(noun) };
     TO_NOUN_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
+    noun
+}
+
+/// One node of `live_to_noun`'s memoized recursion (split out so the `maybe_grow`
+/// stack guard wraps each level). See `live_to_noun`.
+fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
+    // PERF (RT-05): lower the IMMEDIATE children through `live_to_noun` /
+    // `live_leaf_to_noun` (both per-pointer memoized) rather than the bare
+    // recursive `Type::to_noun`, which re-materializes the WHOLE subtree fresh.
+    // Recursive type children (a `%core`'s shared `context` = the deepening
+    // subject, often the entire stdlib subject) are one canonical `Rc` shared by
+    // many ancestors; the bare walk re-lowered — and re-cued the Jammed battery
+    // `rest`/`garb`/`gene` leaves — once per ancestor, so a handful of mints over
+    // a big subject cost seconds. Routing children through the memo lowers each
+    // distinct node (and each Jammed leaf) exactly once per compile; jam output is
+    // structure-only so byte-exactness is unchanged. Mirrors `Type::to_noun`'s
+    // node shapes exactly (which stays the pure, slab-agnostic oracle form).
+    let noun = match &**native {
+        Type::Void => D(tas("void")),
+        Type::Noun => D(tas("noun")),
+        Type::Atom { aura, bits } => {
+            let a = live_leaf_to_noun(aura, dst);
+            let b = live_leaf_to_noun(bits, dst);
+            T(dst, &[D(tas("atom")), a, b])
+        }
+        Type::Cell(h, t) => {
+            let hn = live_to_noun(h, dst);
+            let tn = live_to_noun(t, dst);
+            T(dst, &[D(tas("cell")), hn, tn])
+        }
+        Type::Core {
+            payload,
+            garb,
+            context,
+            rest,
+        } => {
+            let p = live_to_noun(payload, dst);
+            let g = live_leaf_to_noun(garb, dst);
+            let ctx = live_to_noun(context, dst);
+            let r = live_leaf_to_noun(rest, dst);
+            let tail = T(dst, &[ctx, r]);
+            let coil = T(dst, &[g, tail]);
+            T(dst, &[D(tas("core")), p, coil])
+        }
+        Type::Face { tool, inner } => {
+            let tl = live_leaf_to_noun(tool, dst);
+            let inn = live_to_noun(inner, dst);
+            T(dst, &[D(tas("face")), tl, inn])
+        }
+        Type::Hint { head, payload } => {
+            let h = live_leaf_to_noun(head, dst);
+            let p = live_to_noun(payload, dst);
+            T(dst, &[D(tas("hint")), h, p])
+        }
+        Type::Fork { set } => {
+            let s = live_leaf_to_noun(set, dst);
+            T(dst, &[D(tas("fork")), s])
+        }
+        Type::Hold { subject, gene } => {
+            let s = live_to_noun(subject, dst);
+            let g = live_leaf_to_noun(gene, dst);
+            T(dst, &[D(tas("hold")), s, g])
+        }
+    };
+    // The built node cell lives in the current (scratch) frame; children are
+    // already base-resident via their own `live_to_noun`/`live_leaf_to_noun`. The
+    // caller (`live_to_noun`) does the `copy_to_base` + memo insert.
     noun
 }
 

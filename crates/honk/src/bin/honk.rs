@@ -498,7 +498,33 @@ fn hoon_log_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+extern "C" fn honk_crash_handler(sig: libc::c_int) {
+    // Debug aid (HONK_CRASH_BT=1): the kernel compile dies with a
+    // non-deterministic SIGSEGV/SIGBUS deep in one.hoon (frame-arena dangling
+    // read). lldb cannot attach in this sandbox, so print a backtrace from the
+    // signal handler. Backtrace capture is not async-signal-safe, but for a
+    // one-shot crash diagnosis it is good enough.
+    let bt = std::backtrace::Backtrace::force_capture();
+    eprintln!("\n===== HONK CRASH: signal {sig} =====\n{bt}\n===== END CRASH =====");
+    std::process::abort();
+}
+
+fn install_crash_handler() {
+    if std::env::var_os("HONK_CRASH_BT").is_none() {
+        return;
+    }
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = honk_crash_handler as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = 0;
+        libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut());
+    }
+}
+
 fn main() {
+    install_crash_handler();
     init_tracing();
     reset_native_timing_totals();
 
@@ -867,7 +893,7 @@ fn build_context_with_shared_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
-    ut.force_frame_arena = true; // frame-arena-default: reclaim per-arm scratch (bounds kernel-compile memory)
+    ut.force_frame_arena = std::env::var_os("HONK_NO_FRAME_ARENA").is_none(); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();
     let mut eval_context = create_eval_context();
@@ -1003,7 +1029,7 @@ fn build_context_with_dynamic_wrapper_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
-    ut.force_frame_arena = true; // frame-arena-default: reclaim per-arm scratch (bounds kernel-compile memory)
+    ut.force_frame_arena = std::env::var_os("HONK_NO_FRAME_ARENA").is_none(); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
     let mut eval_context = create_eval_context();
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();

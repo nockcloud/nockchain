@@ -81,7 +81,8 @@ impl<'a> Ut<'a> {
                     "native rest: hold ast missing tag={tag} decode_err={err}"
                 ))
             })?;
-            played.push(self.play(inner.clone(), hoon.as_ref())?.to_noun(self.slab));
+            let play_ty = self.play(inner.clone(), hoon.as_ref())?;
+            played.push(live_to_noun(&play_ty, self.slab));
         }
         self.fork_from_options(played)
     }
@@ -147,7 +148,9 @@ impl<'a> Ut<'a> {
             ut.rest_boundary_store(typ, legs_noun, result)?;
             Ok(result)
         })?;
-        native_of(result_noun, &self.slab.noun_space())
+        // repo results are freshly built each recursion level; content-key the
+        // decode so structurally-equal expansions reuse one interned `Rc`.
+        self.native_of_cached(result_noun)
     }
 
     pub(super) fn ty_hold_cached(&mut self, inner: Noun, hoon: Noun) -> Result<Noun> {
@@ -202,6 +205,9 @@ impl<'a> Ut<'a> {
     // HOON138:arm=ut:repo lines=10754-10763 map=direct status=partial reviewed=2026-03-06
     // HOON138_NOTE:native primary implementation for canonical `++repo`; full parity review is still in progress
     pub(super) fn repo(&mut self, typ: NRc<NTy>) -> Result<NRc<NTy>> {
+        if super::perf_on() {
+            super::NATIVE_PERF.with(|s| s.borrow_mut().repo_calls += 1);
+        }
         // ATOMIC FLIP (consumer, STEP 1): repo reads the native enum directly
         // instead of decoding a type noun. cons_cell mirrors the noun cell_type
         // void-collapse. Hold still routes through the noun rest_inner/play path
@@ -228,7 +234,7 @@ impl<'a> Ut<'a> {
                 let noun = ty_noun(self.slab);
                 let cell = ty_cell(self.slab, noun, noun);
                 let fork_noun = self.fork_from_options(vec![atom, cell])?;
-                native_of(fork_noun, &self.slab.noun_space())
+                self.native_of_cached(fork_noun)
             }
             _ => Err(CompilerError::Noun("repo-fltt".to_string())),
         }
@@ -237,7 +243,9 @@ impl<'a> Ut<'a> {
     /// Noun-bridged `repo` for not-yet-flipped callers (STEP 1): lift the noun
     /// type to native, run native repo, lower the result. Drops as callers flip.
     pub(super) fn repo_noun(&mut self, typ: Noun) -> Result<Noun> {
-        let native = native_of(typ, &self.slab.noun_space())?;
+        // The redo loop calls this per %hold level on freshly-built nouns;
+        // content-key the decode so equal subjects reuse one interned `Rc`.
+        let native = self.native_of_cached(typ)?;
         let r = self.repo(native)?;
         Ok(live_to_noun(&r, self.slab))
     }

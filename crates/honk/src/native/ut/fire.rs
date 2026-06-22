@@ -59,6 +59,9 @@ impl<'a> Ut<'a> {
     }
 
     fn fire_arm_wet(&mut self, arm_core: Noun, hoon: Noun) -> Result<Noun> {
+        if super::perf_on() {
+            super::NATIVE_PERF.with(|s| s.borrow_mut().fire_wet_calls += 1);
+        }
         let space = self.slab.noun_space();
         let (payload, coil) = type_core_parts(arm_core, &space)?;
         let (garb, context, rest) = coil_parts(coil, &space)?;

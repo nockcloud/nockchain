@@ -65,7 +65,7 @@ pub enum Type {
 
 /// `@tas` cord = little-endian byte packing into an atom. honk builds type tags
 /// via `term_to_noun` (same encoding); all nine tags are ≤ 4 bytes.
-fn tas(s: &str) -> u64 {
+pub(crate) fn tas(s: &str) -> u64 {
     let mut v = 0u64;
     for (i, b) in s.bytes().enumerate() {
         v |= (b as u64) << (i * 8);
