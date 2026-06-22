@@ -2522,6 +2522,48 @@ fn frame_arena_core_mint_matches_monolithic() {
     );
 }
 
+// FAST repro of the dumb-kernel `poly:$` failure:
+//   "native mint: find failed for wing [Parent(0, None), Axis(12)]" (way=Rite).
+//
+// The wing `[Parent(0,None), Axis(12)]` is synthesised ONLY by `lower_censig`
+// (mod.rs:2548) for the FIRST (non-last) argument of a multi-arg cen-sig
+// (`~(arm core a b ...)`): `wing_axe = peg(6,2) = 12`. `fond` (find.rs) resolves
+// `Axis(12)` first via `peek`, then applies the nameless `Parent(0,None)` via
+// `fond_name`. When `peek(sut, Rite, 12)` returns `NTy::Void`, the nameless-parent
+// walk returns `Pony::Void` and `find` errors.
+//
+// This source mints in <1ms (no prelude / no 153s dumb compile) and currently
+// FAILS with exactly that error. A correct peek/fond fix should make it mint OK;
+// flip the assertion to `is_ok()` to use it as a fix gate.
+#[test]
+fn repro_censig_two_arg_wing_find_failure() {
+    use std::path::Path;
+
+    // Door (`|_ s=@`) with a 2-arg arm `f`, called via `~(f d 1 2)`. The arm body
+    // uses only its own sample, so NO stdlib is needed.
+    let src = "=/  d  |_  s=@\n++  f  |=  [x=@ y=@]  [x y s]\n--\n~(f d 1 2)";
+
+    let gen = crate::pipeline::parse_native_hoon_source_without_docs(
+        Path::new("repro-censig.hoon"),
+        src,
+        Vec::new(),
+        false,
+    )
+    .expect("parse repro censig");
+
+    let mut slab: NounSlab = NounSlab::new();
+    let mut ut = Ut::new(&mut slab);
+    let sut = super::ty_noun(&mut *ut.slab);
+    let gol = super::ty_noun(&mut *ut.slab);
+    let result = ut.mint_noun(sut, gol, &gen);
+
+    let err = format!("{:?}", result.err());
+    assert!(
+        err.contains("find failed for wing [Parent(0, None), Axis(12)]"),
+        "expected the censig axis-12 wing find failure, got: {err}"
+    );
+}
+
 // Reproduces the shape of stdlib `turn`/`add-all` that broke the frame arena at
 // scale: a wet gate (`|*`) whose sample is a function (`b`) referenced inside a
 // `|-` loop via `$(b b)`. The framed mint must locate `b` in the loop subject

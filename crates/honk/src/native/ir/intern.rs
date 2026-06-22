@@ -39,7 +39,7 @@ use crate::native::noun::noun_pair;
 /// re-parsing per call with no shared memo; this shares one).
 pub fn intern_type_noun(
     table: &mut TypeTable,
-    memo: &mut HashMap<u64, Rc<Type>>,
+    memo: &mut InternMemo,
     noun: Noun,
     space: &NounSpace,
 ) -> Result<Rc<Type>> {
@@ -138,9 +138,64 @@ fn pair(n: Noun, space: &NounSpace) -> Result<(Noun, Noun)> {
 // Single-thread, single-compile harness — call `live_reset` at compile start.
 // ---------------------------------------------------------------------------
 
+/// The `intern_type_noun`/`native_of` decode memo: source-noun-address ->
+/// canonical interned `Rc<Type>`. Its KEYS are slab addresses, which under the
+/// frame arena are recycled when a per-arm frame is reclaimed, so an entry whose
+/// source noun lived in a popped frame must be dropped — else a brand-new noun at
+/// the recycled address gets a STALE (wrong-expression) `Rc<Type>` with no content
+/// check. We track insertion order with a per-frame mark stack so a frame pop
+/// evicts EXACTLY the entries added during that frame (a stack-scoped memo): base
+/// / parent-scope decodes (added before the push) survive, preserving the
+/// cross-arm reuse that makes the deepening-subject flip O(N) instead of O(N^2),
+/// while the frame-resident entries (the only ones that can dangle) are dropped.
+struct InternMemo {
+    map: HashMap<u64, Rc<Type>>,
+    order: Vec<u64>,
+    marks: Vec<usize>,
+}
+
+impl InternMemo {
+    fn new() -> Self {
+        InternMemo {
+            map: HashMap::new(),
+            order: Vec::new(),
+            marks: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, raw: &u64) -> Option<&Rc<Type>> {
+        self.map.get(raw)
+    }
+
+    #[inline]
+    fn insert(&mut self, raw: u64, rc: Rc<Type>) {
+        if self.map.insert(raw, rc).is_none() {
+            self.order.push(raw);
+        }
+    }
+
+    /// Open a new frame scope: subsequent inserts belong to it until `pop_frame`.
+    fn push_frame(&mut self) {
+        self.marks.push(self.order.len());
+    }
+
+    /// Close the current frame scope, evicting exactly the entries inserted since
+    /// the matching `push_frame` (whose source nouns live in the just-reclaimed
+    /// arm frame). Unbalanced pop (no mark) is a no-op.
+    fn pop_frame(&mut self) {
+        if let Some(mark) = self.marks.pop() {
+            let mark = mark.min(self.order.len());
+            for raw in self.order.drain(mark..) {
+                self.map.remove(&raw);
+            }
+        }
+    }
+}
+
 struct LiveIntern {
     table: TypeTable,
-    memo: HashMap<u64, Rc<Type>>,
+    memo: InternMemo,
     cores: u64,
     next_report: u64,
 }
@@ -149,7 +204,7 @@ impl LiveIntern {
     fn new() -> Self {
         LiveIntern {
             table: TypeTable::new(),
-            memo: HashMap::new(),
+            memo: InternMemo::new(),
             cores: 0,
             next_report: 100_000,
         }
@@ -478,17 +533,48 @@ pub fn live_enabled() -> bool {
     }
 }
 
-/// Invalidate the per-compile noun-valued memos at a FRAME-ARENA pop. Their KEYS
-/// are interned `Rc`/`Arc` pointers (which persist for the whole compile — the
-/// intern table holds them), but their VALUES are nouns allocated in the
-/// just-reclaimed arm frame, so they would dangle ("unknown tag" on the next
-/// decode). The native intern table itself (Rc nodes, heap) and NEST_CACHE (bool
-/// values) are frame-independent and MUST persist across the pop. Called from
-/// `Ut::invalidate_frame_caches` so the flip's lowering memos honor the same
-/// per-arm-frame lifetime as the Ut-side scratch caches.
+/// Invalidate the address-keyed `intern_type_noun` memo at a FRAME-ARENA pop.
+///
+/// `intern_type_noun`/`native_of` memoize decoded types by the SOURCE NOUN's raw
+/// address (`noun.as_raw()`) with NO content check on hit. Under the frame arena
+/// those source nouns (fork rebuilds, to_noun round-trips, repo/redo results,
+/// etc.) live in the just-reclaimed per-arm frame, so their addresses are
+/// recycled by later arms' frames. A surviving entry then returns the STALE
+/// interned `Rc<Type>` of an EARLIER, unrelated expression for a brand-new noun
+/// that merely landed at the same reclaimed address — a coherent-but-wrong type
+/// (e.g. a stdlib gate's `$`-arm core substituted as another arm's deepening
+/// subject), producing nondeterministic `find failed` mint errors on big kernels.
+/// Whether an address collides depends on the bump-allocator reuse pattern after
+/// `pop_frame_preserving` (perturbed run-to-run by HashMap seeding), which is why
+/// the failure is nondeterministic and scale-only.
+///
+/// The interned `Rc` nodes and `TypeTable` buckets MUST persist (they are the
+/// canonical structural-identity universe; re-decoding after this clear simply
+/// dedups back to the same `Rc`). The TO_NOUN_MEMO / LEAF_MEMO are NOT cleared
+/// here: their KEYS are stable interned `Rc`/`Arc` pointers and their VALUES are
+/// already relocated to the base region (`live_to_noun`/`live_leaf_to_noun`
+/// `copy_to_base`), so they survive pops without dangling and clearing them would
+/// reintroduce O(N^2) re-lowering. Called from `Ut::invalidate_frame_caches`.
 pub fn live_invalidate_frame() {
-    TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
-    LEAF_MEMO.with(|m| m.borrow_mut().clear());
+    LIVE.with(|cell| {
+        if let Some(st) = cell.borrow_mut().as_mut() {
+            st.memo.pop_frame();
+        }
+    });
+}
+
+/// Open an intern-memo frame scope, paired with the slab's `push_frame` at the
+/// per-arm frame-arena boundary (`build_arm_formula_framed`). Entries decoded
+/// while this scope is open are evicted by the matching `live_invalidate_frame`
+/// (called after the slab `pop_frame_preserving`), so their recycled source-noun
+/// addresses can never alias a later arm's nouns. A no-op when the live table
+/// has not been created yet (no native decode has happened).
+pub fn live_push_frame() {
+    LIVE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let st = slot.get_or_insert_with(LiveIntern::new);
+        st.memo.push_frame();
+    });
 }
 
 /// Reset the live table (call at the start of each top-level compile so stale

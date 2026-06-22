@@ -7550,6 +7550,13 @@ impl<'a> Ut<'a> {
         // base-resident (live_to_noun/live_leaf_to_noun copy_to_base their
         // result), so they survive frame pops WITHOUT dangling and WITHOUT
         // per-arm re-lowering — no invalidation needed here.
+        //
+        // The intern_type_noun / native_of memo, however, is keyed by the SOURCE
+        // noun's raw ADDRESS (not by an interned Rc), so a reclaimed per-arm-frame
+        // address recycled by a later arm would return a stale (wrong) interned
+        // type with no content check. Drop it on every pop (the intern table
+        // itself persists; re-decoding dedups back to the same canonical Rc).
+        crate::native::ir::intern::live_invalidate_frame();
         self.boundary_memo.clear();
         self.lookup_memo.clear();
         self.hold_memo.clear();
@@ -7614,6 +7621,9 @@ impl<'a> Ut<'a> {
             return self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
         }
         self.slab.push_frame();
+        // Open a matching intern-memo scope so the address-keyed decode memo
+        // evicts exactly this frame's entries on pop (see live_invalidate_frame).
+        crate::native::ir::intern::live_push_frame();
         let result =
             self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
         match result {
