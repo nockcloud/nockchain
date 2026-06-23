@@ -471,8 +471,9 @@ impl<'a> Ut<'a> {
                                 continue;
                             }
                             Pony::Palo(palo) => {
-                                let (fid_ty, fid_formula) = ut.fine(&Port::Palo(palo))?;
-                                let fid_ty_n = native_of(fid_ty, &ut.slab.noun_space())?;
+                                // fine is native (C-final fire): returns the typ
+                                // directly as `NRc<NTy>`, no native_of round-trip.
+                                let (fid_ty_n, fid_formula) = ut.fine(&Port::Palo(palo))?;
                                 let composed =
                                     compose_axis_formula(ut, axe.clone(), bridge_formula)?;
                                 let formula = comb(ut.slab, composed, fid_formula)?;
@@ -525,13 +526,12 @@ impl<'a> Ut<'a> {
                         return Ok(here(sut.clone(), &axe, skip, lon));
                     };
                     let payload = payload.clone();
-                    // garb/rest are tiny/bounded; lower to noun for the noun decoders.
-                    // The context (deepening subject) is not needed here.
-                    let garb = live_leaf_to_noun(garb, ut.slab);
+                    // garb is native (direct field access); rest is tiny/bounded —
+                    // lower to noun for the noun decoders. The context (deepening
+                    // subject) is not needed here.
+                    let poly = garb.poly;
+                    let vair = garb.vair;
                     let rest = live_leaf_to_noun(rest, ut.slab);
-                    let space = ut.slab.noun_space();
-                    let poly = garb_poly(garb, &space)?;
-                    let vair = garb_vair(garb, &space)?;
                     let cog = term_to_noun(ut.slab, name_str);
                     let space = ut.slab.noun_space();
                     let tomes = coil_tomes(rest, &space)?;

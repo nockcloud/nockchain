@@ -26,7 +26,7 @@ use nockapp::noun::slab::NounSlab;
 use nockvm::noun::{Noun, NounSpace, D, T};
 
 use super::leaf::Leaf;
-use super::ty::{tas, Type};
+use super::ty::{tas, Garb, Type};
 use crate::errors::{CompilerError, Result};
 use crate::native::noun::noun_pair;
 
@@ -85,7 +85,7 @@ pub fn intern_type_noun(
         let (context, rest) = pair(coil_tail, space)?;
         Type::Core {
             payload: intern_type_noun(table, memo, payload, space)?,
-            garb: Leaf::from_noun(garb, space),
+            garb: Garb::from_noun(garb, space)?,
             context: intern_type_noun(table, memo, context, space)?,
             rest: Leaf::from_noun(rest, space),
         }
@@ -303,6 +303,32 @@ std::thread_local! {
     /// the table itself (cleared together, so no orphaned-Rc cross-wiring).
     static NATIVE_OF_MUG_MEMO: std::cell::RefCell<HashMap<u64, Vec<Rc<Type>>>> =
         std::cell::RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// Per-compile memo for `cons_fork`: the canonical (sorted, deduped) option
+    /// `Rc` pointers -> the resulting fork `Rc`. A fork is mug-ordered and
+    /// set-valued, so it is fully determined by the SET of its option types;
+    /// since options are interned (canonical), their pointer set is the exact key.
+    /// In the recursive-type elaboration the same forks recur constantly, and each
+    /// `cons_fork` miss costs a full mug-treap rebuild (fork_from_options:
+    /// set_put_mug/slab_mug) PLUS a decode+jam of the treap leaf (native_of). This
+    /// memo collapses the recurrence to O(1). Byte-exact: returns the SAME interned
+    /// `Rc` the rebuild would. Cleared with the table by `live_reset`.
+    static FORK_CACHE: std::cell::RefCell<HashMap<Vec<usize>, Rc<Type>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Look up a memoized `cons_fork` result by its canonical option-pointer key.
+pub fn fork_cache_lookup(key: &[usize]) -> Option<Rc<Type>> {
+    FORK_CACHE.with(|m| m.borrow().get(key).cloned())
+}
+
+/// Store a `cons_fork` result keyed by its canonical option-pointer key.
+pub fn fork_cache_store(key: Vec<usize>, fork: Rc<Type>) {
+    FORK_CACHE.with(|m| {
+        m.borrow_mut().insert(key, fork);
+    });
 }
 
 /// Content-keyed `native_of` fast path (see `NATIVE_OF_MUG_MEMO`). Returns the
@@ -626,6 +652,7 @@ pub fn live_reset() {
     CROP_CACHE.with(|m| m.borrow_mut().clear());
     FISH_CACHE.with(|m| m.borrow_mut().clear());
     NATIVE_OF_MUG_MEMO.with(|m| m.borrow_mut().clear());
+    FORK_CACHE.with(|m| m.borrow_mut().clear());
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
@@ -684,7 +711,7 @@ fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
             rest,
         } => {
             let p = live_to_noun(payload, dst);
-            let g = live_leaf_to_noun(garb, dst);
+            let g = garb.to_noun(dst);
             let ctx = live_to_noun(context, dst);
             let r = live_leaf_to_noun(rest, dst);
             let tail = T(dst, &[ctx, r]);
@@ -751,7 +778,7 @@ pub fn cons_noun() -> Rc<Type> {
 /// Collapse-aware native `%core`: `core(void,_)` -> void (mirrors ty_core_n).
 /// The coil is carried decomposed: tiny `garb`/bounded `rest` as leaves and the
 /// `context` (deepening subject) as a SHARED native `Rc<Type>`.
-pub fn cons_core(payload: Rc<Type>, garb: Leaf, context: Rc<Type>, rest: Leaf) -> Rc<Type> {
+pub fn cons_core(payload: Rc<Type>, garb: Garb, context: Rc<Type>, rest: Leaf) -> Rc<Type> {
     if matches!(&*payload, Type::Void) {
         return live_intern(Type::Void);
     }

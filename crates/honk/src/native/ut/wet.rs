@@ -2,9 +2,17 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct RedoState {
-    hos: Vec<Noun>,
-    wec: Vec<Vec<Noun>>,
-    gil: Vec<(Noun, Noun)>,
+    /// Subject-side face TOOLS accumulated descending through `%face`s on the
+    /// SUBJECT side (`NTy::Face.tool`).
+    hos: Vec<NLeaf>,
+    /// Reference-side face TOOL stacks (one stack per surviving fork branch),
+    /// accumulated by `redo_sint` descending through `%face`s on the REFERENCE.
+    wec: Vec<Vec<NLeaf>>,
+    /// The %hold recursion-cut set: visited `(subject, reference)` pairs, by
+    /// interned `Rc` identity (every redo-produced type is interned via
+    /// `cons_*`/`repo`/`peek`/`native_of`, so structural equality == pointer
+    /// equality).
+    gil: Vec<(NRc<NTy>, NRc<NTy>)>,
 }
 
 impl Default for RedoState {
@@ -30,47 +38,61 @@ impl RedoState {
 impl<'a> Ut<'a> {
     fn redo_fork_fallback_candidate(
         &mut self,
-        sut: Noun,
-        reference: Noun,
+        sut: &NRc<NTy>,
+        reference: &NRc<NTy>,
         hod: bool,
     ) -> Result<bool> {
-        fn unwrapped_tag(ut: &mut Ut<'_>, typ: Noun, hod: bool) -> Result<TypeTagKind> {
-            let space = ut.slab.noun_space();
-            match type_tag_kind(typ, &space)? {
-                TypeTagKind::Face => unwrapped_tag(ut, type_face_inner(typ, &space)?, hod),
-                TypeTagKind::Hint => unwrapped_tag(ut, type_hint_inner(typ, &space)?, hod),
-                TypeTagKind::Hold if hod => {
-                    let repo = ut.repo_noun(typ)?;
-                    unwrapped_tag(ut, repo, hod)
+        // Strip %face/%hint (and %hold under `hod`) wrappers to reach the base
+        // tag, then accept only matching base kinds (cell/atom/core). Mirrors the
+        // old noun `unwrapped_tag`, reading the native enum directly.
+        #[derive(PartialEq, Clone, Copy)]
+        enum Base {
+            Cell,
+            Atom,
+            Core,
+            Other,
+        }
+        fn unwrapped(ut: &mut Ut<'_>, typ: &NRc<NTy>, hod: bool) -> Result<Base> {
+            match &**typ {
+                NTy::Face { inner, .. } => unwrapped(ut, &inner.clone(), hod),
+                NTy::Hint { payload, .. } => unwrapped(ut, &payload.clone(), hod),
+                NTy::Hold { .. } if hod => {
+                    let repo = ut.repo(typ.clone())?;
+                    unwrapped(ut, &repo, hod)
                 }
-                kind => Ok(kind),
+                NTy::Cell(..) => Ok(Base::Cell),
+                NTy::Atom { .. } => Ok(Base::Atom),
+                NTy::Core { .. } => Ok(Base::Core),
+                _ => Ok(Base::Other),
             }
         }
 
-        let sut_tag = unwrapped_tag(self, sut, hod)?;
-        let ref_tag = unwrapped_tag(self, reference, hod)?;
+        let sut_tag = unwrapped(self, sut, hod)?;
+        let ref_tag = unwrapped(self, reference, hod)?;
         Ok(matches!(
             (sut_tag, ref_tag),
-            (TypeTagKind::Cell, TypeTagKind::Cell)
-                | (TypeTagKind::Atom, TypeTagKind::Atom)
-                | (TypeTagKind::Core, TypeTagKind::Core)
+            (Base::Cell, Base::Cell) | (Base::Atom, Base::Atom) | (Base::Core, Base::Core)
         ))
     }
 
-    fn fire_wet_rib_contains(&mut self, sut: Noun, dox: Noun, hoon_noun: Noun) -> Result<bool> {
+    fn fire_wet_rib_contains(
+        &mut self,
+        sut: &NRc<NTy>,
+        dox: &NRc<NTy>,
+        hoon_noun: Noun,
+    ) -> Result<bool> {
         if self.fire_wet_rib_raw.contains(&(
-            unsafe { sut.as_raw() },
-            unsafe { dox.as_raw() },
+            NRc::as_ptr(sut) as usize,
+            NRc::as_ptr(dox) as usize,
             unsafe { hoon_noun.as_raw() },
         )) {
             return Ok(true);
         }
         let space = self.slab.noun_space();
         for (entry_sut, entry_dox, entry_hoon) in self.fire_wet_rib.iter() {
-            if (unsafe { entry_sut.as_raw() } == unsafe { sut.as_raw() }
-                || noun_eq(*entry_sut, sut, &space)?)
-                && (unsafe { entry_dox.as_raw() } == unsafe { dox.as_raw() }
-                    || noun_eq(*entry_dox, dox, &space)?)
+            // sut/dox are interned natives: ptr-identity IS structural identity.
+            if NRc::ptr_eq(entry_sut, sut)
+                && NRc::ptr_eq(entry_dox, dox)
                 && (unsafe { entry_hoon.as_raw() } == unsafe { hoon_noun.as_raw() }
                     || noun_eq(*entry_hoon, hoon_noun, &space)?)
             {
@@ -82,52 +104,46 @@ impl<'a> Ut<'a> {
 
     pub(super) fn mull_check_wet(
         &mut self,
-        wet_core: Noun,
-        dox: Noun,
+        wet_core: NRc<NTy>,
+        dox: NRc<NTy>,
         hoon_noun: Noun,
     ) -> Result<()> {
         if !self.vet {
             return Ok(());
         }
         let hoon_identity = self.canonicalize_nonsemantic_hoon_noun(hoon_noun);
-        if self.fire_wet_rib_contains(wet_core, dox, hoon_identity)? {
+        if self.fire_wet_rib_contains(&wet_core, &dox, hoon_identity)? {
             return Ok(());
         }
         self.fire_wet_rib_raw.insert((
-            unsafe { wet_core.as_raw() },
-            unsafe { dox.as_raw() },
+            NRc::as_ptr(&wet_core) as usize,
+            NRc::as_ptr(&dox) as usize,
             unsafe { hoon_identity.as_raw() },
         ));
-        self.fire_wet_rib.push((wet_core, dox, hoon_identity));
+        self.fire_wet_rib
+            .push((wet_core.clone(), dox.clone(), hoon_identity));
         let result = (|| -> Result<()> {
             let hoon_ast = self.hoon_ast_lookup_result(hoon_noun).map_err(|err| {
                 CompilerError::UnsupportedExpr(format!(
                     "native mint: fire-wet arm ast missing: {err}"
                 ))
             })?;
-            let noun_goal = ty_noun(self.slab);
-            // mull is now native (C7); mull_check_wet stays noun-signatured (the
-            // fire/C9 boundary), so native_of the args here.
-            let space = self.slab.noun_space();
-            let _ = &space;
-            // wet_core/dox are freshly redone cores; content-key their decode.
-            let wet_core_n = self.native_of_cached(wet_core)?;
-            let noun_goal_n = native_of(noun_goal, &self.slab.noun_space())?;
-            let dox_n = self.native_of_cached(dox)?;
-            let _ = self.mull(wet_core_n, noun_goal_n, dox_n, hoon_ast.as_ref())?;
+            // mull is native (C7); wet_core/dox are already native.
+            let noun_goal_n = cons_noun();
+            let _ = self.mull(wet_core, noun_goal_n, dox, hoon_ast.as_ref())?;
             Ok(())
         })();
         if let Some((entry_sut, entry_dox, entry_hoon)) = self.fire_wet_rib.pop() {
             self.fire_wet_rib_raw.remove(&(
-                unsafe { entry_sut.as_raw() },
-                unsafe { entry_dox.as_raw() },
+                NRc::as_ptr(&entry_sut) as usize,
+                NRc::as_ptr(&entry_dox) as usize,
                 unsafe { entry_hoon.as_raw() },
             ));
         }
         result
     }
 
-    fn redo_dear(&mut self, state: &RedoState) -> Result<Option<Vec<Noun>>> {
+    fn redo_dear(&mut self, state: &RedoState) -> Result<Option<Vec<NLeaf>>> {
         if state.wec.len() != 1 {
             return Ok(None);
         }
@@ -138,17 +154,16 @@ impl<'a> Ut<'a> {
 
     fn redo_merge_face_stacks(
         &mut self,
-        subject_faces: &[Noun],
-        reference_faces: &[Noun],
-    ) -> Result<Vec<Noun>> {
-        let space = self.slab.noun_space();
+        subject_faces: &[NLeaf],
+        reference_faces: &[NLeaf],
+    ) -> Result<Vec<NLeaf>> {
         let mut overlap = 0usize;
         let max_overlap = cmp::min(subject_faces.len(), reference_faces.len());
         for candidate in 0..=max_overlap {
             let start = subject_faces.len().saturating_sub(candidate);
             let mut matches = true;
             for idx in 0..candidate {
-                if !noun_eq(subject_faces[start + idx], reference_faces[idx], &space)? {
+                if subject_faces[start + idx] != reference_faces[idx] {
                     matches = false;
                     break;
                 }
@@ -162,35 +177,27 @@ impl<'a> Ut<'a> {
         Ok(merged)
     }
 
-    fn redo_done(&mut self, sut: Noun, state: &RedoState) -> Result<Noun> {
+    fn redo_done(&mut self, sut: NRc<NTy>, state: &RedoState) -> Result<NRc<NTy>> {
         let Some(lov) = self.redo_dear(state)? else {
             return Err(CompilerError::Noun("redo-match".to_string()));
         };
         let mut out = sut;
         for tool in lov.iter().rev() {
-            out = ty_face_tool(self.slab, *tool, out);
+            out = cons_face(tool.clone(), out);
         }
         Ok(out)
     }
 
     fn redo_push_unique_face_stack(
         &mut self,
-        stacks: &mut Vec<Vec<Noun>>,
-        candidate: Vec<Noun>,
+        stacks: &mut Vec<Vec<NLeaf>>,
+        candidate: Vec<NLeaf>,
     ) -> Result<()> {
-        let space = self.slab.noun_space();
         for existing in stacks.iter() {
             if existing.len() != candidate.len() {
                 continue;
             }
-            let mut same = true;
-            for (left, right) in existing.iter().zip(candidate.iter()) {
-                if !noun_eq(*left, *right, &space)? {
-                    same = false;
-                    break;
-                }
-            }
-            if same {
+            if existing.iter().zip(candidate.iter()).all(|(l, r)| l == r) {
                 return Ok(());
             }
         }
@@ -200,26 +207,28 @@ impl<'a> Ut<'a> {
 
     fn redo_gil_contains(
         &mut self,
-        gil: &[(Noun, Noun)],
-        sut: Noun,
-        reference: Noun,
+        gil: &[(NRc<NTy>, NRc<NTy>)],
+        sut: &NRc<NTy>,
+        reference: &NRc<NTy>,
     ) -> Result<bool> {
-        let space = self.slab.noun_space();
         for (prior_sut, prior_ref) in gil {
-            if (unsafe { prior_sut.raw_equals(&sut) } || noun_eq(*prior_sut, sut, &space)?)
-                && (unsafe { prior_ref.raw_equals(&reference) }
-                    || noun_eq(*prior_ref, reference, &space)?)
-            {
+            if NRc::ptr_eq(prior_sut, sut) && NRc::ptr_eq(prior_ref, reference) {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    fn redo_subject_hold_in_fan(&mut self, hold: Noun) -> Result<bool> {
-        let space = self.slab.noun_space();
-        let (inner, hoon) = type_hold_parts(hold, &space)?;
-        let leg_id = self.hold_repo_fan_leg_id_for_hold_type(hold, inner, hoon)?;
+    fn redo_subject_hold_in_fan(&mut self, hold: &NRc<NTy>) -> Result<bool> {
+        // The leg-id intern is still noun-keyed (deferred re-key): lower the
+        // hold + its inner subject / gene gate ONLY to compute the leg-id key.
+        let NTy::Hold { subject, gene } = &**hold else {
+            return Ok(false);
+        };
+        let inner = live_to_noun(subject, self.slab);
+        let hoon = live_leaf_to_noun(gene, self.slab);
+        let hold_noun = live_to_noun(hold, self.slab);
+        let leg_id = self.hold_repo_fan_leg_id_for_hold_type(hold_noun, inner, hoon)?;
         Ok(self
             .hold_repo_fan_active_leg_ids
             .binary_search(&leg_id)
@@ -230,16 +239,33 @@ impl<'a> Ut<'a> {
         if let Some(cached) = self.redo_boundary_lookup(payload, reference)? {
             return Ok(cached);
         }
-        let result = self.redo_dext(payload, reference, RedoState::default())?;
+        // BOUNDARY: decode payload + reference to native ONCE here; the per-level
+        // redo recursion is entirely native (no Type<->Noun round-trips inside);
+        // lower the result ONCE on the way out. The redo_boundary cache stays
+        // noun-keyed at this entry.
+        let payload_n = self.native_of_cached(payload)?;
+        let reference_n = self.native_of_cached(reference)?;
+        let result_n = self.redo_dext(payload_n, reference_n, RedoState::default())?;
+        let result = live_to_noun(&result_n, self.slab);
         self.redo_boundary_store(payload, reference, result)?;
         Ok(result)
     }
 
-    fn redo_dext(&mut self, sut: Noun, reference: Noun, state: RedoState) -> Result<Noun> {
+    fn redo_dext(
+        &mut self,
+        sut: NRc<NTy>,
+        reference: NRc<NTy>,
+        state: RedoState,
+    ) -> Result<NRc<NTy>> {
         self.with_stack_guard(|ut| ut.redo_dext_impl(sut, reference, state))
     }
 
-    fn redo_dext_impl(&mut self, sut: Noun, reference: Noun, state: RedoState) -> Result<Noun> {
+    fn redo_dext_impl(
+        &mut self,
+        sut: NRc<NTy>,
+        reference: NRc<NTy>,
+        state: RedoState,
+    ) -> Result<NRc<NTy>> {
         if super::perf_on() {
             super::NATIVE_PERF.with(|s| {
                 let mut s = s.borrow_mut();
@@ -259,58 +285,63 @@ impl<'a> Ut<'a> {
 
     fn redo_dext_impl_inner(
         &mut self,
-        sut: Noun,
-        reference: Noun,
+        sut: NRc<NTy>,
+        reference: NRc<NTy>,
         state: RedoState,
-    ) -> Result<Noun> {
-        let space = self.slab.noun_space();
-        if noun_eq(sut, reference, &space)?
+    ) -> Result<NRc<NTy>> {
+        if NRc::ptr_eq(&sut, &reference)
             || matches!(
-                type_tag_kind(reference, &space)?,
-                TypeTagKind::Noun | TypeTagKind::Void | TypeTagKind::Atom | TypeTagKind::Core
+                &*reference,
+                NTy::Noun | NTy::Void | NTy::Atom { .. } | NTy::Core { .. }
             )
         {
             return self.redo_done(sut, &state);
         }
 
-        match type_tag_kind(sut, &space)? {
-            TypeTagKind::Noun | TypeTagKind::Void | TypeTagKind::Atom | TypeTagKind::Core => {
-                let (_reduced_ref, next_state) = self.redo_sint(sut, reference, true, state)?;
+        match &*sut {
+            NTy::Noun | NTy::Void | NTy::Atom { .. } | NTy::Core { .. } => {
+                let (_reduced_ref, next_state) = self.redo_sint(sut.clone(), reference, true, state)?;
                 self.redo_done(sut, &next_state)
             }
-            TypeTagKind::Cell => {
-                let (reduced_ref, next_state) = self.redo_sint(sut, reference, true, state)?;
-                let (sut_head, sut_tail) = type_cell_parts(sut, &space)?;
+            NTy::Cell(sut_head, sut_tail) => {
+                let sut_head = sut_head.clone();
+                let sut_tail = sut_tail.clone();
+                let (reduced_ref, next_state) =
+                    self.redo_sint(sut.clone(), reference, true, state)?;
                 let descend_state = next_state.for_cell_descent();
-                let ref_head = self.peek_noun(reduced_ref, Way::Free, 2)?;
-                let ref_tail = self.peek_noun(reduced_ref, Way::Free, 3)?;
+                let ref_head = self.peek(reduced_ref.clone(), Way::Free, 2)?;
+                let ref_tail = self.peek(reduced_ref, Way::Free, 3)?;
                 let new_head = self.redo_dext(sut_head, ref_head, descend_state.clone())?;
                 let new_tail = self.redo_dext(sut_tail, ref_tail, descend_state)?;
-                let rebuilt = ty_cell(self.slab, new_head, new_tail);
+                let rebuilt = cons_cell(new_head, new_tail);
                 self.redo_done(rebuilt, &next_state)
             }
-            TypeTagKind::Face => {
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let mut next_state = state;
-                next_state.hos.push(type_face_tool(sut, &space)?);
-                self.redo_dext(type_face_inner(sut, &space)?, reference, next_state)
+                next_state.hos.push(tool);
+                self.redo_dext(inner, reference, next_state)
             }
-            TypeTagKind::Hint => {
-                let (inner, note, payload) = type_hint_parts(sut, &space)?;
+            NTy::Hint { head, payload } => {
+                let head = head.clone();
+                let payload = payload.clone();
                 let redone = self.redo_dext(payload, reference, state)?;
-                Ok(ty_hint(self.slab, inner, note, redone))
+                Ok(cons_hint(head, redone))
             }
-            TypeTagKind::Fork => {
-                let mut rebuilt = Vec::new();
-                for option in type_fork_options(sut, &space)? {
-                    rebuilt.push(self.redo_dext(option, reference, state.clone())?);
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&sut)?;
+                let mut rebuilt = Vec::with_capacity(options.len());
+                for option in options {
+                    rebuilt.push(self.redo_dext(option, reference.clone(), state.clone())?);
                 }
-                self.fork_from_options(rebuilt)
+                self.cons_fork(rebuilt)
             }
-            TypeTagKind::Hold => {
-                let (reduced_ref, next_state) = self.redo_sint(sut, reference, false, state)?;
-                if self.redo_subject_hold_in_fan(sut)? {
+            NTy::Hold { .. } => {
+                let (reduced_ref, next_state) = self.redo_sint(sut.clone(), reference.clone(), false, state)?;
+                if self.redo_subject_hold_in_fan(&sut)? {
                     let (_expanded_ref, fan_state) =
-                        self.redo_sint(sut, reduced_ref, true, next_state)?;
+                        self.redo_sint(sut.clone(), reduced_ref, true, next_state)?;
                     return self.redo_done(sut, &fan_state);
                 }
                 // RT-05 recursion-cut: hoon-138 ++redo:dext keys its %hold loop set
@@ -319,18 +350,21 @@ impl<'a> Ut<'a> {
                 // recursive back-edge never matched and the hold unrolled forever.
                 // Track BOTH so a repeated (sut, ref) closes the cycle: the cut
                 // returns the unchanged %hold, `play` reproduces the identical hold
-                // noun, and the fork mug-set collapses it (matching ++rest).
-                if self.redo_gil_contains(&next_state.gil, sut, reduced_ref)?
-                    || self.redo_gil_contains(&next_state.gil, sut, reference)?
+                // type, and the fork mug-set collapses it (matching ++rest).
+                // Identity is by interned `Rc` pointer: every redo-produced type is
+                // interned via cons_*/repo/peek/native_of, so ptr_eq == structural
+                // equality.
+                if self.redo_gil_contains(&next_state.gil, &sut, &reduced_ref)?
+                    || self.redo_gil_contains(&next_state.gil, &sut, &reference)?
                 {
                     return self.redo_done(sut, &next_state);
                 }
-                let repo = self.repo_noun(sut)?;
+                let repo = self.repo(sut.clone())?;
                 let mut recurse_state = next_state;
-                recurse_state.gil.push((sut, reduced_ref));
-                recurse_state.gil.push((sut, reference));
-                let redone = self.redo_dext(repo, reduced_ref, recurse_state)?;
-                if noun_eq(redone, repo, &self.slab.noun_space())? {
+                recurse_state.gil.push((sut.clone(), reduced_ref.clone()));
+                recurse_state.gil.push((sut.clone(), reference));
+                let redone = self.redo_dext(repo.clone(), reduced_ref, recurse_state)?;
+                if NRc::ptr_eq(&redone, &repo) {
                     Ok(sut)
                 } else {
                     Ok(redone)
@@ -341,56 +375,57 @@ impl<'a> Ut<'a> {
 
     pub(super) fn redo_sint(
         &mut self,
-        sut: Noun,
-        reference: Noun,
+        sut: NRc<NTy>,
+        reference: NRc<NTy>,
         hod: bool,
         state: RedoState,
-    ) -> Result<(Noun, RedoState)> {
+    ) -> Result<(NRc<NTy>, RedoState)> {
         self.with_stack_guard(|ut| ut.redo_sint_impl(sut, reference, hod, state))
     }
 
     fn redo_sint_impl(
         &mut self,
-        sut: Noun,
-        reference: Noun,
+        sut: NRc<NTy>,
+        reference: NRc<NTy>,
         hod: bool,
         state: RedoState,
-    ) -> Result<(Noun, RedoState)> {
-        let space = self.slab.noun_space();
-        match type_tag_kind(reference, &space)? {
-            TypeTagKind::Hint => {
-                self.redo_sint(sut, type_hint_inner(reference, &space)?, hod, state)
+    ) -> Result<(NRc<NTy>, RedoState)> {
+        match &*reference {
+            NTy::Hint { payload, .. } => {
+                let payload = payload.clone();
+                self.redo_sint(sut, payload, hod, state)
             }
-            TypeTagKind::Face => {
+            NTy::Face { tool, inner } => {
+                let tool = tool.clone();
+                let inner = inner.clone();
                 let mut next_state = state;
-                let tool = type_face_tool(reference, &space)?;
                 for stack in next_state.wec.iter_mut() {
-                    stack.push(tool);
+                    stack.push(tool.clone());
                 }
-                self.redo_sint(sut, type_face_inner(reference, &space)?, hod, next_state)
+                self.redo_sint(sut, inner, hod, next_state)
             }
-            TypeTagKind::Fork => {
-                let options = type_fork_options(reference, &space)?;
+            NTy::Fork { .. } => {
+                let options = self.fork_options_native(&reference)?;
                 let mut merged_wec = Vec::new();
                 let mut reduced_options = Vec::new();
-                for option in options.iter().copied() {
-                    if self.miss_noun(sut, option)? {
+                for option in options.iter() {
+                    if self.miss(sut.clone(), option.clone())? {
                         continue;
                     }
                     let (reduced_option, branch_state) =
-                        self.redo_sint(sut, option, hod, state.clone())?;
+                        self.redo_sint(sut.clone(), option.clone(), hod, state.clone())?;
                     for stack in branch_state.wec {
                         self.redo_push_unique_face_stack(&mut merged_wec, stack)?;
                     }
                     reduced_options.push(reduced_option);
                 }
                 if merged_wec.is_empty() {
-                    for option in options.iter().copied() {
-                        if !self.redo_fork_fallback_candidate(sut, option, hod)? {
+                    for option in options.iter() {
+                        if !self.redo_fork_fallback_candidate(&sut, option, hod)? {
                             continue;
                         }
                         let (reduced_option, branch_state) =
-                            self.redo_sint(sut, option, hod, state.clone())?;
+                            self.redo_sint(sut.clone(), option.clone(), hod, state.clone())?;
                         for stack in branch_state.wec {
                             self.redo_push_unique_face_stack(&mut merged_wec, stack)?;
                         }
@@ -399,10 +434,10 @@ impl<'a> Ut<'a> {
                 }
                 let mut next_state = state;
                 next_state.wec = merged_wec;
-                Ok((self.fork_from_options(reduced_options)?, next_state))
+                Ok((self.cons_fork(reduced_options)?, next_state))
             }
-            TypeTagKind::Hold if hod => {
-                let repo_ref = self.repo_noun(reference)?;
+            NTy::Hold { .. } if hod => {
+                let repo_ref = self.repo(reference)?;
                 self.redo_sint(sut, repo_ref, hod, state)
             }
             _ => Ok((reference, state)),

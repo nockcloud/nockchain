@@ -30,7 +30,138 @@ use nockvm::noun::{Noun, NounSpace, D, T};
 
 use super::leaf::Leaf;
 use crate::errors::{CompilerError, Result};
-use crate::native::noun::noun_pair;
+use crate::native::noun::{atom_to_string, noun_pair, term_to_noun};
+use crate::native::ut::types::{Poly, Vair};
+
+/// A native `%core` garb — the head of a coil, `[nym poly vair]`.
+///
+/// nym = `0` (anonymous, `None`) or `[0 term]` (named, `Some(term)`); poly =
+/// `%wet`|`%dry`; vair = `%gold`|`%iron`|`%lead`|`%zinc`. Replaces the jammed
+/// `Leaf` the coil head used to carry: built directly from `mint`'s parts and
+/// re-emitted byte-identically (mirrors `garb_from_parts`), so the core type
+/// noun round-trips unchanged while never jamming/cueing the tiny garb.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Garb {
+    pub nym: Option<String>,
+    pub poly: Poly,
+    pub vair: Vair,
+}
+
+/// Build a native [`Garb`] from `mint`'s parts (replaces `garb_from_parts`'
+/// noun building where it feeds `cons_core`).
+pub fn garb_native(name: Option<&str>, poly: Poly, vair: Vair) -> Garb {
+    Garb {
+        nym: name.map(str::to_string),
+        poly,
+        vair,
+    }
+}
+
+impl Garb {
+    /// Re-emit the garb noun `[nym poly vair]` BYTE-IDENTICALLY to
+    /// `garb_from_parts` (nym = `0` | `[0 term]`; poly/vair via `term_to_noun`).
+    pub fn to_noun(&self, dst: &mut NounSlab) -> Noun {
+        let name_noun = match &self.nym {
+            None => D(0),
+            Some(term) => {
+                let term_noun = term_to_noun(dst, term);
+                T(dst, &[D(0), term_noun])
+            }
+        };
+        let poly_noun = term_to_noun(
+            dst,
+            match self.poly {
+                Poly::Wet => "wet",
+                Poly::Dry => "dry",
+            },
+        );
+        let vair_noun = term_to_noun(
+            dst,
+            match self.vair {
+                Vair::Gold => "gold",
+                Vair::Iron => "iron",
+                Vair::Lead => "lead",
+                Vair::Zinc => "zinc",
+            },
+        );
+        T(dst, &[name_noun, poly_noun, vair_noun])
+    }
+
+    /// Decode a garb noun `[nym poly vair]` into a native [`Garb`] (mirrors
+    /// `garb_parts`/`garb_poly`/`garb_vair`; errors as those do).
+    pub fn from_noun(garb: Noun, space: &NounSpace) -> Result<Garb> {
+        let cell = garb
+            .in_space(space)
+            .as_cell()
+            .map_err(|err| CompilerError::Decode(format!("garb not cell: {err}")))?;
+        let tail = cell
+            .tail()
+            .as_cell()
+            .map_err(|err| CompilerError::Decode(format!("garb missing tail: {err}")))?;
+        let nym_noun = cell.head().noun();
+        let poly_noun = tail.head().noun();
+        let vair_noun = tail.tail().noun();
+        // nym = 0 (None) | [0 term] (Some).
+        let nym = if nym_noun.in_space(space).as_atom().is_ok() {
+            None
+        } else {
+            let nym_cell = nym_noun
+                .in_space(space)
+                .as_cell()
+                .map_err(|err| CompilerError::Decode(format!("garb nym not cell: {err}")))?;
+            let term_atom = nym_cell
+                .tail()
+                .as_atom()
+                .map_err(|err| CompilerError::Decode(format!("garb nym term not atom: {err}")))?;
+            Some(
+                atom_to_string(term_atom)
+                    .map_err(|err| CompilerError::Decode(format!("garb nym: {err}")))?,
+            )
+        };
+        let poly_atom = poly_noun
+            .in_space(space)
+            .as_atom()
+            .map_err(|err| CompilerError::Decode(format!("garb poly not atom: {err}")))?;
+        let poly_name = atom_to_string(poly_atom)
+            .map_err(|err| CompilerError::Decode(format!("garb poly: {err}")))?;
+        let poly = match poly_name.as_str() {
+            "wet" => Poly::Wet,
+            "dry" => Poly::Dry,
+            _ => {
+                return Err(CompilerError::UnsupportedExpr(format!(
+                    "native mint: garb poly {poly_name}"
+                )))
+            }
+        };
+        let vair_atom = vair_noun
+            .in_space(space)
+            .as_atom()
+            .map_err(|err| CompilerError::Decode(format!("garb vair not atom: {err}")))?;
+        let vair_name = atom_to_string(vair_atom)
+            .map_err(|err| CompilerError::Decode(format!("garb vair: {err}")))?;
+        let vair = match vair_name.as_str() {
+            "gold" => Vair::Gold,
+            "iron" => Vair::Iron,
+            "lead" => Vair::Lead,
+            "zinc" => Vair::Zinc,
+            _ => {
+                return Err(CompilerError::UnsupportedExpr(format!(
+                    "native mint: garb vair {vair_name}"
+                )))
+            }
+        };
+        Ok(Garb { nym, poly, vair })
+    }
+
+    /// Return a copy with `vair` replaced (mirrors `garb_with_vair`).
+    pub fn with_vair(&self, vair: Vair) -> Garb {
+        Garb {
+            nym: self.nym.clone(),
+            poly: self.poly,
+            vair,
+        }
+    }
+}
 
 /// A Hoon compiler type (Phase-1 boundary form; see module docs).
 #[derive(Debug)]
@@ -48,7 +179,7 @@ pub enum Type {
     /// as leaves.
     Core {
         payload: Rc<Type>,
-        garb: Leaf,
+        garb: Garb,
         context: Rc<Type>,
         rest: Leaf,
     },
@@ -96,7 +227,8 @@ impl Type {
             } => {
                 let p = payload.to_noun(dst);
                 // Rebuild the coil noun = [garb [context rest]] (mirrors
-                // coil_from_parts: [garb [context rest]]).
+                // coil_from_parts: [garb [context rest]]). The garb noun is built
+                // BYTE-IDENTICALLY to garb_from_parts.
                 let g = garb.to_noun(dst);
                 let ctx = context.to_noun(dst);
                 let r = rest.to_noun(dst);
@@ -165,7 +297,7 @@ impl Type {
             let (context, rest) = pair(coil_tail)?;
             Type::Core {
                 payload: rc(Type::from_noun(payload, space)?),
-                garb: Leaf::from_noun(garb, space),
+                garb: Garb::from_noun(garb, space)?,
                 context: rc(Type::from_noun(context, space)?),
                 rest: Leaf::from_noun(rest, space),
             }
@@ -251,11 +383,23 @@ mod tests {
                 T(s, &[D(tas("hold")), sut, gen])
             },
             |s| {
-                // [%core payload coil] with an opaque coil
+                // [%core payload coil] — coil = [garb [context rest]],
+                // garb = [nym poly vair] = [0 %dry %gold] (anonymous dry gold core).
                 let payload = T(s, &[D(tas("atom")), D(tas("ud")), D(0)]);
                 let ctx = D(tas("noun"));
                 let tomes = D(0);
-                let garb = D(0);
+                let garb = T(s, &[D(0), D(tas("dry")), D(tas("gold"))]);
+                let tail = T(s, &[ctx, tomes]);
+                let coil = T(s, &[garb, tail]);
+                T(s, &[D(tas("core")), payload, coil])
+            },
+            |s| {
+                // [%core payload coil] with a NAMED garb = [[0 %foo] %wet %iron].
+                let payload = T(s, &[D(tas("atom")), D(tas("ud")), D(0)]);
+                let ctx = D(tas("noun"));
+                let tomes = D(0);
+                let nym = T(s, &[D(0), D(tas("foo"))]);
+                let garb = T(s, &[nym, D(tas("wet")), D(tas("iron"))]);
                 let tail = T(s, &[ctx, tomes]);
                 let coil = T(s, &[garb, tail]);
                 T(s, &[D(tas("core")), payload, coil])

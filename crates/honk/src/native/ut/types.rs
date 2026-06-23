@@ -882,13 +882,13 @@ pub enum MuskOutput {
     Done(Noun),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Poly {
     Wet,
     Dry,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Vair {
     Gold,
     Iron,

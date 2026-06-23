@@ -2204,25 +2204,25 @@ fn redo_sint_reference_hold_respects_hod_flag() {
     let reference = ty_hold(&mut slab, held, hoon_noun);
     let mut ut = Ut::new(&mut slab);
 
+    // redo_sint is native (the redo SCC flip): lift the noun args to native and
+    // assert on the native enum variant the tag used to denote.
+    let space = ut.slab.noun_space();
+    let payload_n = native_of(payload, &space).expect("native payload");
+    let reference_n = native_of(reference, &space).expect("native reference");
+
     let (opaque_ref, _opaque_state) = ut
-        .redo_sint(payload, reference, false, RedoState::default())
+        .redo_sint(payload_n.clone(), reference_n.clone(), false, RedoState::default())
         .expect("redo_sint(false)");
-    assert_eq!(
-        type_tag(opaque_ref, &ut.slab.noun_space())
-            .expect("tag")
-            .as_str(),
-        "hold",
+    assert!(
+        matches!(&*opaque_ref, NTy::Hold { .. }),
         "sint(|) should leave reference holds opaque"
     );
 
     let (expanded_ref, _expanded_state) = ut
-        .redo_sint(payload, reference, true, RedoState::default())
+        .redo_sint(payload_n, reference_n, true, RedoState::default())
         .expect("redo_sint(true)");
-    assert_eq!(
-        type_tag(expanded_ref, &ut.slab.noun_space())
-            .expect("tag")
-            .as_str(),
-        "atom",
+    assert!(
+        matches!(&*expanded_ref, NTy::Atom { .. }),
         "sint(&) should expand reference holds via repo and keep reducing"
     );
 }
