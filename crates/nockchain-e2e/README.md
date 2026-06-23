@@ -23,12 +23,15 @@ This crate is both a library and a binary. The library implements scenario execu
 
 ## Usage
 
+The bundled scenarios and fixtures live in [`e2e/`](./e2e/README.md)
+(`e2e/scenarios/*.yaml`, `e2e/fixtures/`).
+
 ```
-# Run a scenario (defaults to target/release/nockchain)
-cargo run --release --bin nockchain-e2e -- run path/to/scenario.yaml
+# Run a bundled scenario (defaults to target/release/nockchain)
+cargo run --release --bin nockchain-e2e -- run crates/nockchain-e2e/e2e/scenarios/smoke.yaml
 
 # Run against a Docker image instead of a local binary
-cargo run --release --bin nockchain-e2e -- run scenario.yaml --docker --docker-image <IMAGE>
+cargo run --release --bin nockchain-e2e -- run crates/nockchain-e2e/e2e/scenarios/smoke.yaml --docker --docker-image <IMAGE>
 ```
 
 Diagnostic subcommands: `block-size-report`, `assert-peer-speedup`, `wait-for-public-height`, `wait-for-demo-live` (alias `wait-for-review-ready`), `wait-for-seed-catch-up`, and `block-tx-distribution`. Run `nockchain-e2e --help` (or `<subcommand> --help`) for full flags.

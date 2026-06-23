@@ -100,7 +100,7 @@ async fn test_upgrade_activation_scenario() -> Result<()> {
     let base_p2p_port = reserve_udp_port_pair().context("reserve upgrade p2p ports")?;
     env::set_var("BASE_P2P_PORT", base_p2p_port.to_string());
 
-    let scenario_path = workspace_root()?.join("tests/e2e/scenarios/upgrade_activation.yaml");
+    let scenario_path = workspace_root()?.join("crates/nockchain-e2e/e2e/scenarios/upgrade_activation.yaml");
     let run_dir = temp_run_dir("bythos-upgrade");
     std::fs::create_dir_all(&run_dir).context("create upgrade run dir")?;
 

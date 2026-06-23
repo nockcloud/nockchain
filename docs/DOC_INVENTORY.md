@@ -20,9 +20,8 @@ Documentation coverage tracker. For navigation, use the documentation map at
 | Root quickstart                                   | 1     | `README.md` (Tier-1 quickstart)                                     |
 | Decision records and template                     | 3     | `docs/DECISIONS/0001`, `0002`, `TEMPLATE`                               |
 | Protocol upgrade specs (`docs/changelog/protocol/`)    | 16    | `SPECIFICATION.md` + 15 upgrade specs (001–014, incl. Aletheia audit) |
-| `docs/` (map, inventory, architecture, pma, fixes) | 33    | documentation map, this tracker, `pma/PMA-FAQ.md`, deep dives        |
-| `crates/` (module READMEs + subsystem docs)       | 74    | every crate now has a root README; includes bridge/nockvm doc sets   |
-| `tests/`                                          | 2     | e2e fixtures/readmes                                                  |
+| Other docs under `docs/` (map, inventory, architecture, pma, fixes) | 33 | documentation map, this tracker, `pma/PMA-FAQ.md`, deep dives        |
+| `crates/` (module READMEs + subsystem docs)       | 76    | every crate has a root README; includes bridge/nockvm/e2e doc sets   |
 
 Counts include third-party vendored docs under `crates/nockvm/rust/` (ibig,
 murmur3), which are not maintained by this project.

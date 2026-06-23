@@ -519,7 +519,7 @@ asserts:
     #[test]
     fn nous_testnet_gen2_send_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_testnet_gen2_send.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_testnet_gen2_send.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -555,7 +555,7 @@ asserts:
     #[test]
     fn nous_gen2_multi_sender_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_multi_sender.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_multi_sender.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -576,28 +576,28 @@ asserts:
     fn rollout_matrix_scenarios_include_req_res_generation_asserts() {
         for (path, contents) in [
             (
-                "../../../tests/e2e/scenarios/nous_shipped_default.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_shipped_default.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_shipped_default.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_shipped_default.yaml"),
             ),
             (
-                "../../../tests/e2e/scenarios/nous_gen2_enabled.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_gen2_enabled.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_gen2_enabled.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_gen2_enabled.yaml"),
             ),
             (
-                "../../../tests/e2e/scenarios/nous_mixed_generation.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_mixed_generation.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_mixed_generation.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_mixed_generation.yaml"),
             ),
             (
-                "../../../tests/e2e/scenarios/nous_rollback.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_rollback.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_rollback.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_rollback.yaml"),
             ),
             (
-                "../../../tests/e2e/scenarios/nous_old_new_fallback.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_old_new_fallback.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_old_new_fallback.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_old_new_fallback.yaml"),
             ),
             (
-                "../../../tests/e2e/scenarios/nous_testnet_gen2_send.yaml",
-                include_str!("../../../tests/e2e/scenarios/nous_testnet_gen2_send.yaml"),
+                "../../nockchain-e2e/e2e/scenarios/nous_testnet_gen2_send.yaml",
+                include_str!("../../nockchain-e2e/e2e/scenarios/nous_testnet_gen2_send.yaml"),
             ),
         ] {
             let scenario: crate::scenario::Scenario =
@@ -616,7 +616,7 @@ asserts:
     #[test]
     fn nous_gen2_partition_reorg_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_partition_reorg.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_partition_reorg.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -639,7 +639,7 @@ asserts:
     #[test]
     fn nous_gen2_soak_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_soak.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_soak.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -667,7 +667,7 @@ asserts:
     #[test]
     fn nous_gen2_long_haul_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_long_haul.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_long_haul.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -703,7 +703,7 @@ asserts:
     #[test]
     fn nous_gen2_double_spend_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_double_spend.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_double_spend.yaml"
         ))
         .expect("scenario should deserialize");
 
@@ -722,7 +722,7 @@ asserts:
     #[test]
     fn nous_gen2_invalid_tx_scenario_deserializes() {
         let scenario: crate::scenario::Scenario = serde_yaml::from_str(include_str!(
-            "../../../tests/e2e/scenarios/nous_gen2_invalid_tx.yaml"
+            "../../nockchain-e2e/e2e/scenarios/nous_gen2_invalid_tx.yaml"
         ))
         .expect("scenario should deserialize");
 

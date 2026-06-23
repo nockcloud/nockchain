@@ -1963,7 +1963,7 @@ mod tests {
         crate::runner::seed_run_state(
             &mut state,
             &run_dir,
-            Path::new("tests/e2e/scenarios/nous_testnet_gen2_send.yaml"),
+            Path::new("crates/nockchain-e2e/e2e/scenarios/nous_testnet_gen2_send.yaml"),
         )
         .expect("seed run state");
 
@@ -1980,14 +1980,14 @@ mod tests {
             state.vars.get("SCENARIO_PATH"),
             Some(
                 &repo_root
-                    .join("tests/e2e/scenarios/nous_testnet_gen2_send.yaml")
+                    .join("crates/nockchain-e2e/e2e/scenarios/nous_testnet_gen2_send.yaml")
                     .display()
                     .to_string()
             )
         );
         assert_eq!(
             state.vars.get("SCENARIO_DIR"),
-            Some(&repo_root.join("tests/e2e/scenarios").display().to_string())
+            Some(&repo_root.join("crates/nockchain-e2e/e2e/scenarios").display().to_string())
         );
 
         std::fs::remove_dir_all(&run_dir).expect("cleanup run dir");
