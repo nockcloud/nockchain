@@ -18,6 +18,13 @@ Nockchain is a ZK-Proof of Work blockchain that combines sound money incentives 
 > This README remains a quickstart for setup and operations.
 > Operators upgrading to a PMA-enabled release should also read [`PMA-FAQ.md`](./PMA-FAQ.md).
 
+## Documentation
+
+- **Start here:** [`START_HERE.md`](./START_HERE.md) — docs trust contract and canonical read order.
+- **Full documentation map:** [`docs/README.md`](./docs/README.md) — one index to every doc and module, grouped by subsystem.
+- **Canonical spine:** [`PROTOCOL.md`](./PROTOCOL.md) (protocol authority) · [`ARCHITECTURE.md`](./ARCHITECTURE.md) (boundaries/invariants) · [`WORKFLOWS.md`](./WORKFLOWS.md) (operational routing) · [`DECISIONS/README.md`](./DECISIONS/README.md) (ADRs).
+- **Per-module docs:** every crate under [`crates/`](./crates/) has a README; browse them via the [documentation map](./docs/README.md).
+
 ## This is the first release of the persistent memory arena
 
 The PMA is a major re-architecting of `nockvm`, the runtime for Nockchain, and it significantly reduces the steady-state memory requirements of Nockchain peers and NockApps. We have tested it and run it ourselves but please report any bugs or problems.

@@ -16,7 +16,7 @@ If documents conflict, follow this file and the canonical spine below.
    - Runtime interface and kernel integration: [`crates/nockapp/README.md`](./crates/nockapp/README.md)
    - Public API runtime/deployment guidance: [`crates/nockchain-api/README.md`](./crates/nockchain-api/README.md)
    - Wallet CLI behavior and usage: [`crates/nockchain-wallet/README.md`](./crates/nockchain-wallet/README.md)
-   - Deeper protocol notes and historical context: [`docs/NOCKCHAIN.md`](../docs/NOCKCHAIN.md)
+4. To browse everything else (per-module crate docs, architecture deep dives, PMA, runbooks), use the documentation map: [`docs/README.md`](./docs/README.md).
 
 ## Trust And Canonical Policy
 
@@ -29,7 +29,7 @@ If documents conflict, follow this file and the canonical spine below.
 
 ## Demotions In This Revision
 
-- `../docs/NOCKCHAIN.md` and `README.md` are no longer Tier 0; they are Tier 1 scoped satellites.
+- `README.md` is no longer Tier 0; it is a Tier 1 scoped satellite (the quickstart/operations lane).
 
 ## Promotions In This Revision
 
@@ -50,7 +50,7 @@ Promotion MUST include technical hardening in the same change:
    - `## Verification Contract`
 4. State what the doc is NOT authoritative for, and route those decisions to the canonical authority doc.
 5. Record promotion rationale in PR/commit history (not in the promoted document body).
-6. Run `make -C open docs-check`.
+6. Run `make docs-check`.
 
 This gate is CI-enforced for docs that declare Tier 1 canonical status.
 
