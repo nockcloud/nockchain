@@ -30,8 +30,8 @@ Recent releases ship the PMA, a re-architecting of `nockvm` that drops
 steady-state RAM from ~20 GiB to ~1.8 GiB and improves throughput and
 durability. Still provision at least 32 GiB of swap.
 
-Upgrading operators should read [`PMA-FAQ.md`](./PMA-FAQ.md); design and
-durability internals live in [`docs/pma/`](./docs/pma/README.md).
+Upgrading operators should read [`docs/pma/PMA-FAQ.md`](./docs/pma/PMA-FAQ.md);
+design and durability internals live in [`docs/pma/`](./docs/pma/README.md).
 
 ## Setup
 

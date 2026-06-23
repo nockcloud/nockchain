@@ -42,7 +42,7 @@ If anything here conflicts with a Tier-0 doc, the Tier-0 doc wins.
 - [`crates/nockvm/README.md`](../crates/nockvm/README.md) — the Nock virtual machine.
 - [`crates/nockvm/DEVELOPERS.md`](../crates/nockvm/DEVELOPERS.md) — NockVM developer guide.
 - [`crates/nockvm/docs/`](../crates/nockvm/docs/) — VM internals (stack, heap, persistence, b-trees, codegen, pills, LLVM).
-- [`PMA-FAQ.md`](../PMA-FAQ.md) — operator FAQ for upgrading to a PMA-enabled release.
+- [`PMA-FAQ.md`](./pma/PMA-FAQ.md) — operator FAQ for upgrading to a PMA-enabled release.
 - [`docs/pma/`](./pma/README.md) — PMA design, durability operations, GC, and provenance notes.
 
 ## 5. Modules by Subsystem
@@ -141,5 +141,5 @@ satellites (marked **Tier 1**); the rest are crate-level reference.
 ## 9. Doc Governance
 
 - Trust contract and promotion gate: [`START_HERE.md`](../START_HERE.md)
-- Audit coverage tracker: [`DOC_INVENTORY.md`](../DOC_INVENTORY.md)
+- Audit coverage tracker: [`DOC_INVENTORY.md`](./DOC_INVENTORY.md)
 - CI doc checks: `make docs-check` (see [`scripts/docs/`](../scripts/docs/))

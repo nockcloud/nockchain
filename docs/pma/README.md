@@ -4,6 +4,7 @@ This directory contains PMA documentation that is useful for production testing,
 
 ## Documents
 
+- [`PMA-FAQ.md`](./PMA-FAQ.md) — operator-facing FAQ for upgrading to and running a PMA-enabled release (start here if you run a node).
 - [`DESIGN.md`](./DESIGN.md) — implementation-oriented PMA design, durability model, snapshot model, GC model, and known limits.
 - [`DURABILITY-OPERATIONS.md`](./DURABILITY-OPERATIONS.md) — operator and production-testing guide for PMA durability, boot recovery, snapshots, event logs, and GC.
 - [`NOUN-PROVENANCE-AND-BRANDED-HANDLES.md`](./NOUN-PROVENANCE-AND-BRANDED-HANDLES.md) — context for alien noun / NounSpace bugs and why `NounHandle` / branded handles exist.

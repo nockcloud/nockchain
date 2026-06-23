@@ -6,7 +6,7 @@ Last Reviewed: 2026-06-23
 Canonical/Legacy: Legacy (coverage tracker for `**/*.md`; authority remains with Tier-0 docs)
 
 Documentation coverage tracker. For navigation, use the documentation map at
-[`docs/README.md`](./docs/README.md); this file tracks *coverage*, not routing.
+[`docs/README.md`](./README.md); this file tracks *coverage*, not routing.
 
 - Source command: `find . -name '*.md' -not -path './.git/*' -not -path './target/*' | sort`
 - Last counted: 2026-06-23
@@ -17,11 +17,10 @@ Documentation coverage tracker. For navigation, use the documentation map at
 | Area                                              | Files | Notes                                                                 |
 | ------------------------------------------------- | ----- | -------------------------------------------------------------------- |
 | Tier-0 canonical spine (root + `DECISIONS/README`) | 5     | `START_HERE`, `PROTOCOL`, `ARCHITECTURE`, `WORKFLOWS`, `DECISIONS/README` |
-| Other root docs                                   | 2     | `README.md` (Tier-1 quickstart), `PMA-FAQ.md`                       |
-| This tracker                                      | 1     | `DOC_INVENTORY.md`                                                  |
+| Root quickstart                                   | 1     | `README.md` (Tier-1 quickstart)                                     |
 | Decision records and template                     | 3     | `DECISIONS/0001`, `0002`, `TEMPLATE`                               |
 | Protocol upgrade specs (`changelog/protocol/`)    | 16    | `SPECIFICATION.md` + 15 upgrade specs (001–014, incl. Aletheia audit) |
-| `docs/` (map + architecture + pma + fixes)        | 31    | includes new index READMEs and the documentation map                 |
+| `docs/` (map, inventory, architecture, pma, fixes) | 33    | documentation map, this tracker, `pma/PMA-FAQ.md`, deep dives        |
 | `crates/` (module READMEs + subsystem docs)       | 74    | every crate now has a root README; includes bridge/nockvm doc sets   |
 | `tests/`                                          | 2     | e2e fixtures/readmes                                                  |
 
@@ -33,11 +32,11 @@ murmur3), which are not maintained by this project.
 As of 2026-06-23, **every crate under `crates/` has a root `README.md`**. The
 22 previously-undocumented crates were given module READMEs following the
 crate-level house style (metadata header + `Canonical/Legacy: Legacy`). Browse
-them through the [documentation map](./docs/README.md#5-modules-by-subsystem).
+them through the [documentation map](./README.md#5-modules-by-subsystem).
 
 ## Canonical Tiers
 
-Canonical tiering is governed by [`START_HERE.md`](./START_HERE.md), not by this
+Canonical tiering is governed by [`START_HERE.md`](../START_HERE.md), not by this
 file. In summary:
 
 - **Tier 0 (canonical spine):** `START_HERE.md`, `PROTOCOL.md`,
@@ -54,6 +53,6 @@ file. In summary:
 When adding or removing markdown files:
 
 1. Re-run the source command and update the total + area counts above.
-2. Add navigation entries to [`docs/README.md`](./docs/README.md).
-3. If the doc changes canonical tiering, update [`START_HERE.md`](./START_HERE.md)
+2. Add navigation entries to [`docs/README.md`](./README.md).
+3. If the doc changes canonical tiering, update [`START_HERE.md`](../START_HERE.md)
    in the same change and run `make docs-check`.
