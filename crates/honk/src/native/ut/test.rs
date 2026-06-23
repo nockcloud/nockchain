@@ -290,9 +290,9 @@ fn nest_cell_branch_resets_hold_seen_guards() {
 
     let mut ut = Ut::new(&mut slab);
     let space = ut.slab.noun_space();
-    let sut_n = native_of(sut, &space).expect("native sut");
-    let ref_n = native_of(ref_, &space).expect("native ref");
-    let hold_n = native_of(hold, &space).expect("native hold");
+    let sut_n = native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let ref_n = native_of(&mut ut.cx, ref_, &space).expect("native ref");
+    let hold_n = native_of(&mut ut.cx, hold, &space).expect("native hold");
     let mut seen_sut_holds = NestSeenSet::new();
     let mut seen_ref_holds = NestSeenSet::new();
     let mut gil = NestPairSet::new();
@@ -330,8 +330,8 @@ fn nest_hold_seen_guard_still_applies_outside_cell() {
 
     let mut ut = Ut::new(&mut slab);
     let space = ut.slab.noun_space();
-    let hold_n = native_of(hold, &space).expect("native hold");
-    let ref_n = native_of(ref_, &space).expect("native ref");
+    let hold_n = native_of(&mut ut.cx, hold, &space).expect("native hold");
+    let ref_n = native_of(&mut ut.cx, ref_, &space).expect("native ref");
     let mut seen_sut_holds = NestSeenSet::new();
     let mut seen_ref_holds = NestSeenSet::new();
     let mut gil = NestPairSet::new();
@@ -543,8 +543,8 @@ fn type_algebra_fuse_and_crop_preserve_subtyping_and_exact_crop_disjointness() {
     for (left_name, left) in &types {
         for (right_name, right) in &types {
             let space = ut.slab.noun_space();
-            let left_n = native_of(*left, &space).expect("native left");
-            let right_n = native_of(*right, &space).expect("native right");
+            let left_n = native_of(&mut ut.cx, *left, &space).expect("native left");
+            let right_n = native_of(&mut ut.cx, *right, &space).expect("native right");
             let fused = ut
                 .fuse(left_n.clone(), right_n.clone())
                 .unwrap_or_else(|err| panic!("fuse({left_name}, {right_name}) errored: {err:?}"));
@@ -591,10 +591,10 @@ fn type_algebra_gain_and_lose_partition_base_skins() {
     ];
     let mut ut = Ut::new(&mut slab);
     let sut_noun = ty_noun(ut.slab);
-    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let sut = native_of(&mut ut.cx, sut_noun, &ut.slab.noun_space()).expect("native sut");
 
     for (type_name, typ) in &types {
-        let typ_n = native_of(*typ, &ut.slab.noun_space()).expect("native typ");
+        let typ_n = native_of(&mut ut.cx, *typ, &ut.slab.noun_space()).expect("native typ");
         for (skin_name, skin) in &skins {
             let gained = ut
                 .gain_skin(sut.clone(), typ_n.clone(), skin)
@@ -676,12 +676,12 @@ fn active_rest_fan_context_partitions_context_sensitive_native_ut_caches() {
     // The mull cache is native-keyed (C8/C-final); native_of the noun sut/gol/ref
     // for the mull_cache_store/lookup calls (the other caches stay noun-keyed).
     let space = ut.slab.noun_space();
-    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
-    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
-    let ref_n = crate::native::ir::intern::native_of(ref_type, &space).expect("native ref");
-    let ty_n = crate::native::ir::intern::native_of(ty, &space).expect("native ty");
+    let sut_n = crate::native::ir::intern::native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(&mut ut.cx, gol, &space).expect("native gol");
+    let ref_n = crate::native::ir::intern::native_of(&mut ut.cx, ref_type, &space).expect("native ref");
+    let ty_n = crate::native::ir::intern::native_of(&mut ut.cx, ty, &space).expect("native ty");
     let inner_ty_n =
-        crate::native::ir::intern::native_of(inner_ty, &space).expect("native inner");
+        crate::native::ir::intern::native_of(&mut ut.cx, inner_ty, &space).expect("native inner");
     let rest_legs_noun = ut.rest_legs_noun(&rest_legs);
     ut.mint_boundary_store_exact(sut, gol, mint_gen, ty, formula)
         .expect("mint boundary store");
@@ -1092,9 +1092,9 @@ fn gain_atom_skin_hold_guard_is_structural() {
     let mut ut = Ut::new(&mut slab);
     // hold_a/hold_b are structurally equal: interning collapses them to ONE Rc,
     // so seeding the native ptr-id guard with hold_a guards hold_b too.
-    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
-    let hold_a_n = native_of(hold_a, &ut.slab.noun_space()).expect("native hold_a");
-    let hold_b_n = native_of(hold_b, &ut.slab.noun_space()).expect("native hold_b");
+    let sut = native_of(&mut ut.cx, sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let hold_a_n = native_of(&mut ut.cx, hold_a, &ut.slab.noun_space()).expect("native hold_a");
+    let hold_b_n = native_of(&mut ut.cx, hold_b, &ut.slab.noun_space()).expect("native hold_b");
     let mut seen: HashSet<u64> = HashSet::new();
     assert!(seen.insert(NRc::as_ptr(&hold_a_n) as u64), "seed guard");
     let out = ut
@@ -1121,9 +1121,9 @@ fn lose_leaf_skin_hold_guard_is_structural() {
     assert!(!unsafe { hold_a.raw_equals(&hold_b) });
 
     let mut ut = Ut::new(&mut slab);
-    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
-    let hold_a_n = native_of(hold_a, &ut.slab.noun_space()).expect("native hold_a");
-    let hold_b_n = native_of(hold_b, &ut.slab.noun_space()).expect("native hold_b");
+    let sut = native_of(&mut ut.cx, sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let hold_a_n = native_of(&mut ut.cx, hold_a, &ut.slab.noun_space()).expect("native hold_a");
+    let hold_b_n = native_of(&mut ut.cx, hold_b, &ut.slab.noun_space()).expect("native hold_b");
     let mut seen: HashSet<u64> = HashSet::new();
     assert!(seen.insert(NRc::as_ptr(&hold_a_n) as u64), "seed guard");
     let out = ut
@@ -1168,7 +1168,7 @@ fn take_none_fork_branches_do_not_share_hold_seen_guard() {
     let right = ty_face(&mut slab, "right", hold);
     let sut_noun = ty_fork(&mut slab, vec![left, right]);
     let mut ut = Ut::new(&mut slab);
-    let sut = native_of(sut_noun, &ut.slab.noun_space()).expect("native sut");
+    let sut = native_of(&mut ut.cx, sut_noun, &ut.slab.noun_space()).expect("native sut");
     let calls = Cell::new(0usize);
 
     let out = ut
@@ -1195,7 +1195,7 @@ fn toss_empty_errors_need() {
     let wing = vec![Limb::Term("foo".to_string())];
     let mur_noun = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
-    let mur = native_of(mur_noun, &ut.slab.noun_space()).expect("native mur");
+    let mur = native_of(&mut ut.cx, mur_noun, &ut.slab.noun_space()).expect("native mur");
 
     let err = ut
         .toss(&wing, mur, &[])
@@ -1219,9 +1219,9 @@ fn toss_mismatched_axes_errors_mate() {
     let mur_noun = ty_atom(&mut slab, "ud", None);
     let foot = D(0);
     let mut ut = Ut::new(&mut slab);
-    let mur = native_of(mur_noun, &ut.slab.noun_space()).expect("native mur");
-    let left_n = native_of(left, &ut.slab.noun_space()).expect("native left");
-    let right_n = native_of(right, &ut.slab.noun_space()).expect("native right");
+    let mur = native_of(&mut ut.cx, mur_noun, &ut.slab.noun_space()).expect("native mur");
+    let left_n = native_of(&mut ut.cx, left, &ut.slab.noun_space()).expect("native left");
+    let right_n = native_of(&mut ut.cx, right, &ut.slab.noun_space()).expect("native right");
 
     let (left_axis, _left_new) = ut.tack(left_n.clone(), &wing, mur.clone()).expect("left tack");
     let (right_axis, _right_new) =
@@ -1669,7 +1669,7 @@ fn strict_play_limb_dollar_is_not_subject_alias() {
     let sut = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     // play family takes a native subject now (C-final.2).
-    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+    let sut = crate::native::ir::intern::native_of(&mut ut.cx, sut, &ut.slab.noun_space())
         .expect("native sut");
 
     assert!(
@@ -1686,8 +1686,8 @@ fn strict_mint_limb_dollar_is_not_subject_alias() {
     let mut ut = Ut::new(&mut slab);
 
     let space = ut.slab.noun_space();
-    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
-    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    let sut_n = crate::native::ir::intern::native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(&mut ut.cx, gol, &space).expect("native gol");
     assert!(
         ut.mint_limb(sut_n, gol_n, "$").is_err(),
         "strict mint_limb should not resolve `$` as current subject alias",
@@ -1718,7 +1718,7 @@ fn strict_play_wing_dollar_on_non_core_is_not_subject_alias() {
     let sut = cell_type(&mut slab, head, tail).expect("cell type");
     let wing = vec![Limb::Term("$".to_string())];
     let mut ut = Ut::new(&mut slab);
-    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+    let sut = crate::native::ir::intern::native_of(&mut ut.cx, sut, &ut.slab.noun_space())
         .expect("native sut");
 
     assert!(
@@ -1739,8 +1739,8 @@ fn strict_mint_wing_dollar_on_non_core_is_not_subject_alias() {
     let mut ut = Ut::new(&mut slab);
 
     let space = ut.slab.noun_space();
-    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
-    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    let sut_n = crate::native::ir::intern::native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(&mut ut.cx, gol, &space).expect("native gol");
     assert!(
         ut.mint_wing(sut_n, gol_n, &wing).is_err(),
         "strict mint_wing should not resolve `$` as subject alias on non-core subjects",
@@ -1756,7 +1756,7 @@ fn strict_play_wing_dollar_prefixed_axis_is_not_subject_alias_projection() {
     let sut = cell_type(&mut slab, head, tail).expect("cell type");
     let wing = vec![Limb::Term("$".to_string()), Limb::Axis(2)];
     let mut ut = Ut::new(&mut slab);
-    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+    let sut = crate::native::ir::intern::native_of(&mut ut.cx, sut, &ut.slab.noun_space())
         .expect("native sut");
 
     assert!(
@@ -1777,8 +1777,8 @@ fn strict_mint_wing_dollar_prefixed_axis_is_not_subject_alias_projection() {
     let mut ut = Ut::new(&mut slab);
 
     let space = ut.slab.noun_space();
-    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
-    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    let sut_n = crate::native::ir::intern::native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(&mut ut.cx, gol, &space).expect("native gol");
     assert!(
         ut.mint_wing(sut_n, gol_n, &wing).is_err(),
         "strict mint_wing should not resolve `$.<axis>` via subject alias",
@@ -1938,7 +1938,7 @@ fn strict_play_wing_does_not_use_compat_fallback_ladders() {
     let sut = ty_noun(&mut slab);
     let wing = vec![Limb::Term("definitely_missing".to_string())];
     let mut ut = Ut::new(&mut slab);
-    let sut = crate::native::ir::intern::native_of(sut, &ut.slab.noun_space())
+    let sut = crate::native::ir::intern::native_of(&mut ut.cx, sut, &ut.slab.noun_space())
         .expect("native sut");
 
     assert!(ut.play_wing(sut, &wing).is_err());
@@ -1953,8 +1953,8 @@ fn strict_mint_wing_does_not_use_compat_fallback_ladders() {
     let mut ut = Ut::new(&mut slab);
 
     let space = ut.slab.noun_space();
-    let sut_n = crate::native::ir::intern::native_of(sut, &space).expect("native sut");
-    let gol_n = crate::native::ir::intern::native_of(gol, &space).expect("native gol");
+    let sut_n = crate::native::ir::intern::native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = crate::native::ir::intern::native_of(&mut ut.cx, gol, &space).expect("native gol");
     assert!(ut.mint_wing(sut_n, gol_n, &wing).is_err());
 }
 
@@ -1991,16 +1991,16 @@ fn mull_cnts_mixed_ports_errors() {
     let leg_typ = ty_noun(&mut slab);
     let mut ut = Ut::new(&mut slab);
     let space = ut.slab.noun_space();
-    let sut_n = native_of(sut, &space).expect("native sut");
-    let gol_n = native_of(gol, &space).expect("native gol");
-    let dox_n = native_of(dox, &space).expect("native dox");
+    let sut_n = native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = native_of(&mut ut.cx, gol, &space).expect("native gol");
+    let dox_n = native_of(&mut ut.cx, dox, &space).expect("native dox");
     let lug_p = Port::Synthetic {
-        typ: native_of(synth_typ, &space).expect("native synth typ"),
+        typ: native_of(&mut ut.cx, synth_typ, &space).expect("native synth typ"),
         formula: D(0),
     };
     let lug_q = Port::Palo(Palo {
         vein: Vec::new(),
-        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
+        opal: Opal::Leg(native_of(&mut ut.cx, leg_typ, &space).expect("native leg typ")),
     });
     let result = ut.mull_cnts_with_ports(sut_n, gol_n, dox_n, &lug_p, &lug_q, &[]);
     assert!(result.is_err(), "mixed synthetic/natural should error");
@@ -2017,7 +2017,7 @@ fn mull_endo_mismatch_returns_noun_error() {
     let space = ut.slab.noun_space();
     let palo_leg = Palo {
         vein: Vec::new(),
-        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
+        opal: Opal::Leg(native_of(&mut ut.cx, leg_typ, &space).expect("native leg typ")),
     };
     let palo_arm = Palo {
         vein: Vec::new(),
@@ -2026,9 +2026,9 @@ fn mull_endo_mismatch_returns_noun_error() {
             arms: Vec::new(),
         },
     };
-    let sut_n = native_of(sut, &space).expect("native sut");
-    let gol_n = native_of(gol, &space).expect("native gol");
-    let dox_n = native_of(dox, &space).expect("native dox");
+    let sut_n = native_of(&mut ut.cx, sut, &space).expect("native sut");
+    let gol_n = native_of(&mut ut.cx, gol, &space).expect("native gol");
+    let dox_n = native_of(&mut ut.cx, dox, &space).expect("native dox");
     let result = ut.mull_endo(sut_n, gol_n, dox_n, &palo_leg, &palo_arm, &[]);
     match result {
         Err(CompilerError::Noun(_)) => {}
@@ -2207,8 +2207,8 @@ fn redo_sint_reference_hold_respects_hod_flag() {
     // redo_sint is native (the redo SCC flip): lift the noun args to native and
     // assert on the native enum variant the tag used to denote.
     let space = ut.slab.noun_space();
-    let payload_n = native_of(payload, &space).expect("native payload");
-    let reference_n = native_of(reference, &space).expect("native reference");
+    let payload_n = native_of(&mut ut.cx, payload, &space).expect("native payload");
+    let reference_n = native_of(&mut ut.cx, reference, &space).expect("native reference");
 
     let (opaque_ref, _opaque_state) = ut
         .redo_sint(payload_n.clone(), reference_n.clone(), false, RedoState::default())
@@ -2331,11 +2331,11 @@ fn stack_guard_wrapped_paths() {
     let space = ut.slab.noun_space();
     let palo_leg = Palo {
         vein: Vec::new(),
-        opal: Opal::Leg(native_of(leg_typ, &space).expect("native leg typ")),
+        opal: Opal::Leg(native_of(&mut ut.cx, leg_typ, &space).expect("native leg typ")),
     };
-    let noun_a_n = native_of(noun_a, &space).expect("native a");
-    let noun_b_n = native_of(noun_b, &space).expect("native b");
-    let noun_c_n = native_of(noun_c, &space).expect("native c");
+    let noun_a_n = native_of(&mut ut.cx, noun_a, &space).expect("native a");
+    let noun_b_n = native_of(&mut ut.cx, noun_b, &space).expect("native b");
+    let noun_c_n = native_of(&mut ut.cx, noun_c, &space).expect("native c");
 
     ut.stack_guard_calls = 0;
     ut.redo_wet_payload(payload, payload).expect("redo");
@@ -2504,7 +2504,7 @@ fn frame_arena_core_mint_matches_monolithic() {
     let mint_jam = |frame: bool| {
         let mut slab: NounSlab = NounSlab::new();
         let mut ut = Ut::new(&mut slab);
-        ut.force_frame_arena = frame;
+        ut.set_frame_arena(frame);
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
         let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic core");
@@ -2598,7 +2598,7 @@ fn frame_arena_wet_gate_function_sample_matches_monolithic() {
     let mint_jam = |frame: bool| {
         let mut slab: NounSlab = NounSlab::new();
         let mut ut = Ut::new(&mut slab);
-        ut.force_frame_arena = frame;
+        ut.set_frame_arena(frame);
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
         let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic wet gate");

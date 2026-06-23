@@ -43,7 +43,7 @@ impl<'a> Ut<'a> {
     // NOUN (they are namespace/alias maps, not types). Forks rebuild through the
     // NOUN fork_from_options path (RT-07 mug ordering) and are re-lifted via
     // native_of. peek/repo are native (C2/C1); mint/play still take noun subjects
-    // (lowered here) until C-final; their TYPE goal becomes cons_noun().
+    // (lowered here) until C-final; their TYPE goal becomes cons_noun(&mut self.cx).
 
     // HOON138:arm=ut:find lines=9472-9484 map=direct status=partial reviewed=2026-03-06
     // HOON138_NOTE:native primary implementation for canonical `++find`; full parity review is still in progress
@@ -61,7 +61,7 @@ impl<'a> Ut<'a> {
     /// Noun-bridged `find` for still-noun callers (mint/play boundary). Returns a
     /// Port carrying native types; the caller decides how to consume it.
     pub(super) fn find_noun(&mut self, sut: Noun, way: Way, wing: &WingType) -> Result<Port> {
-        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        let sut_n = native_of(&mut self.cx, sut, &self.slab.noun_space())?;
         self.find(sut_n, way, wing)
     }
 
@@ -94,7 +94,7 @@ impl<'a> Ut<'a> {
         way: Way,
         wing: &WingType,
     ) -> Result<(NRc<NTy>, u64)> {
-        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        let sut_n = native_of(&mut self.cx, sut, &self.slab.noun_space())?;
         self.fend(sut_n, way, wing)
     }
 
@@ -105,7 +105,7 @@ impl<'a> Ut<'a> {
             return self.find(sut, way, &wing);
         }
         // mint is native now (C-final.1a): thread the native subject directly.
-        let goal = cons_noun();
+        let goal = cons_noun(&mut self.cx);
         let (typ, formula) = self.mint(sut, goal, gen)?;
         Ok(Port::Synthetic { typ, formula })
     }
@@ -131,7 +131,7 @@ impl<'a> Ut<'a> {
             Pony::Unmatched(skip) => Ok(Pony::Unmatched(skip)),
             Pony::Synthetic { typ, formula } => {
                 // mint is native now (C-final.1a): thread the native typ directly.
-                let goal = cons_noun();
+                let goal = cons_noun(&mut self.cx);
                 let (new_ty, new_formula) =
                     self.mint(typ, goal, &Hoon::Wing(vec![head.clone()]))?;
                 let combined = comb(self.slab, formula, new_formula)?;
@@ -147,10 +147,10 @@ impl<'a> Ut<'a> {
                         // Fork rebuild via the NOUN fork path (RT-07 ordering).
                         let mut types = Vec::with_capacity(arms.len());
                         for (typ, _) in arms {
-                            types.push(live_to_noun(typ, self.slab));
+                            types.push(live_to_noun(&mut self.cx, typ, self.slab));
                         }
                         let fork_noun = self.fork_from_options(types)?;
-                        native_of(fork_noun, &self.slab.noun_space())?
+                        native_of(&mut self.cx, fork_noun, &self.slab.noun_space())?
                     }
                 };
                 let lon = palo.vein;
@@ -344,7 +344,7 @@ impl<'a> Ut<'a> {
                         return Ok(here(inner, &axe, skip, lon));
                     }
                     // Lower the face tool leaf BEFORE borrowing noun_space below.
-                    let tool_noun = live_leaf_to_noun(tool, ut.slab);
+                    let tool_noun = live_leaf_to_noun(&mut ut.cx, tool, ut.slab);
                     let term_face_name = {
                         let space = ut.slab.noun_space();
                         is_term_face(&space, tool_noun)?
@@ -450,7 +450,7 @@ impl<'a> Ut<'a> {
                                 )
                             })?;
                         // mint is native now (C-final.1a): thread inner directly.
-                        let noun_goal = cons_noun();
+                        let noun_goal = cons_noun(&mut ut.cx);
                         let (bridge_ty_n, bridge_formula) =
                             ut.mint(inner.clone(), noun_goal, bridge_hoon_ast.as_ref())?;
                         let mut bridge_seen = SeenState::default();
@@ -531,7 +531,7 @@ impl<'a> Ut<'a> {
                     // subject) is not needed here.
                     let poly = garb.poly;
                     let vair = garb.vair;
-                    let rest = live_leaf_to_noun(rest, ut.slab);
+                    let rest = live_leaf_to_noun(&mut ut.cx, rest, ut.slab);
                     let cog = term_to_noun(ut.slab, name_str);
                     let space = ut.slab.noun_space();
                     let tomes = coil_tomes(rest, &space)?;
@@ -612,7 +612,7 @@ impl<'a> Ut<'a> {
         sut: Noun,
         wing: &WingType,
     ) -> Result<u64> {
-        let sut_n = native_of(sut, &self.slab.noun_space())?;
+        let sut_n = native_of(&mut self.cx, sut, &self.slab.noun_space())?;
         self.resolve_wing_axis(sut_n, wing)
     }
 
@@ -659,10 +659,10 @@ impl<'a> Ut<'a> {
                     return Err(CompilerError::Noun("find-fork".to_string()));
                 }
                 // Fork rebuild via the NOUN fork path (RT-07 ordering).
-                let left_noun = live_to_noun(&left_ty, self.slab);
-                let right_noun = live_to_noun(&right_ty, self.slab);
+                let left_noun = live_to_noun(&mut self.cx, &left_ty, self.slab);
+                let right_noun = live_to_noun(&mut self.cx, &right_ty, self.slab);
                 let ty_noun = self.fork_from_options(vec![left_noun, right_noun])?;
-                let ty = native_of(ty_noun, &self.slab.noun_space())?;
+                let ty = native_of(&mut self.cx, ty_noun, &self.slab.noun_space())?;
                 Ok(Pony::Synthetic {
                     typ: ty,
                     formula: left_formula,
@@ -674,10 +674,10 @@ impl<'a> Ut<'a> {
                 }
                 match (left.opal, right.opal) {
                     (Opal::Leg(left_ty), Opal::Leg(right_ty)) => {
-                        let left_noun = live_to_noun(&left_ty, self.slab);
-                        let right_noun = live_to_noun(&right_ty, self.slab);
+                        let left_noun = live_to_noun(&mut self.cx, &left_ty, self.slab);
+                        let right_noun = live_to_noun(&mut self.cx, &right_ty, self.slab);
                         let ty_noun = self.fork_from_options(vec![left_noun, right_noun])?;
-                        let ty = native_of(ty_noun, &self.slab.noun_space())?;
+                        let ty = native_of(&mut self.cx, ty_noun, &self.slab.noun_space())?;
                         Ok(Pony::Palo(Palo {
                             vein: left.vein,
                             opal: Opal::Leg(ty),

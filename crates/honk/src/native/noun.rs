@@ -1,9 +1,11 @@
 use hatch::ast::hoon::{NounExpr, ParsedAtom};
 use nockapp::noun::slab::NounSlab;
 use nockvm::ext::AtomExt;
+use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
 use nockvm::noun::{Atom, AtomHandle, Noun, NounAllocator, NounSpace, D, DIRECT_MAX, T};
 
 use crate::errors::{CompilerError, Result};
+use crate::native::ut::types::FastHashSet;
 
 pub fn tag(noun: Noun, space: &NounSpace) -> Result<String> {
     let noun = noun.in_space(space);
@@ -192,4 +194,130 @@ pub fn cell_tail(noun: Noun, space: &NounSpace) -> Result<Noun> {
         .as_cell()
         .map_err(|err| CompilerError::Decode(format!("noun not cell: {err}")))?;
     Ok(cell.tail().noun())
+}
+
+/// Structural deep equality of two `space`-resident nouns. Shared (lives here,
+/// not in `ut`, so the IR `Leaf` impls can use it) iterative form: a fast
+/// pointer-identity check, a mug pre-filter (cheap quick-reject that dominates
+/// in memo scans), then an iterative deep compare (no recursion — deep hoon-138
+/// type nouns would otherwise blow the Rust stack).
+pub fn noun_eq(a: Noun, b: Noun, space: &NounSpace) -> Result<bool> {
+    // Pointer-identical nouns are the common case in memo scans; answer before
+    // allocating the traversal stack below. Likewise reject on the root mugs
+    // before allocating: quick rejects dominate in `miss`/memo scans and must
+    // not pay a heap allocation each.
+    if unsafe { a.raw_equals(&b) } {
+        return Ok(true);
+    }
+    let a_mug = get_mug(a, space).unwrap_or_else(|| slab_mug(a, space));
+    let b_mug = get_mug(b, space).unwrap_or_else(|| slab_mug(b, space));
+    if a_mug != b_mug {
+        return Ok(false);
+    }
+    // Avoid recursion: deep type/hoon nouns (hoon-138) can otherwise blow the Rust stack.
+    let mut stack: Vec<(Noun, Noun)> = Vec::with_capacity(64);
+    let mut seen_cell_pairs: Option<FastHashSet<(u64, u64)>> = None;
+    let mut cell_pairs_checked = 0usize;
+    stack.push((a, b));
+    while let Some((left, right)) = stack.pop() {
+        if unsafe { left.raw_equals(&right) } {
+            continue;
+        }
+        let left_mug = get_mug(left, space).unwrap_or_else(|| slab_mug(left, space));
+        let right_mug = get_mug(right, space).unwrap_or_else(|| slab_mug(right, space));
+        if left_mug != right_mug {
+            return Ok(false);
+        }
+        if left.is_atom() && right.is_atom() {
+            let left_atom = left
+                .in_space(space)
+                .as_atom()
+                .map_err(|err| CompilerError::Decode(format!("noun eq atom: {err}")))?;
+            let right_atom = right
+                .in_space(space)
+                .as_atom()
+                .map_err(|err| CompilerError::Decode(format!("noun eq atom: {err}")))?;
+            if !left_atom.eq_bytes(right_atom.as_ne_bytes()) {
+                return Ok(false);
+            }
+            continue;
+        }
+        if left.is_cell() && right.is_cell() {
+            let left_cell = left
+                .in_space(space)
+                .as_cell()
+                .map_err(|err| CompilerError::Decode(format!("noun eq cell: {err}")))?;
+            let right_cell = right
+                .in_space(space)
+                .as_cell()
+                .map_err(|err| CompilerError::Decode(format!("noun eq cell: {err}")))?;
+            cell_pairs_checked = cell_pairs_checked.saturating_add(1);
+            if cell_pairs_checked > 64 {
+                let left_raw = unsafe { left.as_raw() };
+                let right_raw = unsafe { right.as_raw() };
+                let pair_key = if left_raw <= right_raw {
+                    (left_raw, right_raw)
+                } else {
+                    (right_raw, left_raw)
+                };
+                let seen = seen_cell_pairs.get_or_insert_with(FastHashSet::default);
+                if !seen.insert(pair_key) {
+                    continue;
+                }
+            }
+            // Postorder: push tail then head so head is compared first.
+            stack.push((left_cell.tail().noun(), right_cell.tail().noun()));
+            stack.push((left_cell.head().noun(), right_cell.head().noun()));
+            continue;
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Iterative mug of `noun`, caching mugs on allocated nouns (cells and indirect
+/// atoms). Avoids deep recursion and repeatedly re-hashing giant type structures
+/// (hoon-138). Shared here so `noun_eq` (and `ut`) can use it.
+pub fn slab_mug(noun: Noun, space: &NounSpace) -> u32 {
+    let mut stack = vec![noun];
+    while let Some(current) = stack.pop() {
+        let Ok(mut allocated) = current.as_allocated() else {
+            continue; // direct atoms: `get_mug` computes without caching
+        };
+        if get_mug(current, space).is_some() {
+            continue;
+        }
+        let current_handle = current.in_space(space);
+        if current_handle.is_atom() {
+            let atom = current_handle
+                .as_atom()
+                .expect("atom expected when current.is_atom()");
+            unsafe {
+                set_mug(&mut allocated, calc_atom_mug_u32(atom.atom(), space), space);
+            }
+            continue;
+        }
+        let cell = current_handle
+            .as_cell()
+            .expect("cell expected when current.is_cell()");
+        match (
+            get_mug(cell.head().noun(), space),
+            get_mug(cell.tail().noun(), space),
+        ) {
+            (Some(head_mug), Some(tail_mug)) => unsafe {
+                set_mug(
+                    &mut allocated,
+                    calc_cell_mug_u32(head_mug, tail_mug, space),
+                    space,
+                );
+            },
+            _ => {
+                // Postorder: revisit current after children are mugged.
+                stack.push(current);
+                stack.push(cell.tail().noun());
+                stack.push(cell.head().noun());
+            }
+        }
+    }
+    get_mug(noun, space).expect("Noun should have a mug once mugged.")
 }

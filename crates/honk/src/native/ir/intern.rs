@@ -37,11 +37,12 @@ use crate::native::noun::noun_pair;
 /// are collapsed by the table to one shared `Rc`. This is the O(n) construction
 /// primitive the native-mint port is built on (the combinator O(n²) trap was
 /// re-parsing per call with no shared memo; this shares one).
-pub fn intern_type_noun(
+fn intern_type_noun(
     table: &mut TypeTable,
     memo: &mut InternMemo,
     noun: Noun,
     space: &NounSpace,
+    raw: bool,
 ) -> Result<Rc<Type>> {
     // %void / %noun are bare atom cords — directs, no memo needed.
     if let Ok(atom) = noun.in_space(space).as_atom() {
@@ -57,8 +58,8 @@ pub fn intern_type_noun(
     }
     // SAFETY: `noun` is a live, in-`space` slab noun; `as_raw` only reads its
     // identity word (used purely as a memo key, never dereferenced).
-    let raw = unsafe { noun.as_raw() };
-    if let Some(rc) = memo.get(&raw) {
+    let raw_addr = unsafe { noun.as_raw() };
+    if let Some(rc) = memo.get(&raw_addr) {
         return Ok(Rc::clone(rc));
     }
     let (tag, tail) = pair(noun, space)?;
@@ -69,14 +70,14 @@ pub fn intern_type_noun(
     let node = if tag.eq_bytes(b"atom") {
         let (aura, bits) = pair(tail, space)?;
         Type::Atom {
-            aura: Leaf::from_noun(aura, space),
-            bits: Leaf::from_noun(bits, space),
+            aura: Leaf::from_noun_gated(aura, space, raw),
+            bits: Leaf::from_noun_gated(bits, space, raw),
         }
     } else if tag.eq_bytes(b"cell") {
         let (h, t) = pair(tail, space)?;
         Type::Cell(
-            intern_type_noun(table, memo, h, space)?,
-            intern_type_noun(table, memo, t, space)?,
+            intern_type_noun(table, memo, h, space, raw)?,
+            intern_type_noun(table, memo, t, space, raw)?,
         )
     } else if tag.eq_bytes(b"core") {
         let (payload, coil) = pair(tail, space)?;
@@ -84,32 +85,32 @@ pub fn intern_type_noun(
         let (garb, coil_tail) = pair(coil, space)?;
         let (context, rest) = pair(coil_tail, space)?;
         Type::Core {
-            payload: intern_type_noun(table, memo, payload, space)?,
+            payload: intern_type_noun(table, memo, payload, space, raw)?,
             garb: Garb::from_noun(garb, space)?,
-            context: intern_type_noun(table, memo, context, space)?,
-            rest: Leaf::from_noun(rest, space),
+            context: intern_type_noun(table, memo, context, space, raw)?,
+            rest: Leaf::from_noun_gated(rest, space, raw),
         }
     } else if tag.eq_bytes(b"face") {
         let (tool, inner) = pair(tail, space)?;
         Type::Face {
-            tool: Leaf::from_noun(tool, space),
-            inner: intern_type_noun(table, memo, inner, space)?,
+            tool: Leaf::from_noun_gated(tool, space, raw),
+            inner: intern_type_noun(table, memo, inner, space, raw)?,
         }
     } else if tag.eq_bytes(b"hint") {
         let (head, payload) = pair(tail, space)?;
         Type::Hint {
-            head: Leaf::from_noun(head, space),
-            payload: intern_type_noun(table, memo, payload, space)?,
+            head: Leaf::from_noun_gated(head, space, raw),
+            payload: intern_type_noun(table, memo, payload, space, raw)?,
         }
     } else if tag.eq_bytes(b"fork") {
         Type::Fork {
-            set: Leaf::from_noun(tail, space),
+            set: Leaf::from_noun_gated(tail, space, raw),
         }
     } else if tag.eq_bytes(b"hold") {
         let (subject, gene) = pair(tail, space)?;
         Type::Hold {
-            subject: intern_type_noun(table, memo, subject, space)?,
-            gene: Leaf::from_noun(gene, space),
+            subject: intern_type_noun(table, memo, subject, space, raw)?,
+            gene: Leaf::from_noun_gated(gene, space, raw),
         }
     } else {
         return Err(CompilerError::Decode(
@@ -117,7 +118,7 @@ pub fn intern_type_noun(
         ));
     };
     let interned = table.intern_shallow(node);
-    memo.insert(raw, Rc::clone(&interned));
+    memo.insert(raw_addr, Rc::clone(&interned));
     Ok(interned)
 }
 
@@ -211,142 +212,127 @@ impl LiveIntern {
     }
 }
 
-std::thread_local! {
-    static LIVE: std::cell::RefCell<Option<LiveIntern>> = const { std::cell::RefCell::new(None) };
+/// Owned per-compile native-IR state.
+///
+/// Consolidates every per-compile native-IR cache that used to be a module
+/// thread-local (the hash-cons core `live`, the encode memos, the boundary
+/// caches, and the content-keyed decode / fork caches) into one struct OWNED by
+/// `Ut` (as the `cx` field). The surface free functions in this module take
+/// `&mut Context` / `&Context`; a fresh `Ut` gets a fresh `Context`, which gives
+/// each compile an isolated cache universe (replacing the old per-compile
+/// `live_reset`).
+///
+/// `new`/`reset` start every field empty (and `live` is eagerly constructed,
+/// replacing the former thread-local's lazy `Option<LiveIntern>` +
+/// `get_or_insert_with`).
+pub struct Context {
+    // --- LIVE (hash-cons core): was `static LIVE: RefCell<Option<LiveIntern>>` ---
+    // `LiveIntern` bundles `table: TypeTable`, `memo: InternMemo`, `cores`,
+    // `next_report`. It was `Option` only so a thread-local could lazily create it
+    // via `get_or_insert_with(LiveIntern::new)`; an owned `Context` creates it
+    // eagerly in `new`, so the `Option` is unnecessary.
+    live: LiveIntern,
+
+    // --- encode memos ---
+    to_noun_memo: HashMap<usize, Noun>, // was TO_NOUN_MEMO
+    leaf_memo: HashMap<usize, Noun>,    // was LEAF_MEMO
+
+    // --- boundary caches (key/value tuples copied verbatim) ---
+    nest_cache: HashMap<(usize, usize, u8, u64), bool>, // NEST_CACHE
+    #[allow(clippy::type_complexity)]
+    core_mint_cache: HashMap<(usize, usize, u64, u8, u8, u64, u64, u64), (Rc<Type>, Noun)>, // CORE_MINT_CACHE
+    #[allow(clippy::type_complexity)]
+    mint_cache: HashMap<(usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Noun)>, // MINT_CACHE
+    #[allow(clippy::type_complexity)]
+    mull_cache: HashMap<(usize, usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Rc<Type>)>, // MULL_CACHE
+    fuse_cache: HashMap<(usize, usize, u8, u64), Rc<Type>>, // FUSE_CACHE
+    crop_cache: HashMap<(usize, usize, u8, u64), Rc<Type>>, // CROP_CACHE
+    fish_cache: HashMap<(usize, u64, u8, u64), Noun>,       // FISH_CACHE
+
+    // --- native_of content-keyed decode cache + fork cache ---
+    native_of_mug_memo: HashMap<u64, Vec<Rc<Type>>>, // NATIVE_OF_MUG_MEMO
+    fork_cache: HashMap<Vec<usize>, Rc<Type>>,       // FORK_CACHE
+
+    // When true, big carried leaves (%core rest, %fork set, %hold gene, %hint
+    // head, atom aura/bits, face tool) are carried as RAW `Leaf::Noun` instead of
+    // `Leaf::Jammed` — eliminating the jam/cue round-trips. SAFE only compile-wide
+    // when the frame arena is OFF (no per-arm `push_frame`, so slab addresses
+    // never recycle and the raw nouns stay live for the whole compile). Set by
+    // `Ut::set_frame_arena` to `!frame_arena_on`. Defaults to true to match
+    // `Ut::new`'s default `force_frame_arena = false`.
+    pub raw_leaves: bool,
+}
+
+impl Context {
+    pub fn new() -> Self {
+        Context {
+            live: LiveIntern::new(),
+            to_noun_memo: HashMap::new(),
+            leaf_memo: HashMap::new(),
+            nest_cache: HashMap::new(),
+            core_mint_cache: HashMap::new(),
+            mint_cache: HashMap::new(),
+            mull_cache: HashMap::new(),
+            fuse_cache: HashMap::new(),
+            crop_cache: HashMap::new(),
+            fish_cache: HashMap::new(),
+            native_of_mug_memo: HashMap::new(),
+            fork_cache: HashMap::new(),
+            raw_leaves: true,
+        }
+    }
+
+    /// Re-init every field (mirrors the `live_reset` body exactly). Provided for a
+    /// later `live_reset()` -> `self.cx.reset()` swap even though the chosen wiring
+    /// constructs a fresh `Context` per compile.
+    #[allow(dead_code)]
+    pub fn reset(&mut self) {
+        *self = Context::new();
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 static LIVE_ENABLED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-std::thread_local! {
-    /// Per-compile memo for `live_to_noun`: interned `Rc<Type>` pointer -> the noun
-    /// it lowers to (in the one compile slab). Makes the flip bridges' result
-    /// lowering O(1) amortized instead of O(type) per call.
-    static TO_NOUN_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile memo for `live_leaf_to_noun`: Jammed-leaf Arc pointer -> noun.
-    static LEAF_MEMO: std::cell::RefCell<HashMap<usize, Noun>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `nest`, keyed on the interned `Rc`
-    /// pointers of (sut, ref) plus the semantic context (vet, fan). Replaces the
-    /// noun-mug-keyed `nest_mug` cache for the native path: ptr identity ==
-    /// structural identity (flip natives are canonical/interned), so this avoids
-    /// lowering the deepening subject to a noun just to compute a cache key
-    /// (which would be O(subject) per call -> O(N^2) over the deepening chain).
-    static NEST_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), bool>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `core_mint` (`mint_core`), keyed on
-    /// the interned `Rc` pointers of (sut, gol) plus the non-type semantic
-    /// fields the old noun key carried verbatim (tomes_sig = mug(tomes_map) ^
-    /// prefix_signature, vet, poly, fan, arm_epoch, placeholder). The TYPE
-    /// components (sut/gol) are now ptr-identity instead of mug, so the deepening
-    /// subject is never lowered to a noun just to build the key. VALUE is the
-    /// native result: (core type `Rc<Type>`, formula `Noun`). The formula `Noun`
-    /// lives in the one compile slab; this cache is per-compile and cleared by
-    /// `live_reset` (same lifetime contract as `NEST_CACHE` / `TO_NOUN_MEMO`), so
-    /// the stored `Noun` cannot outlive its slab.
-    #[allow(clippy::type_complexity)]
-    static CORE_MINT_CACHE: std::cell::RefCell<
-        HashMap<(usize, usize, u64, u8, u8, u64, u64, u64), (Rc<Type>, Noun)>,
-    > = std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `mint`, keyed on the interned `Rc`
-    /// pointers of (sut, gol) plus the non-type semantic fields the old noun key
-    /// carried verbatim (vet, gen_sig, fan, arm_epoch, placeholder). VALUE is the
-    /// native result: (type `Rc<Type>`, formula `Noun`). Same per-compile /
-    /// `live_reset` lifetime contract as `CORE_MINT_CACHE`.
-    #[allow(clippy::type_complexity)]
-    static MINT_CACHE: std::cell::RefCell<
-        HashMap<(usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Noun)>,
-    > = std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `mull`, keyed on the interned `Rc`
-    /// pointers of (sut, gol, dox) plus the non-type semantic fields the old noun
-    /// key carried verbatim (vet, gen_sig, fan, arm_epoch, placeholder). VALUE is
-    /// the native dual-perspective result: (p type `Rc<Type>`, q type
-    /// `Rc<Type>`). Per-compile / `live_reset` lifetime contract.
-    #[allow(clippy::type_complexity)]
-    static MULL_CACHE: std::cell::RefCell<
-        HashMap<(usize, usize, usize, u8, u64, u64, u64, u64), (Rc<Type>, Rc<Type>)>,
-    > = std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `fuse`, keyed on the interned `Rc`
-    /// pointers of (sut, ref) plus the semantic fields the old noun key carried
-    /// verbatim (vet, fan). The TYPE components (sut/ref) are now ptr-identity
-    /// instead of mug, so the deepening subject is never lowered to a noun just to
-    /// build the cache key. VALUE is the native result type `Rc<Type>`.
-    /// Per-compile / `live_reset` lifetime contract (same as `NEST_CACHE`).
-    static FUSE_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), Rc<Type>>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `crop`, keyed identically to
-    /// `FUSE_CACHE` ((sut_ptr, ref_ptr, vet, fan)). VALUE is the native result
-    /// type `Rc<Type>`. Per-compile / `live_reset` lifetime contract.
-    static CROP_CACHE: std::cell::RefCell<HashMap<(usize, usize, u8, u64), Rc<Type>>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile boundary cache for native `fish`
-    /// (`type_test_formula_on_axis`), keyed on the interned `Rc` pointer of the
-    /// TYPE (sut) plus the semantic fields the old noun key carried verbatim
-    /// (axis, vet, fan). The deepening subject is never lowered to a noun for the
-    /// key. VALUE is the NOCK FORMULA `Noun` (fish returns a formula, not a type);
-    /// the formula lives in the one compile slab, and this per-compile cache is
-    /// cleared by `live_reset`, so the stored `Noun` cannot outlive its slab.
-    static FISH_CACHE: std::cell::RefCell<HashMap<(usize, u64, u8, u64), Noun>> =
-        std::cell::RefCell::new(HashMap::new());
-    /// Per-compile CONTENT-keyed decode cache for `native_of`: noun mug -> the
-    /// canonical interned `Rc<Type>`(s) decoded from a structurally-equal noun.
-    /// The address-keyed decode memo (`InternMemo`) only hits when the SAME slab
-    /// noun is decoded twice; the redo/repo/fire path rebuilds structurally-equal
-    /// nouns at FRESH addresses every recursion level, so it re-walks AND re-jams
-    /// the Jammed leaves (a `%fork`'s whole treap, a `%core`'s battery) each time —
-    /// the dominant decode cost on the recursive-type hot path. Keying on content
-    /// (mug) lets a fresh-but-equal noun reuse the prior `Rc` after one `noun_eq`
-    /// verify (mug collisions fall through to a full decode), skipping the walk +
-    /// leaf re-jam. Keys are content (not addresses), values are persistent interned
-    /// `Rc`s, so this is NOT subject to the frame-address-recycling staleness that
-    /// the address memo guards against — same per-compile / `live_reset` lifetime as
-    /// the table itself (cleared together, so no orphaned-Rc cross-wiring).
-    static NATIVE_OF_MUG_MEMO: std::cell::RefCell<HashMap<u64, Vec<Rc<Type>>>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-thread_local! {
-    /// Per-compile memo for `cons_fork`: the canonical (sorted, deduped) option
-    /// `Rc` pointers -> the resulting fork `Rc`. A fork is mug-ordered and
-    /// set-valued, so it is fully determined by the SET of its option types;
-    /// since options are interned (canonical), their pointer set is the exact key.
-    /// In the recursive-type elaboration the same forks recur constantly, and each
-    /// `cons_fork` miss costs a full mug-treap rebuild (fork_from_options:
-    /// set_put_mug/slab_mug) PLUS a decode+jam of the treap leaf (native_of). This
-    /// memo collapses the recurrence to O(1). Byte-exact: returns the SAME interned
-    /// `Rc` the rebuild would. Cleared with the table by `live_reset`.
-    static FORK_CACHE: std::cell::RefCell<HashMap<Vec<usize>, Rc<Type>>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
 /// Look up a memoized `cons_fork` result by its canonical option-pointer key.
-pub fn fork_cache_lookup(key: &[usize]) -> Option<Rc<Type>> {
-    FORK_CACHE.with(|m| m.borrow().get(key).cloned())
+///
+/// The `cons_fork` memo (was `FORK_CACHE`): the canonical (sorted, deduped)
+/// option `Rc` pointers -> the resulting fork `Rc`. A fork is mug-ordered and
+/// set-valued, so it is fully determined by the SET of its option types; since
+/// options are interned (canonical), their pointer set is the exact key. In the
+/// recursive-type elaboration the same forks recur constantly, and each
+/// `cons_fork` miss costs a full mug-treap rebuild (fork_from_options:
+/// set_put_mug/slab_mug) PLUS a decode+jam of the treap leaf (native_of). This
+/// memo collapses the recurrence to O(1). Byte-exact: returns the SAME interned
+/// `Rc` the rebuild would. Cleared with the table by `Context::reset`.
+pub fn fork_cache_lookup(cx: &Context, key: &[usize]) -> Option<Rc<Type>> {
+    cx.fork_cache.get(key).cloned()
 }
 
 /// Store a `cons_fork` result keyed by its canonical option-pointer key.
-pub fn fork_cache_store(key: Vec<usize>, fork: Rc<Type>) {
-    FORK_CACHE.with(|m| {
-        m.borrow_mut().insert(key, fork);
-    });
+pub fn fork_cache_store(cx: &mut Context, key: Vec<usize>, fork: Rc<Type>) {
+    cx.fork_cache.insert(key, fork);
 }
 
-/// Content-keyed `native_of` fast path (see `NATIVE_OF_MUG_MEMO`). Returns the
-/// memoized candidate `Rc`s for a noun mug (a tiny bucket; collisions are rare).
-pub fn native_of_mug_candidates(mug: u64) -> Vec<Rc<Type>> {
-    NATIVE_OF_MUG_MEMO.with(|m| m.borrow().get(&mug).cloned().unwrap_or_default())
+/// Content-keyed `native_of` fast path (see `Context::native_of_mug_memo`).
+/// Returns the memoized candidate `Rc`s for a noun mug (a tiny bucket;
+/// collisions are rare).
+pub fn native_of_mug_candidates(cx: &Context, mug: u64) -> Vec<Rc<Type>> {
+    cx.native_of_mug_memo.get(&mug).cloned().unwrap_or_default()
 }
 
 /// Record a decoded `(mug -> Rc)` association for the content-keyed `native_of`
 /// cache. Idempotent per `Rc` within a bucket.
-pub fn native_of_mug_insert(mug: u64, rc: Rc<Type>) {
-    NATIVE_OF_MUG_MEMO.with(|m| {
-        let mut m = m.borrow_mut();
-        let bucket = m.entry(mug).or_default();
-        if !bucket.iter().any(|existing| Rc::ptr_eq(existing, &rc)) {
-            bucket.push(rc);
-        }
-    });
+pub fn native_of_mug_insert(cx: &mut Context, mug: u64, rc: Rc<Type>) {
+    let bucket = cx.native_of_mug_memo.entry(mug).or_default();
+    if !bucket.iter().any(|existing| Rc::ptr_eq(existing, &rc)) {
+        bucket.push(rc);
+    }
 }
 
 /// Look up a native `core_mint` result by interned (sut, gol) pointers + the
@@ -354,6 +340,7 @@ pub fn native_of_mug_insert(mug: u64, rc: Rc<Type>) {
 /// placeholder). Returns the native (core type, formula) directly — no `native_of`.
 #[allow(clippy::too_many_arguments)]
 pub fn core_mint_cache_lookup(
+    cx: &Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     tomes_sig: u64,
@@ -373,12 +360,13 @@ pub fn core_mint_cache_lookup(
         arm_epoch,
         placeholder,
     );
-    CORE_MINT_CACHE.with(|m| m.borrow().get(&key).cloned())
+    cx.core_mint_cache.get(&key).cloned()
 }
 
 /// Store a native `core_mint` result by interned (sut, gol) pointers + semantic key.
 #[allow(clippy::too_many_arguments)]
 pub fn core_mint_cache_store(
+    cx: &mut Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     tomes_sig: u64,
@@ -400,9 +388,7 @@ pub fn core_mint_cache_store(
         arm_epoch,
         placeholder,
     );
-    CORE_MINT_CACHE.with(|m| {
-        m.borrow_mut().insert(key, (core_type, formula));
-    });
+    cx.core_mint_cache.insert(key, (core_type, formula));
 }
 
 /// Look up a native `mint` result by interned (sut, gol) pointers + the preserved
@@ -410,6 +396,7 @@ pub fn core_mint_cache_store(
 /// native (type, formula) directly — no `native_of`.
 #[allow(clippy::too_many_arguments)]
 pub fn mint_cache_lookup(
+    cx: &Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     vet: u8,
@@ -427,12 +414,13 @@ pub fn mint_cache_lookup(
         arm_epoch,
         placeholder,
     );
-    MINT_CACHE.with(|m| m.borrow().get(&key).cloned())
+    cx.mint_cache.get(&key).cloned()
 }
 
 /// Store a native `mint` result by interned (sut, gol) pointers + semantic key.
 #[allow(clippy::too_many_arguments)]
 pub fn mint_cache_store(
+    cx: &mut Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     vet: u8,
@@ -452,9 +440,7 @@ pub fn mint_cache_store(
         arm_epoch,
         placeholder,
     );
-    MINT_CACHE.with(|m| {
-        m.borrow_mut().insert(key, (ty, formula));
-    });
+    cx.mint_cache.insert(key, (ty, formula));
 }
 
 /// Look up a native `mull` result by interned (sut, gol, dox) pointers + the
@@ -462,6 +448,7 @@ pub fn mint_cache_store(
 /// Returns the native (p type, q type) directly — no `native_of`.
 #[allow(clippy::too_many_arguments)]
 pub fn mull_cache_lookup(
+    cx: &Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     dox: &Rc<Type>,
@@ -481,12 +468,13 @@ pub fn mull_cache_lookup(
         arm_epoch,
         placeholder,
     );
-    MULL_CACHE.with(|m| m.borrow().get(&key).cloned())
+    cx.mull_cache.get(&key).cloned()
 }
 
 /// Store a native `mull` result by interned (sut, gol, dox) pointers + semantic key.
 #[allow(clippy::too_many_arguments)]
 pub fn mull_cache_store(
+    cx: &mut Context,
     sut: &Rc<Type>,
     gol: &Rc<Type>,
     dox: &Rc<Type>,
@@ -508,74 +496,105 @@ pub fn mull_cache_store(
         arm_epoch,
         placeholder,
     );
-    MULL_CACHE.with(|m| {
-        m.borrow_mut().insert(key, (p_ty, q_ty));
-    });
+    cx.mull_cache.insert(key, (p_ty, q_ty));
 }
 
 /// Look up a native `nest` result by interned (sut, ref) pointers + context.
 pub fn nest_cache_lookup(
+    cx: &Context,
     sut: &Rc<Type>,
     ref_: &Rc<Type>,
     vet: u8,
     fan: u64,
 ) -> Option<bool> {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    NEST_CACHE.with(|m| m.borrow().get(&key).copied())
+    cx.nest_cache.get(&key).copied()
 }
 
 /// Store a native `nest` result by interned (sut, ref) pointers + context.
-pub fn nest_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: bool) {
+pub fn nest_cache_store(
+    cx: &mut Context,
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+    result: bool,
+) {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    NEST_CACHE.with(|m| {
-        m.borrow_mut().insert(key, result);
-    });
+    cx.nest_cache.insert(key, result);
 }
 
 /// Look up a native `fuse` result by interned (sut, ref) pointers + (vet, fan).
 /// Returns the native result type directly — no `native_of`.
-pub fn fuse_cache_lookup(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64) -> Option<Rc<Type>> {
+pub fn fuse_cache_lookup(
+    cx: &Context,
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+) -> Option<Rc<Type>> {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    FUSE_CACHE.with(|m| m.borrow().get(&key).cloned())
+    cx.fuse_cache.get(&key).cloned()
 }
 
 /// Store a native `fuse` result by interned (sut, ref) pointers + (vet, fan).
-pub fn fuse_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: Rc<Type>) {
+pub fn fuse_cache_store(
+    cx: &mut Context,
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+    result: Rc<Type>,
+) {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    FUSE_CACHE.with(|m| {
-        m.borrow_mut().insert(key, result);
-    });
+    cx.fuse_cache.insert(key, result);
 }
 
 /// Look up a native `crop` result by interned (sut, ref) pointers + (vet, fan).
 /// Returns the native result type directly — no `native_of`.
-pub fn crop_cache_lookup(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64) -> Option<Rc<Type>> {
+pub fn crop_cache_lookup(
+    cx: &Context,
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+) -> Option<Rc<Type>> {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    CROP_CACHE.with(|m| m.borrow().get(&key).cloned())
+    cx.crop_cache.get(&key).cloned()
 }
 
 /// Store a native `crop` result by interned (sut, ref) pointers + (vet, fan).
-pub fn crop_cache_store(sut: &Rc<Type>, ref_: &Rc<Type>, vet: u8, fan: u64, result: Rc<Type>) {
+pub fn crop_cache_store(
+    cx: &mut Context,
+    sut: &Rc<Type>,
+    ref_: &Rc<Type>,
+    vet: u8,
+    fan: u64,
+    result: Rc<Type>,
+) {
     let key = (Rc::as_ptr(sut) as usize, Rc::as_ptr(ref_) as usize, vet, fan);
-    CROP_CACHE.with(|m| {
-        m.borrow_mut().insert(key, result);
-    });
+    cx.crop_cache.insert(key, result);
 }
 
 /// Look up a native `fish` result by interned (sut) pointer + (axis, vet, fan).
 /// Returns the cached NOCK FORMULA `Noun` directly.
-pub fn fish_cache_lookup(sut: &Rc<Type>, axis: u64, vet: u8, fan: u64) -> Option<Noun> {
+pub fn fish_cache_lookup(cx: &Context, sut: &Rc<Type>, axis: u64, vet: u8, fan: u64) -> Option<Noun> {
     let key = (Rc::as_ptr(sut) as usize, axis, vet, fan);
-    FISH_CACHE.with(|m| m.borrow().get(&key).copied())
+    cx.fish_cache.get(&key).copied()
 }
 
 /// Store a native `fish` result (formula `Noun`) by interned (sut) pointer +
 /// (axis, vet, fan).
-pub fn fish_cache_store(sut: &Rc<Type>, axis: u64, vet: u8, fan: u64, result: Noun) {
+pub fn fish_cache_store(
+    cx: &mut Context,
+    sut: &Rc<Type>,
+    axis: u64,
+    vet: u8,
+    fan: u64,
+    result: Noun,
+) {
     let key = (Rc::as_ptr(sut) as usize, axis, vet, fan);
-    FISH_CACHE.with(|m| {
-        m.borrow_mut().insert(key, result);
-    });
+    cx.fish_cache.insert(key, result);
 }
 
 /// Whether the live native-type harness is on (`HONK_NATIVE_TYPES`), cached.
@@ -614,12 +633,8 @@ pub fn live_enabled() -> bool {
 /// already relocated to the base region (`live_to_noun`/`live_leaf_to_noun`
 /// `copy_to_base`), so they survive pops without dangling and clearing them would
 /// reintroduce O(N^2) re-lowering. Called from `Ut::invalidate_frame_caches`.
-pub fn live_invalidate_frame() {
-    LIVE.with(|cell| {
-        if let Some(st) = cell.borrow_mut().as_mut() {
-            st.memo.pop_frame();
-        }
-    });
+pub fn live_invalidate_frame(cx: &mut Context) {
+    cx.live.memo.pop_frame();
 }
 
 /// Open an intern-memo frame scope, paired with the slab's `push_frame` at the
@@ -628,31 +643,8 @@ pub fn live_invalidate_frame() {
 /// (called after the slab `pop_frame_preserving`), so their recycled source-noun
 /// addresses can never alias a later arm's nouns. A no-op when the live table
 /// has not been created yet (no native decode has happened).
-pub fn live_push_frame() {
-    LIVE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let st = slot.get_or_insert_with(LiveIntern::new);
-        st.memo.push_frame();
-    });
-}
-
-/// Reset the live table (call at the start of each top-level compile so stale
-/// noun pointers from a prior compile can't alias). Unconditional: the native
-/// construction helpers (`live_intern`/`native_of`) use the table regardless of
-/// the measurement flag, so the table must be reset every compile.
-pub fn live_reset() {
-    LIVE.with(|cell| *cell.borrow_mut() = None);
-    TO_NOUN_MEMO.with(|m| m.borrow_mut().clear());
-    LEAF_MEMO.with(|m| m.borrow_mut().clear());
-    NEST_CACHE.with(|m| m.borrow_mut().clear());
-    CORE_MINT_CACHE.with(|m| m.borrow_mut().clear());
-    MINT_CACHE.with(|m| m.borrow_mut().clear());
-    MULL_CACHE.with(|m| m.borrow_mut().clear());
-    FUSE_CACHE.with(|m| m.borrow_mut().clear());
-    CROP_CACHE.with(|m| m.borrow_mut().clear());
-    FISH_CACHE.with(|m| m.borrow_mut().clear());
-    NATIVE_OF_MUG_MEMO.with(|m| m.borrow_mut().clear());
-    FORK_CACHE.with(|m| m.borrow_mut().clear());
+pub fn live_push_frame(cx: &mut Context) {
+    cx.live.memo.push_frame();
 }
 
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
@@ -661,9 +653,9 @@ pub fn live_reset() {
 /// because flip natives are interned (the table holds them for the whole compile,
 /// so the address is stable + not reused) and the bridges always lower into the
 /// one compile slab; reset per compile via `live_reset`.
-pub fn live_to_noun(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
+pub fn live_to_noun(cx: &mut Context, native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
     let ptr = Rc::as_ptr(native) as usize;
-    if let Some(noun) = TO_NOUN_MEMO.with(|m| m.borrow().get(&ptr).copied()) {
+    if let Some(noun) = cx.to_noun_memo.get(&ptr).copied() {
         return noun;
     }
     // Stack guard: this per-node recursion descends as deep as the type and runs
@@ -671,15 +663,16 @@ pub fn live_to_noun(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
     // verify). Without growing the stack a deep recursive type overflows the guard
     // page (SIGBUS on macOS, no Rust panic). `maybe_grow` is a cheap pointer
     // compare when headroom remains; 64MB chunks dwarf any real type depth.
-    let noun = stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || live_to_noun_node(native, dst));
+    let noun =
+        stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || live_to_noun_node(cx, native, dst));
     let noun = unsafe { dst.copy_to_base(noun) };
-    TO_NOUN_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
+    cx.to_noun_memo.insert(ptr, noun);
     noun
 }
 
 /// One node of `live_to_noun`'s memoized recursion (split out so the `maybe_grow`
 /// stack guard wraps each level). See `live_to_noun`.
-fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
+fn live_to_noun_node(cx: &mut Context, native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
     // PERF (RT-05): lower the IMMEDIATE children through `live_to_noun` /
     // `live_leaf_to_noun` (both per-pointer memoized) rather than the bare
     // recursive `Type::to_noun`, which re-materializes the WHOLE subtree fresh.
@@ -695,13 +688,13 @@ fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
         Type::Void => D(tas("void")),
         Type::Noun => D(tas("noun")),
         Type::Atom { aura, bits } => {
-            let a = live_leaf_to_noun(aura, dst);
-            let b = live_leaf_to_noun(bits, dst);
+            let a = live_leaf_to_noun(&mut *cx, aura, dst);
+            let b = live_leaf_to_noun(&mut *cx, bits, dst);
             T(dst, &[D(tas("atom")), a, b])
         }
         Type::Cell(h, t) => {
-            let hn = live_to_noun(h, dst);
-            let tn = live_to_noun(t, dst);
+            let hn = live_to_noun(&mut *cx, h, dst);
+            let tn = live_to_noun(&mut *cx, t, dst);
             T(dst, &[D(tas("cell")), hn, tn])
         }
         Type::Core {
@@ -710,31 +703,31 @@ fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
             context,
             rest,
         } => {
-            let p = live_to_noun(payload, dst);
+            let p = live_to_noun(&mut *cx, payload, dst);
             let g = garb.to_noun(dst);
-            let ctx = live_to_noun(context, dst);
-            let r = live_leaf_to_noun(rest, dst);
+            let ctx = live_to_noun(&mut *cx, context, dst);
+            let r = live_leaf_to_noun(&mut *cx, rest, dst);
             let tail = T(dst, &[ctx, r]);
             let coil = T(dst, &[g, tail]);
             T(dst, &[D(tas("core")), p, coil])
         }
         Type::Face { tool, inner } => {
-            let tl = live_leaf_to_noun(tool, dst);
-            let inn = live_to_noun(inner, dst);
+            let tl = live_leaf_to_noun(&mut *cx, tool, dst);
+            let inn = live_to_noun(&mut *cx, inner, dst);
             T(dst, &[D(tas("face")), tl, inn])
         }
         Type::Hint { head, payload } => {
-            let h = live_leaf_to_noun(head, dst);
-            let p = live_to_noun(payload, dst);
+            let h = live_leaf_to_noun(&mut *cx, head, dst);
+            let p = live_to_noun(&mut *cx, payload, dst);
             T(dst, &[D(tas("hint")), h, p])
         }
         Type::Fork { set } => {
-            let s = live_leaf_to_noun(set, dst);
+            let s = live_leaf_to_noun(&mut *cx, set, dst);
             T(dst, &[D(tas("fork")), s])
         }
         Type::Hold { subject, gene } => {
-            let s = live_to_noun(subject, dst);
-            let g = live_leaf_to_noun(gene, dst);
+            let s = live_to_noun(&mut *cx, subject, dst);
+            let g = live_leaf_to_noun(&mut *cx, gene, dst);
             T(dst, &[D(tas("hold")), s, g])
         }
     };
@@ -744,45 +737,41 @@ fn live_to_noun_node(native: &Rc<Type>, dst: &mut NounSlab) -> Noun {
     noun
 }
 
-/// Intern a single native node through the persistent thread-local table — the
-/// ONE canonical pointer-identity universe shared by all native-shadow
+/// Intern a single native node through the owned per-compile table (`cx.live`) —
+/// the ONE canonical pointer-identity universe shared by all native-shadow
 /// construction (so `intern_shallow`'s children-by-`Rc`-pointer hashing stays
 /// valid). Children must already be canonical `Rc<Type>` from this same table.
 /// Works regardless of `HONK_NATIVE_TYPES` (the flag only gates the measurement
 /// hook); it is only ever CALLED on the native-shadow path.
-pub fn live_intern(node: Type) -> Rc<Type> {
-    LIVE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let st = slot.get_or_insert_with(LiveIntern::new);
-        st.table.intern_shallow(node)
-    })
+pub fn live_intern(cx: &mut Context, node: Type) -> Rc<Type> {
+    cx.live.table.intern_shallow(node)
 }
 
 /// Native-only cell constructor (collapse-aware): `cell(void,_)`/`cell(_,void)` ->
 /// void, else `Cell`. For flipped producers that hold native children directly.
-pub fn cons_cell(head: Rc<Type>, tail: Rc<Type>) -> Rc<Type> {
+pub fn cons_cell(cx: &mut Context, head: Rc<Type>, tail: Rc<Type>) -> Rc<Type> {
     if matches!(&*head, Type::Void) || matches!(&*tail, Type::Void) {
-        return live_intern(Type::Void);
+        return live_intern(cx, Type::Void);
     }
-    live_intern(Type::Cell(head, tail))
+    live_intern(cx, Type::Cell(head, tail))
 }
 
 /// Native `%void` / `%noun`.
-pub fn cons_void() -> Rc<Type> {
-    live_intern(Type::Void)
+pub fn cons_void(cx: &mut Context) -> Rc<Type> {
+    live_intern(cx, Type::Void)
 }
-pub fn cons_noun() -> Rc<Type> {
-    live_intern(Type::Noun)
+pub fn cons_noun(cx: &mut Context) -> Rc<Type> {
+    live_intern(cx, Type::Noun)
 }
 
 /// Collapse-aware native `%core`: `core(void,_)` -> void (mirrors ty_core_n).
 /// The coil is carried decomposed: tiny `garb`/bounded `rest` as leaves and the
 /// `context` (deepening subject) as a SHARED native `Rc<Type>`.
-pub fn cons_core(payload: Rc<Type>, garb: Garb, context: Rc<Type>, rest: Leaf) -> Rc<Type> {
+pub fn cons_core(cx: &mut Context, payload: Rc<Type>, garb: Garb, context: Rc<Type>, rest: Leaf) -> Rc<Type> {
     if matches!(&*payload, Type::Void) {
-        return live_intern(Type::Void);
+        return live_intern(cx, Type::Void);
     }
-    live_intern(Type::Core {
+    live_intern(cx, Type::Core {
         payload,
         garb,
         context,
@@ -791,32 +780,29 @@ pub fn cons_core(payload: Rc<Type>, garb: Garb, context: Rc<Type>, rest: Leaf) -
 }
 
 /// Collapse-aware native `%face`: `face(_,void)` -> void (mirrors ty_face_tool_n).
-pub fn cons_face(tool: Leaf, inner: Rc<Type>) -> Rc<Type> {
+pub fn cons_face(cx: &mut Context, tool: Leaf, inner: Rc<Type>) -> Rc<Type> {
     if matches!(&*inner, Type::Void) {
-        return live_intern(Type::Void);
+        return live_intern(cx, Type::Void);
     }
-    live_intern(Type::Face { tool, inner })
+    live_intern(cx, Type::Face { tool, inner })
 }
 
 /// Collapse-aware native `%hint`: `hint(_,void)` -> void, `hint(_,noun)` -> noun
 /// (mirrors ty_hint_n).
-pub fn cons_hint(head: Leaf, payload: Rc<Type>) -> Rc<Type> {
+pub fn cons_hint(cx: &mut Context, head: Leaf, payload: Rc<Type>) -> Rc<Type> {
     match &*payload {
-        Type::Void => live_intern(Type::Void),
-        Type::Noun => live_intern(Type::Noun),
-        _ => live_intern(Type::Hint { head, payload }),
+        Type::Void => live_intern(cx, Type::Void),
+        Type::Noun => live_intern(cx, Type::Noun),
+        _ => live_intern(cx, Type::Hint { head, payload }),
     }
 }
 
 /// The O(n) fallback for a not-yet-threaded child: decode `noun` to its canonical
 /// native `Rc<Type>` via the shared memoized walk. One shared `(table, memo)`
 /// means each noun node is walked at most once per compile.
-pub fn native_of(noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
-    LIVE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let st = slot.get_or_insert_with(LiveIntern::new);
-        intern_type_noun(&mut st.table, &mut st.memo, noun, space)
-    })
+pub fn native_of(cx: &mut Context, noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
+    let raw = cx.raw_leaves;
+    intern_type_noun(&mut cx.live.table, &mut cx.live.memo, noun, space, raw)
 }
 
 /// Memoized leaf lowering for the flipped consumers: lower a carried `Leaf`
@@ -824,19 +810,23 @@ pub fn native_of(noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
 /// noun for the still-noun leaf helpers (coil_parts/fork_set_options/garb_*/fitz),
 /// caching `Jammed` leaves by their `Arc` pointer so repeated lowerings on the hot
 /// recursive paths are O(1). Reset per compile via `live_reset`.
-pub fn live_leaf_to_noun(leaf: &Leaf, dst: &mut NounSlab) -> Noun {
+pub fn live_leaf_to_noun(cx: &mut Context, leaf: &Leaf, dst: &mut NounSlab) -> Noun {
     match leaf {
         Leaf::Direct(_) => leaf.to_noun(dst),
+        // The cue elimination: a raw leaf's noun already lives in THIS compile's
+        // `dst` slab (built there during minting, kept live because the frame
+        // arena is off), so return it as-is — no copy, no cue.
+        Leaf::Noun(n, _) => *n,
         Leaf::Jammed(arc, _) => {
             let ptr = std::sync::Arc::as_ptr(arc) as *const u8 as usize;
-            if let Some(noun) = LEAF_MEMO.with(|m| m.borrow().get(&ptr).copied()) {
+            if let Some(noun) = cx.leaf_memo.get(&ptr).copied() {
                 return noun;
             }
             let noun = leaf.to_noun(dst);
             // Relocate to base so the compile-lifetime memo survives frame pops
             // (see live_to_noun). No-op when no frame is active.
             let noun = unsafe { dst.copy_to_base(noun) };
-            LEAF_MEMO.with(|m| m.borrow_mut().insert(ptr, noun));
+            cx.leaf_memo.insert(ptr, noun);
             noun
         }
     }
@@ -860,53 +850,14 @@ pub fn assert_native_eq(noun: Noun, native: &Rc<Type>, space: &NounSpace) {
     );
 }
 
-/// Build the interned native type for one minted core type noun.
-pub fn live_intern_core_type(noun: Noun, space: &NounSpace) {
-    if !live_enabled() {
-        return;
-    }
-    LIVE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let st = slot.get_or_insert_with(LiveIntern::new);
-        if intern_type_noun(&mut st.table, &mut st.memo, noun, space).is_ok() {
-            st.cores += 1;
-            if st.table.interned_calls >= st.next_report {
-                let t = &st.table;
-                eprintln!(
-                    "[native-types] cores={} walked={} distinct={} hits={} ({:.1}x dedup)",
-                    st.cores,
-                    t.interned_calls,
-                    t.distinct,
-                    t.hits,
-                    t.interned_calls as f64 / t.distinct.max(1) as f64
-                );
-                st.next_report = t.interned_calls + 100_000;
-            }
-        }
-    });
-}
-
 /// Emit the final dedup summary for the compile.
-pub fn live_report_final() {
-    if !live_enabled() {
-        return;
-    }
-    LIVE.with(|cell| {
-        if let Some(st) = cell.borrow().as_ref() {
-            let t = &st.table;
-            eprintln!(
-                "[native-types] FINAL cores={} walked={} distinct={} hits={} ({:.1}x dedup)",
-                st.cores,
-                t.interned_calls,
-                t.distinct,
-                t.hits,
-                t.interned_calls as f64 / t.distinct.max(1) as f64
-            );
-        } else {
-            eprintln!("[native-types] FINAL: no cores interned (mint_core hook never fired on this thread)");
-        }
-    });
-}
+///
+/// HONK_STATS-style instrumentation that read the (now-relocated) thread-local
+/// `LIVE` table's dedup counters. The hash-cons core now lives in the per-`Ut`
+/// `Context`, which is already dropped by the time the one caller
+/// (`bin/honk.rs`) runs, so there is no handle to read here — this is a no-op
+/// (byte-neutral; the stat dump was diagnostic only).
+pub fn live_report_final() {}
 
 #[derive(Default)]
 pub struct TypeTable {

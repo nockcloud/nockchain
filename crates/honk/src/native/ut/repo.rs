@@ -82,7 +82,7 @@ impl<'a> Ut<'a> {
                 ))
             })?;
             let play_ty = self.play(inner.clone(), hoon.as_ref())?;
-            played.push(live_to_noun(&play_ty, self.slab));
+            played.push(live_to_noun(&mut self.cx, &play_ty, self.slab));
         }
         self.fork_from_options(played)
     }
@@ -97,7 +97,7 @@ impl<'a> Ut<'a> {
         // native_of in rest_inner exactly).
         let mut native_legs = Vec::with_capacity(legs.len());
         for (inner, hoon_noun) in legs {
-            native_legs.push((native_of(*inner, &self.slab.noun_space())?, *hoon_noun));
+            native_legs.push((native_of(&mut self.cx, *inner, &self.slab.noun_space())?, *hoon_noun));
         }
         self.with_rest_legs(legs, |ut| {
             if let Some(cached) = ut.rest_boundary_lookup(sut, legs_noun)? {
@@ -216,7 +216,10 @@ impl<'a> Ut<'a> {
         match &*typ {
             NTy::Face { inner, .. } => Ok(inner.clone()),
             NTy::Hint { payload, .. } => Ok(payload.clone()),
-            NTy::Core { payload, .. } => Ok(cons_cell(cons_noun(), payload.clone())),
+            NTy::Core { payload, .. } => {
+                let head = cons_noun(&mut self.cx);
+                Ok(cons_cell(&mut self.cx, head, payload.clone()))
+            }
             NTy::Hold { subject, gene } => {
                 let subject = subject.clone();
                 let gene = gene.clone();
@@ -224,9 +227,9 @@ impl<'a> Ut<'a> {
                 // rest_boundary cache key (re-key deferred); the native `subject`
                 // threads straight to `play` (C-final.4), dropping the prior
                 // subject -> noun -> native round-trip before play.
-                let inner = live_to_noun(&subject, self.slab);
-                let hoon = live_leaf_to_noun(&gene, self.slab);
-                let typ_noun = live_to_noun(&typ, self.slab);
+                let inner = live_to_noun(&mut self.cx, &subject, self.slab);
+                let hoon = live_leaf_to_noun(&mut self.cx, &gene, self.slab);
+                let typ_noun = live_to_noun(&mut self.cx, &typ, self.slab);
                 self.repo_hold(typ_noun, subject, inner, hoon)
             }
             NTy::Noun => {
@@ -247,6 +250,6 @@ impl<'a> Ut<'a> {
         // content-key the decode so equal subjects reuse one interned `Rc`.
         let native = self.native_of_cached(typ)?;
         let r = self.repo(native)?;
-        Ok(live_to_noun(&r, self.slab))
+        Ok(live_to_noun(&mut self.cx, &r, self.slab))
     }
 }

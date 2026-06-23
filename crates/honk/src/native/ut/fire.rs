@@ -85,13 +85,13 @@ impl<'a> Ut<'a> {
         let rest = rest.clone();
         // redo_wet_payload keeps its (Noun, Noun) -> Noun boundary: lower the two
         // leaves (payload + context) here, redo, then re-lift the redone payload.
-        let payload_noun = live_to_noun(&payload, self.slab);
-        let context_noun = live_to_noun(&context, self.slab);
+        let payload_noun = live_to_noun(&mut self.cx, &payload, self.slab);
+        let context_noun = live_to_noun(&mut self.cx, &context, self.slab);
         let redone_payload_noun = self.redo_wet_payload(payload_noun, context_noun)?;
         let redone_payload = self.native_of_cached(redone_payload_noun)?;
         // Rebuild the redone core natively via cons_core (mirrors
         // coil_from_parts + ty_core: same garb/context/rest leaves, new payload).
-        let redone_core = cons_core(redone_payload, garb.clone(), context.clone(), rest.clone());
+        let redone_core = cons_core(&mut self.cx, redone_payload, garb.clone(), context.clone(), rest.clone());
         let dox = self.core_dox_native(&garb, &context, &rest)?;
         self.mull_check_wet(redone_core.clone(), dox, hoon)?;
         // hold = [%hold redone_core hoon], interned identically to the old
@@ -105,7 +105,7 @@ impl<'a> Ut<'a> {
         skip_vet_dry_checks: bool,
     ) -> Result<NRc<NTy>> {
         if arms.is_empty() {
-            return Ok(cons_void());
+            return Ok(cons_void(&mut self.cx));
         }
         if arms.len() == 1 {
             let space = self.slab.noun_space();
@@ -146,8 +146,8 @@ impl<'a> Ut<'a> {
     /// gene leaf interns to the SAME canonical `Rc` (mirrors `ty_hold_n`). The old
     /// `ty_hold_cached` was only a perf cache; the interned RESULT is what matters.
     fn cons_hold(&mut self, inner: NRc<NTy>, hoon: Noun) -> NRc<NTy> {
-        let gene = NLeaf::from_noun(hoon, &self.slab.noun_space());
-        live_intern(NTy::Hold {
+        let gene = NLeaf::from_noun_gated(hoon, &self.slab.noun_space(), self.cx.raw_leaves);
+        live_intern(&mut self.cx, NTy::Hold {
             subject: inner,
             gene,
         })

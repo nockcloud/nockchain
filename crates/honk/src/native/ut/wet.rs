@@ -129,7 +129,7 @@ impl<'a> Ut<'a> {
                 ))
             })?;
             // mull is native (C7); wet_core/dox are already native.
-            let noun_goal_n = cons_noun();
+            let noun_goal_n = cons_noun(&mut self.cx);
             let _ = self.mull(wet_core, noun_goal_n, dox, hoon_ast.as_ref())?;
             Ok(())
         })();
@@ -183,7 +183,7 @@ impl<'a> Ut<'a> {
         };
         let mut out = sut;
         for tool in lov.iter().rev() {
-            out = cons_face(tool.clone(), out);
+            out = cons_face(&mut self.cx, tool.clone(), out);
         }
         Ok(out)
     }
@@ -225,9 +225,9 @@ impl<'a> Ut<'a> {
         let NTy::Hold { subject, gene } = &**hold else {
             return Ok(false);
         };
-        let inner = live_to_noun(subject, self.slab);
-        let hoon = live_leaf_to_noun(gene, self.slab);
-        let hold_noun = live_to_noun(hold, self.slab);
+        let inner = live_to_noun(&mut self.cx, subject, self.slab);
+        let hoon = live_leaf_to_noun(&mut self.cx, gene, self.slab);
+        let hold_noun = live_to_noun(&mut self.cx, hold, self.slab);
         let leg_id = self.hold_repo_fan_leg_id_for_hold_type(hold_noun, inner, hoon)?;
         Ok(self
             .hold_repo_fan_active_leg_ids
@@ -246,7 +246,7 @@ impl<'a> Ut<'a> {
         let payload_n = self.native_of_cached(payload)?;
         let reference_n = self.native_of_cached(reference)?;
         let result_n = self.redo_dext(payload_n, reference_n, RedoState::default())?;
-        let result = live_to_noun(&result_n, self.slab);
+        let result = live_to_noun(&mut self.cx, &result_n, self.slab);
         self.redo_boundary_store(payload, reference, result)?;
         Ok(result)
     }
@@ -313,7 +313,7 @@ impl<'a> Ut<'a> {
                 let ref_tail = self.peek(reduced_ref, Way::Free, 3)?;
                 let new_head = self.redo_dext(sut_head, ref_head, descend_state.clone())?;
                 let new_tail = self.redo_dext(sut_tail, ref_tail, descend_state)?;
-                let rebuilt = cons_cell(new_head, new_tail);
+                let rebuilt = cons_cell(&mut self.cx, new_head, new_tail);
                 self.redo_done(rebuilt, &next_state)
             }
             NTy::Face { tool, inner } => {
@@ -327,7 +327,7 @@ impl<'a> Ut<'a> {
                 let head = head.clone();
                 let payload = payload.clone();
                 let redone = self.redo_dext(payload, reference, state)?;
-                Ok(cons_hint(head, redone))
+                Ok(cons_hint(&mut self.cx, head, redone))
             }
             NTy::Fork { .. } => {
                 let options = self.fork_options_native(&sut)?;

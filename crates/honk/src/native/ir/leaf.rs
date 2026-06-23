@@ -34,15 +34,36 @@ pub enum Leaf {
     /// Anything larger (big atoms, cells) as owned jam bytes + a cached content
     /// hash — provenance-free, cued into the destination slab by `to_noun`.
     Jammed(Arc<[u8]>, u64),
+    /// A RAW noun + cached mug. Carried WITHOUT jam/cue round-trips — the
+    /// jam-elimination win. SAFE only compile-wide when the frame arena is OFF
+    /// (no per-arm `push_frame`, so the slab never recycles the address the noun
+    /// points at, and the noun stays live for the whole compile). Gated by
+    /// `Context::raw_leaves`; built only via `from_noun_gated(.., raw=true)` so a
+    /// single compile is either ALL `Noun` or ALL `Jammed` for big leaves (never
+    /// mixed, which the cross-variant `PartialEq => false` would otherwise break).
+    Noun(Noun, u32),
 }
 
 impl Leaf {
     /// Capture `noun` (resolved in `space`) as an owned, provenance-free leaf.
+    /// The oracle/default path: big leaves become `Jammed`.
     pub fn from_noun(noun: Noun, space: &NounSpace) -> Self {
+        Leaf::from_noun_gated(noun, space, false)
+    }
+
+    /// Capture `noun` as a leaf, choosing the big-leaf representation by `raw`:
+    /// `raw=true` carries the live noun directly (`Noun`, the jam/cue
+    /// elimination); `raw=false` jams it (`Jammed`, the oracle/default). Atoms
+    /// `<= u64` are always `Direct` (unchanged).
+    pub fn from_noun_gated(noun: Noun, space: &NounSpace, raw: bool) -> Self {
         if let Ok(atom) = noun.in_space(space).as_atom() {
             if let Ok(v) = atom.as_u64() {
                 return Leaf::Direct(v);
             }
+        }
+        if raw {
+            // Carry the live noun as-is; cache its mug as the hash bucket.
+            return Leaf::Noun(noun, crate::native::noun::slab_mug(noun, space));
         }
         // Larger / cell: jam through a scratch slab so we own the bytes.
         let mut scratch: NounSlab = NounSlab::new();
@@ -64,6 +85,10 @@ impl Leaf {
                     .expect("leaf jam bytes must cue");
                 dst.copy_into(cued, &scratch.noun_space())
             }
+            // Generic/oracle path: copy into a possibly-different slab. The LIVE
+            // path (`live_leaf_to_noun`) returns the noun as-is (no copy) since
+            // it is already `dst`-resident — that is the cue elimination.
+            Leaf::Noun(n, _) => dst.copy_into(*n, &NounSpace::empty()),
         }
     }
 }
@@ -74,6 +99,15 @@ impl PartialEq for Leaf {
             (Leaf::Direct(a), Leaf::Direct(b)) => a == b,
             (Leaf::Jammed(a, ha), Leaf::Jammed(b, hb)) => {
                 ha == hb && (Arc::ptr_eq(a, b) || a[..] == b[..])
+            }
+            // Mug pre-filter then the EXACT structural compare — the same
+            // equivalence jam-equality gives for `Jammed`, so interning collapses
+            // `Noun` leaves to the identical canonical set. Cross-variant pairs
+            // never occur within one compile (raw is compile-wide-constant).
+            (Leaf::Noun(n1, m1), Leaf::Noun(n2, m2)) => {
+                m1 == m2
+                    && crate::native::noun::noun_eq(*n1, *n2, &NounSpace::empty())
+                        .unwrap_or(false)
             }
             _ => false,
         }
@@ -91,6 +125,10 @@ impl Hash for Leaf {
             Leaf::Jammed(_, h) => {
                 1u8.hash(state);
                 h.hash(state);
+            }
+            Leaf::Noun(_, mug) => {
+                2u8.hash(state);
+                mug.hash(state);
             }
         }
     }

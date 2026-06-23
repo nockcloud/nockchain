@@ -575,7 +575,6 @@ fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    honk::native::ir::intern::live_reset();
     let prelude_source = fs::read_to_string(&cli.prelude)?;
     let prelude_expr = parse_prelude_hoon(&cli.prelude, cli.dbug)?;
     let subject_type_jam = cli.sut_jam.as_ref().map(fs::read).transpose()?;
@@ -631,9 +630,6 @@ async fn run(cli: Cli) -> Result<()> {
     )?;
     let mut product = builder.compile_entry(entry)?;
     let mut jam = builder.jam_product(&mut product, cli.mode, entry, None)?;
-    // Native-types harness summary — reported here, in the worker thread that ran
-    // the mint, so the thread-local live table is the one we populated.
-    honk::native::ir::intern::live_report_final();
     pad_hoonc_jam_atom_bytes(&mut jam);
 
     if let Some(parent) = output.parent() {
@@ -893,7 +889,7 @@ fn build_context_with_shared_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
-    ut.force_frame_arena = std::env::var_os("HONK_NO_FRAME_ARENA").is_none(); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
+    ut.set_frame_arena(std::env::var_os("HONK_NO_FRAME_ARENA").is_none()); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();
     let mut eval_context = create_eval_context();
@@ -1029,7 +1025,7 @@ fn build_context_with_dynamic_wrapper_prelude(
 ) -> Result<NativeBuildContext<'static>> {
     let slab = Box::leak(Box::new(NounSlab::new()));
     let mut ut = Ut::new(slab);
-    ut.force_frame_arena = std::env::var_os("HONK_NO_FRAME_ARENA").is_none(); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
+    ut.set_frame_arena(std::env::var_os("HONK_NO_FRAME_ARENA").is_none()); // frame-arena-default (HONK_NO_FRAME_ARENA=1 disables for diagnostics)
     let mut eval_context = create_eval_context();
     let canonical_hoon_138 = prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE;
     let have_embedded_cold = !EMBEDDED_HONC_COLD_138_JAM.is_empty();
@@ -1130,10 +1126,10 @@ async fn compile_batch_with_shared_prelude(
     let mut builder =
         build_context_with_shared_prelude(cli, prelude, prelude_source, subject_type_jam)?;
     for entry in entries {
-        // Native-types: reset the live type table per entry — its memo keys nouns
-        // by raw pointer, and a dropped entry's slab address can be reused by the
-        // next entry, which would otherwise alias a stale interned Rc.
-        honk::native::ir::intern::live_reset();
+        // Native-types: each entry compiles through a fresh `Ut` (per-`Ut`
+        // `cx: Context::new()`), so the per-compile native intern table is reset
+        // per entry — a dropped entry's slab address reused by the next entry can
+        // never alias a stale interned Rc.
         let label = format!("{}", entry.entry.display());
         trace_native(format!("batch compiling {label}"));
         let mut product = builder.compile_entry(&entry.entry)?;
