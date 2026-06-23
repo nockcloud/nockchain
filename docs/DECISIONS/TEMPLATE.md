@@ -6,15 +6,15 @@ Owners: @handle1, @handle2
 Supersedes: none
 Superseded by: none
 Related:
-- [START_HERE](../START_HERE.md)
-- [ARCHITECTURE](../ARCHITECTURE.md)
-- [PROTOCOL](../PROTOCOL.md)
-- [WORKFLOWS](../WORKFLOWS.md)
+- [START_HERE](../../START_HERE.md)
+- [ARCHITECTURE](../../ARCHITECTURE.md)
+- [PROTOCOL](../../PROTOCOL.md)
+- [WORKFLOWS](../../WORKFLOWS.md)
 - [DECISIONS index](./README.md)
 
 ## Usage
 
-Copy this file to `DECISIONS/NNNN-short-kebab.md` and replace placeholders.
+Copy this file to `docs/DECISIONS/NNNN-short-kebab.md` and replace placeholders.
 
 ## Context
 

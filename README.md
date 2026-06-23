@@ -14,14 +14,14 @@ Nockchain is a ZK-Proof of Work blockchain that combines sound money incentives 
 
 > [!IMPORTANT]
 > For docs read order, trust policy, and canonical sources, start with [`START_HERE.md`](./START_HERE.md).
-> Consensus/protocol authority is indexed in [`PROTOCOL.md`](./PROTOCOL.md), with canonical upgrade source files in [`changelog/protocol/`](./changelog/protocol/).
+> Consensus/protocol authority is indexed in [`PROTOCOL.md`](./PROTOCOL.md), with canonical upgrade source files in [`docs/changelog/protocol/`](./docs/changelog/protocol/).
 > This README remains a quickstart for setup and operations.
 
 ## Documentation
 
 - **Start here:** [`START_HERE.md`](./START_HERE.md) — docs trust contract and canonical read order.
 - **Full documentation map:** [`docs/README.md`](./docs/README.md) — one index to every doc and module, grouped by subsystem.
-- **Canonical spine:** [`PROTOCOL.md`](./PROTOCOL.md) (protocol authority) · [`ARCHITECTURE.md`](./ARCHITECTURE.md) (boundaries/invariants) · [`WORKFLOWS.md`](./WORKFLOWS.md) (operational routing) · [`DECISIONS/README.md`](./DECISIONS/README.md) (ADRs).
+- **Canonical spine:** [`PROTOCOL.md`](./PROTOCOL.md) (protocol authority) · [`ARCHITECTURE.md`](./ARCHITECTURE.md) (boundaries/invariants) · [`WORKFLOWS.md`](./WORKFLOWS.md) (operational routing) · [`docs/DECISIONS/README.md`](./docs/DECISIONS/README.md) (ADRs).
 - **Per-module docs:** every crate under [`crates/`](./crates/) has a README; browse them via the [documentation map](./docs/README.md).
 
 ## Persistent Memory Arena (PMA)

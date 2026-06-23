@@ -6,10 +6,10 @@ Owners: Nockchain Maintainers
 Supersedes: none
 Superseded by: none
 Related:
-- [START_HERE](../START_HERE.md)
-- [PROTOCOL](../PROTOCOL.md)
-- [ARCHITECTURE](../ARCHITECTURE.md)
-- [WORKFLOWS](../WORKFLOWS.md)
+- [START_HERE](../../START_HERE.md)
+- [PROTOCOL](../../PROTOCOL.md)
+- [ARCHITECTURE](../../ARCHITECTURE.md)
+- [WORKFLOWS](../../WORKFLOWS.md)
 - [DECISIONS index](./README.md)
 
 ## Context
@@ -20,7 +20,7 @@ Consensus-critical behavior was historically described across multiple documenta
 
 Adopt protocol-first canonicalization:
 
-- Normative consensus behavior is authoritative only when defined by `PROTOCOL.md` and the indexed upgrade specs under `changelog/protocol/`.
+- Normative consensus behavior is authoritative only when defined by `PROTOCOL.md` and the indexed upgrade specs under `docs/changelog/protocol/`.
 - Consensus-affecting changes must be version-gated through upgrade specs and reflected in the `PROTOCOL.md` index in the same change.
 - Workflow, runbook, and crate docs may explain operations, but they do not redefine protocol semantics.
 

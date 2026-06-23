@@ -16,10 +16,10 @@ Documentation coverage tracker. For navigation, use the documentation map at
 
 | Area                                              | Files | Notes                                                                 |
 | ------------------------------------------------- | ----- | -------------------------------------------------------------------- |
-| Tier-0 canonical spine (root + `DECISIONS/README`) | 5     | `START_HERE`, `PROTOCOL`, `ARCHITECTURE`, `WORKFLOWS`, `DECISIONS/README` |
+| Tier-0 canonical spine (root + `docs/DECISIONS/README`) | 5     | `START_HERE`, `PROTOCOL`, `ARCHITECTURE`, `WORKFLOWS`, `docs/DECISIONS/README` |
 | Root quickstart                                   | 1     | `README.md` (Tier-1 quickstart)                                     |
-| Decision records and template                     | 3     | `DECISIONS/0001`, `0002`, `TEMPLATE`                               |
-| Protocol upgrade specs (`changelog/protocol/`)    | 16    | `SPECIFICATION.md` + 15 upgrade specs (001–014, incl. Aletheia audit) |
+| Decision records and template                     | 3     | `docs/DECISIONS/0001`, `0002`, `TEMPLATE`                               |
+| Protocol upgrade specs (`docs/changelog/protocol/`)    | 16    | `SPECIFICATION.md` + 15 upgrade specs (001–014, incl. Aletheia audit) |
 | `docs/` (map, inventory, architecture, pma, fixes) | 33    | documentation map, this tracker, `pma/PMA-FAQ.md`, deep dives        |
 | `crates/` (module READMEs + subsystem docs)       | 74    | every crate now has a root README; includes bridge/nockvm doc sets   |
 | `tests/`                                          | 2     | e2e fixtures/readmes                                                  |
@@ -40,7 +40,7 @@ Canonical tiering is governed by [`START_HERE.md`](../START_HERE.md), not by thi
 file. In summary:
 
 - **Tier 0 (canonical spine):** `START_HERE.md`, `PROTOCOL.md`,
-  `ARCHITECTURE.md`, `WORKFLOWS.md`, `DECISIONS/README.md`, plus the protocol
+  `ARCHITECTURE.md`, `WORKFLOWS.md`, `docs/DECISIONS/README.md`, plus the protocol
   upgrade specs indexed by `PROTOCOL.md`.
 - **Tier 1 (scoped canonical satellites):** `README.md`,
   `crates/nockapp/README.md`, `crates/nockchain-api/README.md`,

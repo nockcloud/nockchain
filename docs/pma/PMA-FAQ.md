@@ -143,4 +143,4 @@ Once you are confident the node has booted from PMA repeatedly and has healthy s
 
 ## Where are the deeper PMA docs?
 
-See [`docs/pma/`](./docs/pma/) for PMA durability, design, memory-attribution, and noun-provenance docs.
+See the [other docs in this directory](./README.md) for PMA durability, design, memory-attribution, and noun-provenance docs.

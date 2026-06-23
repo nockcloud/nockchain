@@ -5,7 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 OPEN_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)"
 cd "$OPEN_ROOT"
 
-SPEC_FILE="changelog/protocol/013-nous.md"
+SPEC_FILE="docs/changelog/protocol/013-nous.md"
 failures=0
 
 require_pattern() {

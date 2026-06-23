@@ -3,10 +3,10 @@
 Status: Active
 Owner: Nockchain Maintainers
 Last Reviewed: 2026-02-19
-Canonical/Legacy: Canonical (schema/lifecycle authority for `changelog/protocol/*.md`; top-level protocol index authority is [`PROTOCOL.md`](../../PROTOCOL.md))
+Canonical/Legacy: Canonical (schema/lifecycle authority for `docs/changelog/protocol/*.md`; top-level protocol index authority is [`PROTOCOL.md`](../../../PROTOCOL.md))
 
-Use [`PROTOCOL.md`](../../PROTOCOL.md) as the protocol index and active-upgrade selector.
-Canonical protocol source files live under [`changelog/protocol/`](./).
+Use [`PROTOCOL.md`](../../../PROTOCOL.md) as the protocol index and active-upgrade selector.
+Canonical protocol source files live under [`docs/changelog/protocol/`](./).
 Use this file as the required schema and lifecycle contract for those source files.
 This schema document does not supersede `PROTOCOL.md`.
 

@@ -14,7 +14,7 @@ It is an implementation map for this crate, not chain-level protocol authority.
 
 - Protocol activation and chain-level authority are external:
   [`PROTOCOL.md`](../../../PROTOCOL.md) and
-  [`changelog/protocol/`](../../../changelog/protocol/).
+  [`changelog/protocol/`](../../../docs/changelog/protocol/).
 - This document only describes bridge runtime behavior in this repository.
 
 ## Component Map

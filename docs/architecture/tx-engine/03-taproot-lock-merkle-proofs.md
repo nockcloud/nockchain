@@ -119,7 +119,7 @@ The hash commitment for a lock Merkle proof is computed differently for stub and
 
 ### Stub Hashable (Pre-Bythos)
 
-From `changelog/protocol/012-bythos.md`:
+From `docs/docs/changelog/protocol/012-bythos.md`:
 
 ```hoon
 :+  hash+(hash:spend-condition spend-condition.form)

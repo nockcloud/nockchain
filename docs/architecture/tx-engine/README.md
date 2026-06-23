@@ -11,7 +11,7 @@ cryptographic and data-structure primitives underneath it.
 
 > These are explanatory references, not normative protocol rules. When this
 > material conflicts with [`PROTOCOL.md`](../../../PROTOCOL.md) or the upgrade
-> specs in [`changelog/protocol/`](../../../changelog/protocol/), the protocol
+> specs in [`changelog/protocol/`](../../changelog/protocol/), the protocol
 > docs win.
 
 ## Read Order

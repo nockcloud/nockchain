@@ -7,7 +7,7 @@ It is not a standalone source of chain-level protocol authority.
 Protocol authority routing:
 
 - Chain-level protocol index and activation authority: [`PROTOCOL.md`](../../../PROTOCOL.md)
-- Canonical protocol upgrade sources: [`changelog/protocol/`](../../../changelog/protocol/)
+- Canonical protocol upgrade sources: [`changelog/protocol/`](../../../docs/changelog/protocol/)
 - This document governs bridge subsystem operations and cannot override indexed protocol specs.
 
 ## Actors

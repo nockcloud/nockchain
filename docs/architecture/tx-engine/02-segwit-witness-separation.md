@@ -10,7 +10,7 @@ Bitcoin's Segregated Witness (BIP 141, activated August 2017) introduced a funda
 
 ## Nockchain's Witness Separation
 
-Nockchain's V1 transaction engine (Protocol 009, activated at block 37350) implements an analogous separation. The design is documented as the "segwit cutover" in `changelog/protocol/009-legacy-segwit-cutover-initial.md`.
+Nockchain's V1 transaction engine (Protocol 009, activated at block 37350) implements an analogous separation. The design is documented as the "segwit cutover" in `docs/docs/changelog/protocol/009-legacy-segwit-cutover-initial.md`.
 
 ### V0 Model: Embedded Signatures
 
@@ -151,7 +151,7 @@ The cutover is enforced by a strict height-based rule matrix:
 | `< v1-phase` (37350) | Allowed | Rejected | V0 (sig-keyed) |
 | `≥ v1-phase` (37350) | Rejected | Required | V1 (lock-hash-rooted) |
 
-From `changelog/protocol/009-legacy-segwit-cutover-initial.md`:
+From `docs/docs/changelog/protocol/009-legacy-segwit-cutover-initial.md`:
 > At `height >= v1-phase`: v1 raw transactions are required. v0 raw transactions are rejected (`%v0-tx-after-cutoff`).
 
 This is a **hard cutover**, not a gradual transition. All nodes must agree on the same rules at the same height.

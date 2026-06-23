@@ -62,7 +62,7 @@ crates/nockchain-types/src/tx_engine/
 ### Protocol Specifications
 
 ```
-changelog/protocol/
+docs/changelog/protocol/
 ├── 009-legacy-segwit-cutover-initial.md  # V0→V1 split (block 37350)
 ├── 010-legacy-v1-phase-39000.md          # V1 phase finalization
 ├── 011-legacy-lmp-axis-hotfix.md         # Lock merkle proof axis fix

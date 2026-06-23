@@ -12,7 +12,7 @@ If an implementation detail conflicts with a boundary or invariant below, the bo
 
 | Boundary                       | Owns                                                                      | Does Not Own                                     | Canonical Satellites                                                                                                                                       |
 | ------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and consensus rules   | Transaction validity, consensus transitions, upgrade gates                | Runbook steps, deployment policy                 | [`PROTOCOL.md`](./PROTOCOL.md), [`changelog/protocol/SPECIFICATION.md`](./changelog/protocol/SPECIFICATION.md)                                             |
+| Protocol and consensus rules   | Transaction validity, consensus transitions, upgrade gates                | Runbook steps, deployment policy                 | [`PROTOCOL.md`](./PROTOCOL.md), [`docs/changelog/protocol/SPECIFICATION.md`](./docs/changelog/protocol/SPECIFICATION.md)                                             |
 | Node runtime and networking    | Kernel execution, peer communication, chain sync                          | Redefining protocol rules                        | [`README.md`](./README.md), [`crates/nockapp/README.md`](./crates/nockapp/README.md)                                                                       |
 | Wallet and public API surfaces | Key management, transaction construction, public/private service exposure | Consensus authority                              | [`crates/nockchain-wallet/README.md`](./crates/nockchain-wallet/README.md), [`crates/nockchain-api/README.md`](./crates/nockchain-api/README.md)           |
 | Bridge subsystem               | Cross-chain contracts, bridge runtime behavior, bridge operational policy | Base protocol authority for non-bridge consensus | [`crates/bridge/docs/architecture.md`](./crates/bridge/docs/architecture.md), [`crates/bridge/docs/node-runbook.md`](./crates/bridge/docs/node-runbook.md) |
@@ -39,4 +39,4 @@ If an implementation detail conflicts with a boundary or invariant below, the bo
 
 - [`START_HERE.md`](./START_HERE.md)
 - [`WORKFLOWS.md`](./WORKFLOWS.md)
-- [`DECISIONS/README.md`](./DECISIONS/README.md)
+- [`docs/DECISIONS/README.md`](./docs/DECISIONS/README.md)

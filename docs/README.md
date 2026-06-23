@@ -20,14 +20,14 @@ If anything here conflicts with a Tier-0 doc, the Tier-0 doc wins.
 | [`PROTOCOL.md`](../PROTOCOL.md)                      | Protocol authority and upgrade index                       |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md)              | System boundaries and global invariants                    |
 | [`WORKFLOWS.md`](../WORKFLOWS.md)                    | Operational routing: pick the right golden path            |
-| [`DECISIONS/README.md`](../DECISIONS/README.md)      | Architecture Decision Records (ADR) index                  |
+| [`DECISIONS/README.md`](./DECISIONS/README.md)      | Architecture Decision Records (ADR) index                  |
 | [`README.md`](../README.md)                          | Quickstart: setup, build, run, wallet, FAQ                 |
 
 ## 2. Protocol & Consensus
 
 - [`PROTOCOL.md`](../PROTOCOL.md) — canonical index of every protocol upgrade.
-- [`changelog/protocol/SPECIFICATION.md`](../changelog/protocol/SPECIFICATION.md) — required spec format and lifecycle.
-- [`changelog/protocol/`](../changelog/protocol/) — per-upgrade specs (legacy checkpoints through Bythos, Nous, Aletheia).
+- [`changelog/protocol/SPECIFICATION.md`](./changelog/protocol/SPECIFICATION.md) — required spec format and lifecycle.
+- [`changelog/protocol/`](./changelog/protocol/) — per-upgrade specs (legacy checkpoints through Bythos, Nous, Aletheia).
 
 ## 3. Architecture
 
@@ -131,7 +131,7 @@ satellites (marked **Tier 1**); the rest are crate-level reference.
 
 ## 7. Decisions (ADRs)
 
-- [`DECISIONS/README.md`](../DECISIONS/README.md) — ADR index and process.
+- [`DECISIONS/README.md`](./DECISIONS/README.md) — ADR index and process.
 
 ## 8. Fix Notes & History
 

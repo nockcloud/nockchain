@@ -8,11 +8,11 @@ cd "$OPEN_ROOT"
 # Keep this list intentionally explicit for high signal checks.
 TARGET_FILES='
 ARCHITECTURE.md
-DECISIONS/README.md
+docs/DECISIONS/README.md
 PROTOCOL.md
 README.md
 WORKFLOWS.md
-changelog/protocol/SPECIFICATION.md
+docs/changelog/protocol/SPECIFICATION.md
 crates/hoonc/README.md
 crates/nockapp/README.md
 crates/nockchain-api/README.md

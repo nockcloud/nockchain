@@ -5,7 +5,7 @@ Owner: Nockchain Maintainers
 Last Reviewed: 2026-02-20
 Canonical/Legacy: Canonical (ADR index for durable technical decisions)
 
-`DECISIONS/` stores Architecture Decision Records (ADRs), the durable "why" behind major choices.
+`docs/DECISIONS/` stores Architecture Decision Records (ADRs), the durable "why" behind major choices.
 
 ## Status Lifecycle
 
@@ -37,13 +37,13 @@ Canonical/Legacy: Canonical (ADR index for durable technical decisions)
 
 ## Add A New ADR
 
-1. Copy [`TEMPLATE.md`](./TEMPLATE.md) to `DECISIONS/NNNN-short-kebab.md`.
+1. Copy [`TEMPLATE.md`](./TEMPLATE.md) to `docs/DECISIONS/NNNN-short-kebab.md`.
 2. Fill in context, decision, alternatives, consequences, and rollout sections.
 3. Add the ADR to the index table above.
 
 ## Related Spine Docs
 
-- [`../START_HERE.md`](../START_HERE.md)
-- [`../PROTOCOL.md`](../PROTOCOL.md)
-- [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
-- [`../WORKFLOWS.md`](../WORKFLOWS.md)
+- [`../../START_HERE.md`](../../START_HERE.md)
+- [`../../PROTOCOL.md`](../../PROTOCOL.md)
+- [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md)
+- [`../../WORKFLOWS.md`](../../WORKFLOWS.md)

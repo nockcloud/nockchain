@@ -62,4 +62,4 @@ Canonical landing doc: [`README.md`](./README.md)
 
 - [`START_HERE.md`](./START_HERE.md)
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- [`DECISIONS/README.md`](./DECISIONS/README.md)
+- [`docs/DECISIONS/README.md`](./docs/DECISIONS/README.md)

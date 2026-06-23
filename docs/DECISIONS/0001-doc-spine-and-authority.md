@@ -6,10 +6,10 @@ Owners: Nockchain Maintainers
 Supersedes: none
 Superseded by: none
 Related:
-- [START_HERE](../START_HERE.md)
-- [PROTOCOL](../PROTOCOL.md)
-- [ARCHITECTURE](../ARCHITECTURE.md)
-- [WORKFLOWS](../WORKFLOWS.md)
+- [START_HERE](../../START_HERE.md)
+- [PROTOCOL](../../PROTOCOL.md)
+- [ARCHITECTURE](../../ARCHITECTURE.md)
+- [WORKFLOWS](../../WORKFLOWS.md)
 - [DECISIONS index](./README.md)
 
 ## Context
@@ -20,7 +20,7 @@ Repository documentation grew across many top-level and crate-local files, with 
 
 Establish a canonical Tier 0 documentation spine and explicit conflict policy:
 
-- Tier 0 canonical spine: `START_HERE.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, and `DECISIONS/README.md`.
+- Tier 0 canonical spine: `START_HERE.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, and `docs/DECISIONS/README.md`.
 - Conflict rule: Tier 0 overrides Tier 1, Tier 1 overrides Tier 2.
 - Isolation rule: crate READMEs are not protocol or architecture authority unless promoted by the spine.
 - Maintenance rule: promotions/demotions and trust-contract changes update the spine docs in the same change.

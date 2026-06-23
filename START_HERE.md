@@ -10,7 +10,7 @@ If documents conflict, follow this file and the canonical spine below.
    - Protocol authority: [`PROTOCOL.md`](./PROTOCOL.md)
    - Architecture boundaries/invariants: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
    - Workflow golden paths: [`WORKFLOWS.md`](./WORKFLOWS.md)
-   - Decision history index: [`DECISIONS/README.md`](./DECISIONS/README.md)
+   - Decision history index: [`docs/DECISIONS/README.md`](./docs/DECISIONS/README.md)
 3. Then read scoped satellites linked by the spine:
    - Quickstart and operational commands: [`README.md`](./README.md)
    - Runtime interface and kernel integration: [`crates/nockapp/README.md`](./crates/nockapp/README.md)
@@ -20,8 +20,8 @@ If documents conflict, follow this file and the canonical spine below.
 
 ## Trust And Canonical Policy
 
-- Tier 0 (canonical spine): this file, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, `DECISIONS/README.md`.
-- Tier 0 protocol rule authority: upgrade specs in `changelog/protocol/` as indexed by `PROTOCOL.md`.
+- Tier 0 (canonical spine): this file, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, `docs/DECISIONS/README.md`.
+- Tier 0 protocol rule authority: upgrade specs in `docs/changelog/protocol/` as indexed by `PROTOCOL.md`.
 - Tier 1 (scoped canonical satellites): docs directly linked by Tier 0 that declare `Canonical/Legacy: Canonical` for a bounded subsystem scope.
 - Tier 2 (legacy or historical): docs marked `Canonical/Legacy: Legacy`, plus unpromoted docs outside Tier 0/Tier 1.
 - Conflict rule: Tier 0 overrides Tier 1, Tier 1 overrides Tier 2.
@@ -76,4 +76,4 @@ When adding or promoting top-level docs, update this file in the same change:
 
 1. Add the doc to read order and canonical tier.
 2. State which older docs are demoted to Tier 2.
-3. Keep links valid among `START_HERE.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, and `DECISIONS/README.md`.
+3. Keep links valid among `START_HERE.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `WORKFLOWS.md`, and `docs/DECISIONS/README.md`.
