@@ -266,29 +266,6 @@ impl<'a> Ut<'a> {
         reference: NRc<NTy>,
         state: RedoState,
     ) -> Result<NRc<NTy>> {
-        if super::perf_on() {
-            super::NATIVE_PERF.with(|s| {
-                let mut s = s.borrow_mut();
-                s.redo_calls += 1;
-                s.redo_depth += 1;
-                if s.redo_depth > s.redo_max_depth {
-                    s.redo_max_depth = s.redo_depth;
-                }
-            });
-        }
-        let r = self.redo_dext_impl_inner(sut, reference, state);
-        if super::perf_on() {
-            super::NATIVE_PERF.with(|s| s.borrow_mut().redo_depth -= 1);
-        }
-        r
-    }
-
-    fn redo_dext_impl_inner(
-        &mut self,
-        sut: NRc<NTy>,
-        reference: NRc<NTy>,
-        state: RedoState,
-    ) -> Result<NRc<NTy>> {
         if NRc::ptr_eq(&sut, &reference)
             || matches!(
                 &*reference,

@@ -42,7 +42,6 @@ fn intern_type_noun(
     memo: &mut InternMemo,
     noun: Noun,
     space: &NounSpace,
-    raw: bool,
 ) -> Result<Rc<Type>> {
     // %void / %noun are bare atom cords — directs, no memo needed.
     if let Ok(atom) = noun.in_space(space).as_atom() {
@@ -70,14 +69,14 @@ fn intern_type_noun(
     let node = if tag.eq_bytes(b"atom") {
         let (aura, bits) = pair(tail, space)?;
         Type::Atom {
-            aura: Leaf::from_noun_gated(aura, space, raw),
-            bits: Leaf::from_noun_gated(bits, space, raw),
+            aura: Leaf::from_noun_raw(aura, space),
+            bits: Leaf::from_noun_raw(bits, space),
         }
     } else if tag.eq_bytes(b"cell") {
         let (h, t) = pair(tail, space)?;
         Type::Cell(
-            intern_type_noun(table, memo, h, space, raw)?,
-            intern_type_noun(table, memo, t, space, raw)?,
+            intern_type_noun(table, memo, h, space)?,
+            intern_type_noun(table, memo, t, space)?,
         )
     } else if tag.eq_bytes(b"core") {
         let (payload, coil) = pair(tail, space)?;
@@ -85,32 +84,32 @@ fn intern_type_noun(
         let (garb, coil_tail) = pair(coil, space)?;
         let (context, rest) = pair(coil_tail, space)?;
         Type::Core {
-            payload: intern_type_noun(table, memo, payload, space, raw)?,
+            payload: intern_type_noun(table, memo, payload, space)?,
             garb: Garb::from_noun(garb, space)?,
-            context: intern_type_noun(table, memo, context, space, raw)?,
-            rest: Leaf::from_noun_gated(rest, space, raw),
+            context: intern_type_noun(table, memo, context, space)?,
+            rest: Leaf::from_noun_raw(rest, space),
         }
     } else if tag.eq_bytes(b"face") {
         let (tool, inner) = pair(tail, space)?;
         Type::Face {
-            tool: Leaf::from_noun_gated(tool, space, raw),
-            inner: intern_type_noun(table, memo, inner, space, raw)?,
+            tool: Leaf::from_noun_raw(tool, space),
+            inner: intern_type_noun(table, memo, inner, space)?,
         }
     } else if tag.eq_bytes(b"hint") {
         let (head, payload) = pair(tail, space)?;
         Type::Hint {
-            head: Leaf::from_noun_gated(head, space, raw),
-            payload: intern_type_noun(table, memo, payload, space, raw)?,
+            head: Leaf::from_noun_raw(head, space),
+            payload: intern_type_noun(table, memo, payload, space)?,
         }
     } else if tag.eq_bytes(b"fork") {
         Type::Fork {
-            set: Leaf::from_noun_gated(tail, space, raw),
+            set: Leaf::from_noun_raw(tail, space),
         }
     } else if tag.eq_bytes(b"hold") {
         let (subject, gene) = pair(tail, space)?;
         Type::Hold {
-            subject: intern_type_noun(table, memo, subject, space, raw)?,
-            gene: Leaf::from_noun_gated(gene, space, raw),
+            subject: intern_type_noun(table, memo, subject, space)?,
+            gene: Leaf::from_noun_raw(gene, space),
         }
     } else {
         return Err(CompilerError::Decode(
@@ -140,27 +139,19 @@ fn pair(n: Noun, space: &NounSpace) -> Result<(Noun, Noun)> {
 // ---------------------------------------------------------------------------
 
 /// The `intern_type_noun`/`native_of` decode memo: source-noun-address ->
-/// canonical interned `Rc<Type>`. Its KEYS are slab addresses, which under the
-/// frame arena are recycled when a per-arm frame is reclaimed, so an entry whose
-/// source noun lived in a popped frame must be dropped — else a brand-new noun at
-/// the recycled address gets a STALE (wrong-expression) `Rc<Type>` with no content
-/// check. We track insertion order with a per-frame mark stack so a frame pop
-/// evicts EXACTLY the entries added during that frame (a stack-scoped memo): base
-/// / parent-scope decodes (added before the push) survive, preserving the
-/// cross-arm reuse that makes the deepening-subject flip O(N) instead of O(N^2),
-/// while the frame-resident entries (the only ones that can dangle) are dropped.
+/// canonical interned `Rc<Type>`. Its KEYS are slab addresses; with the frame
+/// arena retired the compile slab never reclaims a frame, so an address is never
+/// recycled within a compile and an entry can never go stale (its source noun
+/// stays live for the whole compile). The memo therefore just accumulates for the
+/// life of the `Context` (one compile) — a plain map, no frame-scoped eviction.
 struct InternMemo {
     map: HashMap<u64, Rc<Type>>,
-    order: Vec<u64>,
-    marks: Vec<usize>,
 }
 
 impl InternMemo {
     fn new() -> Self {
         InternMemo {
             map: HashMap::new(),
-            order: Vec::new(),
-            marks: Vec::new(),
         }
     }
 
@@ -171,26 +162,7 @@ impl InternMemo {
 
     #[inline]
     fn insert(&mut self, raw: u64, rc: Rc<Type>) {
-        if self.map.insert(raw, rc).is_none() {
-            self.order.push(raw);
-        }
-    }
-
-    /// Open a new frame scope: subsequent inserts belong to it until `pop_frame`.
-    fn push_frame(&mut self) {
-        self.marks.push(self.order.len());
-    }
-
-    /// Close the current frame scope, evicting exactly the entries inserted since
-    /// the matching `push_frame` (whose source nouns live in the just-reclaimed
-    /// arm frame). Unbalanced pop (no mark) is a no-op.
-    fn pop_frame(&mut self) {
-        if let Some(mark) = self.marks.pop() {
-            let mark = mark.min(self.order.len());
-            for raw in self.order.drain(mark..) {
-                self.map.remove(&raw);
-            }
-        }
+        self.map.insert(raw, rc);
     }
 }
 
@@ -252,15 +224,6 @@ pub struct Context {
     // --- native_of content-keyed decode cache + fork cache ---
     native_of_mug_memo: HashMap<u64, Vec<Rc<Type>>>, // NATIVE_OF_MUG_MEMO
     fork_cache: HashMap<Vec<usize>, Rc<Type>>,       // FORK_CACHE
-
-    // When true, big carried leaves (%core rest, %fork set, %hold gene, %hint
-    // head, atom aura/bits, face tool) are carried as RAW `Leaf::Noun` instead of
-    // `Leaf::Jammed` — eliminating the jam/cue round-trips. SAFE only compile-wide
-    // when the frame arena is OFF (no per-arm `push_frame`, so slab addresses
-    // never recycle and the raw nouns stay live for the whole compile). Set by
-    // `Ut::set_frame_arena` to `!frame_arena_on`. Defaults to true to match
-    // `Ut::new`'s default `force_frame_arena = false`.
-    pub raw_leaves: bool,
 }
 
 impl Context {
@@ -278,7 +241,6 @@ impl Context {
             fish_cache: HashMap::new(),
             native_of_mug_memo: HashMap::new(),
             fork_cache: HashMap::new(),
-            raw_leaves: true,
         }
     }
 
@@ -611,42 +573,6 @@ pub fn live_enabled() -> bool {
     }
 }
 
-/// Invalidate the address-keyed `intern_type_noun` memo at a FRAME-ARENA pop.
-///
-/// `intern_type_noun`/`native_of` memoize decoded types by the SOURCE NOUN's raw
-/// address (`noun.as_raw()`) with NO content check on hit. Under the frame arena
-/// those source nouns (fork rebuilds, to_noun round-trips, repo/redo results,
-/// etc.) live in the just-reclaimed per-arm frame, so their addresses are
-/// recycled by later arms' frames. A surviving entry then returns the STALE
-/// interned `Rc<Type>` of an EARLIER, unrelated expression for a brand-new noun
-/// that merely landed at the same reclaimed address — a coherent-but-wrong type
-/// (e.g. a stdlib gate's `$`-arm core substituted as another arm's deepening
-/// subject), producing nondeterministic `find failed` mint errors on big kernels.
-/// Whether an address collides depends on the bump-allocator reuse pattern after
-/// `pop_frame_preserving` (perturbed run-to-run by HashMap seeding), which is why
-/// the failure is nondeterministic and scale-only.
-///
-/// The interned `Rc` nodes and `TypeTable` buckets MUST persist (they are the
-/// canonical structural-identity universe; re-decoding after this clear simply
-/// dedups back to the same `Rc`). The TO_NOUN_MEMO / LEAF_MEMO are NOT cleared
-/// here: their KEYS are stable interned `Rc`/`Arc` pointers and their VALUES are
-/// already relocated to the base region (`live_to_noun`/`live_leaf_to_noun`
-/// `copy_to_base`), so they survive pops without dangling and clearing them would
-/// reintroduce O(N^2) re-lowering. Called from `Ut::invalidate_frame_caches`.
-pub fn live_invalidate_frame(cx: &mut Context) {
-    cx.live.memo.pop_frame();
-}
-
-/// Open an intern-memo frame scope, paired with the slab's `push_frame` at the
-/// per-arm frame-arena boundary (`build_arm_formula_framed`). Entries decoded
-/// while this scope is open are evicted by the matching `live_invalidate_frame`
-/// (called after the slab `pop_frame_preserving`), so their recycled source-noun
-/// addresses can never alias a later arm's nouns. A no-op when the live table
-/// has not been created yet (no native decode has happened).
-pub fn live_push_frame(cx: &mut Context) {
-    cx.live.memo.push_frame();
-}
-
 /// Memoized `Type::to_noun` for the flip bridges: lower a canonical native type to
 /// a noun, caching by interned `Rc` pointer so repeated lowerings (the hot
 /// `*_noun` bridges on big deepened types) are O(1) instead of O(type). SOUND
@@ -665,7 +591,9 @@ pub fn live_to_noun(cx: &mut Context, native: &Rc<Type>, dst: &mut NounSlab) -> 
     // compare when headroom remains; 64MB chunks dwarf any real type depth.
     let noun =
         stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || live_to_noun_node(cx, native, dst));
-    let noun = unsafe { dst.copy_to_base(noun) };
+    // The node-built noun is already resident in the compile slab `dst` (the frame
+    // arena was retired, so there is no base region to relocate to). The memo keeps
+    // it live for the whole compile.
     cx.to_noun_memo.insert(ptr, noun);
     noun
 }
@@ -731,9 +659,9 @@ fn live_to_noun_node(cx: &mut Context, native: &Rc<Type>, dst: &mut NounSlab) ->
             T(dst, &[D(tas("hold")), s, g])
         }
     };
-    // The built node cell lives in the current (scratch) frame; children are
-    // already base-resident via their own `live_to_noun`/`live_leaf_to_noun`. The
-    // caller (`live_to_noun`) does the `copy_to_base` + memo insert.
+    // The built node cell lives in the compile slab `dst`; children are already
+    // resident there via their own `live_to_noun`/`live_leaf_to_noun`. The caller
+    // (`live_to_noun`) does the memo insert that keeps it live for the compile.
     noun
 }
 
@@ -801,8 +729,7 @@ pub fn cons_hint(cx: &mut Context, head: Leaf, payload: Rc<Type>) -> Rc<Type> {
 /// native `Rc<Type>` via the shared memoized walk. One shared `(table, memo)`
 /// means each noun node is walked at most once per compile.
 pub fn native_of(cx: &mut Context, noun: Noun, space: &NounSpace) -> Result<Rc<Type>> {
-    let raw = cx.raw_leaves;
-    intern_type_noun(&mut cx.live.table, &mut cx.live.memo, noun, space, raw)
+    intern_type_noun(&mut cx.live.table, &mut cx.live.memo, noun, space)
 }
 
 /// Memoized leaf lowering for the flipped consumers: lower a carried `Leaf`
@@ -814,18 +741,18 @@ pub fn live_leaf_to_noun(cx: &mut Context, leaf: &Leaf, dst: &mut NounSlab) -> N
     match leaf {
         Leaf::Direct(_) => leaf.to_noun(dst),
         // The cue elimination: a raw leaf's noun already lives in THIS compile's
-        // `dst` slab (built there during minting, kept live because the frame
-        // arena is off), so return it as-is — no copy, no cue.
+        // `dst` slab (built there during minting, kept live for the whole compile),
+        // so return it as-is — no copy, no cue.
         Leaf::Noun(n, _) => *n,
         Leaf::Jammed(arc, _) => {
             let ptr = std::sync::Arc::as_ptr(arc) as *const u8 as usize;
             if let Some(noun) = cx.leaf_memo.get(&ptr).copied() {
                 return noun;
             }
+            // Cued into the compile slab `dst` and kept live for the whole compile
+            // by the memo (the frame arena was retired, so there is no base region
+            // to relocate to).
             let noun = leaf.to_noun(dst);
-            // Relocate to base so the compile-lifetime memo survives frame pops
-            // (see live_to_noun). No-op when no frame is active.
-            let noun = unsafe { dst.copy_to_base(noun) };
             cx.leaf_memo.insert(ptr, noun);
             noun
         }
@@ -849,15 +776,6 @@ pub fn assert_native_eq(noun: Noun, native: &Rc<Type>, space: &NounSpace) {
         ja.len()
     );
 }
-
-/// Emit the final dedup summary for the compile.
-///
-/// HONK_STATS-style instrumentation that read the (now-relocated) thread-local
-/// `LIVE` table's dedup counters. The hash-cons core now lives in the per-`Ut`
-/// `Context`, which is already dropped by the time the one caller
-/// (`bin/honk.rs`) runs, so there is no handle to read here — this is a no-op
-/// (byte-neutral; the stat dump was diagnostic only).
-pub fn live_report_final() {}
 
 #[derive(Default)]
 pub struct TypeTable {

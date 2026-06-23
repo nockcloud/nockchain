@@ -205,9 +205,6 @@ impl<'a> Ut<'a> {
     // HOON138:arm=ut:repo lines=10754-10763 map=direct status=partial reviewed=2026-03-06
     // HOON138_NOTE:native primary implementation for canonical `++repo`; full parity review is still in progress
     pub(super) fn repo(&mut self, typ: NRc<NTy>) -> Result<NRc<NTy>> {
-        if super::perf_on() {
-            super::NATIVE_PERF.with(|s| s.borrow_mut().repo_calls += 1);
-        }
         // ATOMIC FLIP (consumer, STEP 1): repo reads the native enum directly
         // instead of decoding a type noun. cons_cell mirrors the noun cell_type
         // void-collapse. Hold still routes through the noun rest_inner/play path

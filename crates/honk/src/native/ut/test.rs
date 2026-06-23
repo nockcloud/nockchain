@@ -2465,26 +2465,21 @@ fn chunked_tisgar_chain_matches_monolithic_mint() {
     );
 }
 
-// Validates the H7 frame-arena per-arm reclamation on a multi-arm core that
-// exercises the hard cases: cross-arm references (arm `b` resolves sibling `a`,
-// arm `c` resolves `a` and `b` through the lazy resolver), and a recursive trap
-// (`|-`/`$`) inside `c` that drives `%hold`/fan-leg interning. Minting with the
-// frame arena ON must be byte-identical to the default monolithic mint: the
-// per-arm formulas are preserved into keep, the shared core type stays live, and
-// the persistent fan-leg / lazy-resolver stores copy their nouns to the base
-// region so id-stability and resolution survive each frame pop.
+// Mints a multi-arm core that exercises the hard cases: cross-arm references
+// (arm `b` resolves sibling `a`, arm `c` resolves `a` and `b` through the lazy
+// resolver), and a recursive trap (`|-`/`$`) inside `c` that drives `%hold`/
+// fan-leg interning. Must mint deterministically run-to-run (a fresh `Context`
+// per compile gives each an isolated cache universe).
 //
 // PRE-EXISTING failure (NOT introduced by the nest/C8 flip): with a FRESH native
-// intern context, `mint(false)` of this bare-%noun-subject wet-`|-` core fails
-// with `arm c: arm $: coil missing tail: not a cell` — confirmed by A/B against
-// the pre-C8 commit, where it also fails in isolation. It only "passes" in
-// parallel `cargo test` runs because earlier tests on the same thread leave
-// thread-local native state that masks it. Same bare-%noun wet-mint corner as
-// `frame_arena_wet_gate_function_sample_matches_monolithic`. Tracked in
+// intern context, minting this bare-%noun-subject wet-`|-` core fails with
+// `arm c: arm $: coil missing tail: not a cell` — confirmed by A/B against the
+// pre-C8 commit, where it also fails in isolation. Same bare-%noun wet-mint
+// corner as `wet_gate_function_sample_mint_deterministic`. Tracked in
 // docs/native-compiler/ATOMIC-FLIP-TRACKER.md.
 #[ignore = "pre-existing bare-%noun wet-|- mint failure; see ATOMIC-FLIP-TRACKER.md"]
 #[test]
-fn frame_arena_core_mint_matches_monolithic() {
+fn core_mint_deterministic() {
     use std::path::Path;
 
     let src = "\
@@ -2501,10 +2496,9 @@ fn frame_arena_core_mint_matches_monolithic() {
     )
     .expect("parse synthetic core");
 
-    let mint_jam = |frame: bool| {
+    let mint_jam = || {
         let mut slab: NounSlab = NounSlab::new();
         let mut ut = Ut::new(&mut slab);
-        ut.set_frame_arena(frame);
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
         let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic core");
@@ -2513,12 +2507,10 @@ fn frame_arena_core_mint_matches_monolithic() {
         slab.jam().to_vec()
     };
 
-    let mono_jam = mint_jam(false);
-    let frame_jam = mint_jam(true);
-
     assert_eq!(
-        mono_jam, frame_jam,
-        "frame-arena core mint must be byte-identical to monolithic mint"
+        mint_jam(),
+        mint_jam(),
+        "core mint must be deterministic run-to-run (fresh Context per compile)"
     );
 }
 
@@ -2564,22 +2556,13 @@ fn repro_censig_two_arg_wing_find_failure() {
     );
 }
 
-// Reproduces the shape of stdlib `turn`/`add-all` that broke the frame arena at
-// scale: a wet gate (`|*`) whose sample is a function (`b`) referenced inside a
-// `|-` loop via `$(b b)`. The framed mint must locate `b` in the loop subject
-// and produce byte-identical output to the monolithic mint.
-// PRE-EXISTING failure (NOT introduced by the nest/C8 flip): native `mint` of
-// this source against a BARE %noun subject (no prelude) fails with
-// `arm $: type tag: decode error: tag head not atom` — confirmed by A/B against
-// the pre-C8 commit, where it also fails in isolation. The full binary path
-// (prelude subject) compiles the same source fine, so this is a bare-%noun
-// wet-`|-` mint corner from an earlier flip step. Tracked in
-// docs/native-compiler/ATOMIC-FLIP-TRACKER.md; un-ignore once the underlying
-// bare-subject wet-mint bug is fixed.
-// FIXED by the per-compile live_reset() in Ut::new (the C6+C9 batch): this was
-// the cross-compile thread-local intern-table aliasing, not a real mint bug.
+// Reproduces the shape of stdlib `turn`/`add-all`: a wet `|-` loop whose subject
+// carries a binding referenced via `$(a a, b b)` — stresses cross-arm type reuse.
+// Mints against a BARE %noun subject (no prelude) and must mint deterministically
+// run-to-run. This caught the cross-compile intern-table aliasing that the
+// per-compile `Context` (fresh per `Ut`) fixed.
 #[test]
-fn frame_arena_wet_gate_function_sample_matches_monolithic() {
+fn wet_gate_function_sample_mint_deterministic() {
     use std::path::Path;
 
     let src = "\
@@ -2595,10 +2578,9 @@ fn frame_arena_wet_gate_function_sample_matches_monolithic() {
     )
     .expect("parse synthetic wet gate");
 
-    let mint_jam = |frame: bool| {
+    let mint_jam = || {
         let mut slab: NounSlab = NounSlab::new();
         let mut ut = Ut::new(&mut slab);
-        ut.set_frame_arena(frame);
         let sut = super::ty_noun(&mut *ut.slab);
         let gol = super::ty_noun(&mut *ut.slab);
         let (_ty, formula) = ut.mint_noun(sut, gol, &gen).expect("mint synthetic wet gate");
@@ -2608,8 +2590,8 @@ fn frame_arena_wet_gate_function_sample_matches_monolithic() {
     };
 
     assert_eq!(
-        mint_jam(false),
-        mint_jam(true),
-        "frame-arena wet-gate mint must be byte-identical to monolithic mint"
+        mint_jam(),
+        mint_jam(),
+        "wet-gate mint must be deterministic run-to-run (fresh Context per compile)"
     );
 }

@@ -3,43 +3,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::sync::Arc;
 
-// TEMP perf instrumentation (HONK_STATS=1). Counts the recursive-type
-// elaboration hot path to distinguish depth from redundancy. Removed after the
-// RT-05 perf fix lands.
-#[derive(Default)]
-pub struct NativePerfStats {
-    pub mint_calls: u64,
-    pub mint_hits: u64,
-    pub repo_calls: u64,
-    pub fire_wet_calls: u64,
-    pub redo_calls: u64,
-    pub redo_max_depth: u64,
-    pub redo_depth: u64,
-    pub tonoun_calls: u64,
-    pub mint_depth: u64,
-}
-thread_local! {
-    pub static NATIVE_PERF: std::cell::RefCell<NativePerfStats> =
-        std::cell::RefCell::new(NativePerfStats::default());
-}
-#[inline]
-pub fn perf_on() -> bool {
-    std::env::var("HONK_STATS").map(|v| v == "1").unwrap_or(false)
-}
-pub fn perf_dump(tag: &str) {
-    if !perf_on() {
-        return;
-    }
-    NATIVE_PERF.with(|s| {
-        let s = s.borrow();
-        eprintln!(
-            "[HONK_STATS {tag}] mint={} (hits={}) repo={} fire_wet={} redo={} redo_max_depth={} tonoun={}",
-            s.mint_calls, s.mint_hits, s.repo_calls, s.fire_wet_calls, s.redo_calls,
-            s.redo_max_depth, s.tonoun_calls
-        );
-    });
-}
-
 use hatch::ast::hoon::{
     Alas, BaseType, Beer, Block, Chum, Coil, Cord, FaceType, Garb, Gate, Hoon, Knot, Limb, Mane,
     Manx, Marl, Mart, Marx, Nock, NockHint, Note, NounExpr, ParsedAtom, Path, Pint,
@@ -168,17 +131,6 @@ impl MuskRuntime {
         self.mack_core_cache_raw.clear();
         self.mack_core_cache_context = None;
     }
-
-    /// Drop all mack caches at frame-arena reclamation: the copied-core cache
-    /// and per-fold cache are keyed by raw noun pointers / hold scratch nouns
-    /// that the frame pop invalidates. These are pure-fold memos, so eviction
-    /// only forces a correct recompute.
-    fn clear_frame_caches(&mut self) {
-        self.mack_core_cache_raw.clear();
-        self.mack_core_cache_context = None;
-        self.mack_cache_raw.clear();
-        self.mack_cache.clear();
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct CacheContextKey {
@@ -292,10 +244,6 @@ pub struct Ut<'a> {
     pub open_cache_order: VecDeque<usize>,
     pub arm_key_term_cache: HashMap<u64, Arc<str>>,
     pub arm_key_term_cache_order: VecDeque<u64>,
-    // H7 frame-arena override: when true, per-arm minting runs in reclaimable
-    // frames regardless of the `HONK_FRAME_ARENA` env flag (used by tests to
-    // exercise the framed path deterministically).
-    pub force_frame_arena: bool,
     #[cfg(test)]
     pub skin_match_static_calls: usize,
     #[cfg(test)]
@@ -1955,23 +1903,11 @@ impl<'a> Ut<'a> {
             open_cache_order: VecDeque::new(),
             arm_key_term_cache: HashMap::new(),
             arm_key_term_cache_order: VecDeque::new(),
-            force_frame_arena: false,
             #[cfg(test)]
             skin_match_static_calls: 0,
             #[cfg(test)]
             stack_guard_calls: 0,
         }
-    }
-
-    /// Toggle the per-arm frame arena AND the carried-leaf representation in
-    /// lockstep: arena ON => `raw_leaves = false` (big leaves jammed, since
-    /// per-arm `push_frame` recycles slab addresses and a raw noun would dangle);
-    /// arena OFF => `raw_leaves = true` (big leaves carried as raw `Leaf::Noun`,
-    /// no jam/cue round-trips, safe because nothing recycles the slab). Compile-
-    /// wide so a single compile is never a mix of `Noun` and `Jammed` big leaves.
-    pub fn set_frame_arena(&mut self, on: bool) {
-        self.force_frame_arena = on;
-        self.cx.raw_leaves = !on;
     }
 
     fn clear_musk_context_dependent_caches(&mut self) {
@@ -2213,19 +2149,16 @@ impl<'a> Ut<'a> {
         }
         self.hold_repo_fan_leg_raw_ids
             .insert((unsafe { inner.as_raw() }, unsafe { hoon.as_raw() }), id);
-        // The mug store is authoritative and lives for the whole compile; under
-        // the frame arena its `inner`/`hoon` nouns may have been minted in a
-        // per-arm scratch frame, so copy them to the base region (no-op when no
-        // frame is active) to keep id lookups (noun_eq) valid after the pop.
-        let inner_keep = unsafe { self.slab.copy_to_base(inner) };
-        let hoon_keep = unsafe { self.slab.copy_to_base(hoon) };
+        // The mug store is authoritative and lives for the whole compile; with no
+        // frame arena, `inner`/`hoon` live in the single slab for the whole
+        // compile, so id lookups (noun_eq) stay valid without any relocation.
         self.hold_repo_fan_leg_ids
             .entry(key)
             .or_default()
             .push(HoldRepoFanLegIdEntry {
                 id,
-                inner: inner_keep,
-                hoon: hoon_keep,
+                inner,
+                hoon,
             });
         Ok(id)
     }
@@ -2304,11 +2237,10 @@ impl<'a> Ut<'a> {
         if bucket.len() >= Self::HOLD_REPO_FAN_LEG_HOLD_MUG_BUCKET_LIMIT {
             bucket.pop_front();
         }
-        // Under the frame arena `hold` may be scratch-resident; keep a base copy
-        // so later cross-arm lookups (noun_eq) stay valid (no-op without frames).
-        let hold_keep = unsafe { self.slab.copy_to_base(hold) };
+        // `hold` lives in the single compile slab; later cross-arm lookups
+        // (noun_eq) stay valid without any relocation.
         bucket.push_back(HoldRepoFanHoldIdEntry {
-            hold: hold_keep,
+            hold,
             id: leg_id,
         });
         Ok(())
@@ -3564,27 +3496,10 @@ impl<'a> Ut<'a> {
         gol: NRc<NTy>,
         gen: &Hoon,
     ) -> Result<(NRc<NTy>, Noun)> {
-        let outer = if perf_on() {
-            NATIVE_PERF.with(|s| {
-                let mut s = s.borrow_mut();
-                let was = s.mint_depth == 0;
-                s.mint_depth += 1;
-                was
-            })
-        } else {
-            false
-        };
-        let r = match self.mint_inner(sut, gol, gen) {
+        match self.mint_inner(sut, gol, gen) {
             Ok(value) => Ok(value),
             Err(err) => Err(self.decorate_error(err)),
-        };
-        if perf_on() {
-            NATIVE_PERF.with(|s| s.borrow_mut().mint_depth -= 1);
-            if outer {
-                perf_dump("mint-top");
-            }
         }
-        r
     }
 
     /// Noun-bridged `mint` for not-yet-flipped callers (C-final.1a): lift sut/gol
@@ -3611,15 +3526,9 @@ impl<'a> Ut<'a> {
         // native-re-keyed on the interned (sut, gol) `Rc` pointers, so we no
         // longer lower sut/gol just to compute the cache key. C-final.2: play now
         // takes a native subject too, so mint no longer lowers sut for play.
-        if perf_on() {
-            NATIVE_PERF.with(|s| s.borrow_mut().mint_calls += 1);
-        }
         let cache_sig = Self::mint_cache_signature(gen);
         if let Some(gen_sig) = cache_sig {
             if let Some(cached) = self.mint_cache_lookup(&sut, &gol, gen_sig)? {
-                if perf_on() {
-                    NATIVE_PERF.with(|s| s.borrow_mut().mint_hits += 1);
-                }
                 return Ok(cached);
             }
         }
@@ -4405,7 +4314,7 @@ impl<'a> Ut<'a> {
         self.cache_hoon_ast_for_node(gen);
         let pair = T(self.slab, &[gen_noun, D(0)]);
         let tool = T(self.slab, &[D(0), pair]);
-        let tool_leaf = NLeaf::from_noun_gated(tool, &self.slab.noun_space(), self.cx.raw_leaves);
+        let tool_leaf = NLeaf::from_noun_raw(tool, &self.slab.noun_space());
         cons_face(&mut self.cx, tool_leaf, sut)
     }
 
@@ -4969,9 +4878,6 @@ impl<'a> Ut<'a> {
             return mask;
         }
         let mask = T(self.slab, &[D(SEMI_TAG_FULL), D(0)]);
-        // Interned for the whole compile; keep it base-resident so it survives
-        // frame pops if first built inside an arm frame (no-op without frames).
-        let mask = unsafe { self.slab.copy_to_base(mask) };
         self.semi_mask_full_empty = Some(mask);
         mask
     }
@@ -4986,7 +4892,6 @@ impl<'a> Ut<'a> {
             return blocks;
         }
         let blocks = T(self.slab, &[D(0), D(0), D(0)]);
-        let blocks = unsafe { self.slab.copy_to_base(blocks) };
         self.semi_root_blocked_set = Some(blocks);
         blocks
     }
@@ -5000,7 +4905,6 @@ impl<'a> Ut<'a> {
         let blocks = self.semi_blocks_root_blocked();
         let mask = self.semi_mask_full(blocks);
         let semi = self.semi_make(mask, D(0));
-        let semi = unsafe { self.slab.copy_to_base(semi) };
         self.semi_full_blocked_interned = Some(semi);
         semi
     }
@@ -5055,20 +4959,13 @@ impl<'a> Ut<'a> {
         resolver_id: u64,
         core_type: NRc<NTy>,
         poly: Poly,
-        mut arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
+        arms_by_axis: HashMap<u64, LazyResolverArmEntry>,
     ) {
         // Lazy resolvers live for the whole compile and are resolved on demand
         // (re-minting an arm against `core_type`), including CROSS-ARM: another
-        // core's arm can reference this one long after this core's frame popped.
-        // ATOMIC FLIP perf: `core_type` is now the NATIVE deepening core (a heap
-        // Rc), so it is NOT slab-resident and needs no copy_to_base — it survives
-        // any frame pop intrinsically. Only the arm AST nouns remain slab-resident
-        // and must be copied to base under the frame arena. No-op without frames.
-        if self.frame_arena_enabled() {
-            for entry in arms_by_axis.values_mut() {
-                entry.hoon_noun = unsafe { self.slab.copy_to_base(entry.hoon_noun) };
-            }
-        }
+        // core's arm can reference this one. The native deepening `core_type` is a
+        // heap `Rc` and the arm AST nouns live for the whole compile in the single
+        // slab (no per-arm frame recycles them), so nothing needs relocation here.
         self.lazy_resolvers.insert(
             resolver_id,
             LazyResolverContext {
@@ -5172,14 +5069,11 @@ impl<'a> Ut<'a> {
         }
         match compiled {
             Ok(formula) => {
-                // Cache the formula for the whole compile. Under the frame arena
-                // it was minted in the current scratch frame, so copy it to base
-                // — the cache is read CROSS-ARM (another core resolving this one
-                // after its frame popped), and re-minting on a cache miss is NOT
-                // safe: it would run in the caller's %hold/fan scope, not this
-                // arm's, producing a wrong type. Preserving the formula keeps the
-                // resolver a pure lookup. No-op without frames.
-                let formula = unsafe { self.slab.copy_to_base(formula) };
+                // Cache the formula (in the compile slab) for the whole compile.
+                // The cache is read CROSS-ARM (another core resolving this one),
+                // and re-minting on a cache miss is NOT safe: it would run in the
+                // caller's %hold/fan scope, not this arm's, producing a wrong type.
+                // Caching the formula keeps the resolver a pure lookup.
                 if let Some(ctx) = self.lazy_resolvers.get_mut(&resolver_id) {
                     ctx.cached_formula_by_axis.insert(fragment, formula);
                 }
@@ -6559,7 +6453,7 @@ impl<'a> Ut<'a> {
         // play_tune wraps the WHOLE subject in a %face; native now: the subject
         // threads through as a SHARED native Rc inside the new %face (no lowering).
         let tool = term_or_tune_to_noun(self.slab, tune)?;
-        let tool_leaf = NLeaf::from_noun_gated(tool, &self.slab.noun_space(), self.cx.raw_leaves);
+        let tool_leaf = NLeaf::from_noun_raw(tool, &self.slab.noun_space());
         Ok(cons_face(&mut self.cx, tool_leaf, sut))
     }
 
@@ -6864,7 +6758,7 @@ impl<'a> Ut<'a> {
     fn mint_tune(&mut self, sut: NRc<NTy>, gol: NRc<NTy>, tune: &TermOrTune) -> Result<(NRc<NTy>, Noun)> {
         let tool = term_or_tune_to_noun(self.slab, tune)?;
         // %face over the native subject (collapse-aware cons_face).
-        let tool_leaf = NLeaf::from_noun_gated(tool, &self.slab.noun_space(), self.cx.raw_leaves);
+        let tool_leaf = NLeaf::from_noun_raw(tool, &self.slab.noun_space());
         let ty = cons_face(&mut self.cx, tool_leaf, sut.clone());
         let ty = self.nice(sut, gol, ty)?;
         let formula = T(self.slab, &[D(0), D(1)]);
@@ -7126,7 +7020,7 @@ impl<'a> Ut<'a> {
         // pointer identity.
         let core_native_lazy = {
             let space = self.slab.noun_space();
-            let rest_leaf = NLeaf::from_noun_gated(lazy_rest, &space, self.cx.raw_leaves);
+            let rest_leaf = NLeaf::from_noun_raw(lazy_rest, &space);
             cons_core(&mut self.cx,
                 sut.clone(),
                 garb.clone(),
@@ -7167,7 +7061,7 @@ impl<'a> Ut<'a> {
         // identity-on-success; the cache is native-keyed) and `sut` is never lowered.
         let core_native = {
             let space = self.slab.noun_space();
-            let rest_leaf = NLeaf::from_noun_gated(rest, &space, self.cx.raw_leaves);
+            let rest_leaf = NLeaf::from_noun_raw(rest, &space);
             cons_core(&mut self.cx,
                 sut.clone(),
                 garb.clone(),
@@ -7223,7 +7117,7 @@ impl<'a> Ut<'a> {
         let semi_noun = self.semi_noun_blocked();
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let space = self.slab.noun_space();
-        let rest_leaf = NLeaf::from_noun_gated(rest, &space, self.cx.raw_leaves);
+        let rest_leaf = NLeaf::from_noun_raw(rest, &space);
         let native = cons_core(&mut self.cx, sut.clone(), garb, sut.clone(), rest_leaf);
         Ok(native)
     }
@@ -7670,124 +7564,6 @@ impl<'a> Ut<'a> {
         Ok(formula)
     }
 
-    /// H7 frame-arena: when `HONK_FRAME_ARENA` is set, each arm's mint runs in
-    /// its own NounSlab frame. After the arm formula is produced it is preserved
-    /// down into the parent (keep) region and the frame's transient scratch —
-    /// the discarded arm type, intermediate mints, etc. — is reclaimed,
-    /// bounding peak memory on giant cores (hoon-138's stdlib core). The shared
-    /// core type and the incrementally-accumulated battery live in keep and are
-    /// untouched. Whole-compile-lifetime stores (fan-leg mug table, lazy
-    /// resolvers) copy their nouns to the base region at insert; per-arm memos
-    /// are invalidated on pop (see `invalidate_frame_caches`).
-    fn frame_arena_enabled(&self) -> bool {
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        self.force_frame_arena
-            || *ENABLED.get_or_init(|| std::env::var_os("HONK_FRAME_ARENA").is_some())
-    }
-
-    /// Invalidate every per-arm memo whose cached value or key may have lived in
-    /// the just-reclaimed scratch frame. All of these are pure-function memos
-    /// (or pointer-keyed fast caches whose authoritative mug store persists), so
-    /// eviction only forces a correct recompute — the same contract the existing
-    /// key-limit eviction already relies on. Whole-compile-lifetime stores are
-    /// NOT cleared here; their nouns are copied to the base region at insert.
-    fn invalidate_frame_caches(&mut self) {
-        // Native-types flip: the to-noun / leaf-to-noun memos are now
-        // base-resident (live_to_noun/live_leaf_to_noun copy_to_base their
-        // result), so they survive frame pops WITHOUT dangling and WITHOUT
-        // per-arm re-lowering — no invalidation needed here.
-        //
-        // The intern_type_noun / native_of memo, however, is keyed by the SOURCE
-        // noun's raw ADDRESS (not by an interned Rc), so a reclaimed per-arm-frame
-        // address recycled by a later arm would return a stale (wrong) interned
-        // type with no content check. Drop it on every pop (the intern table
-        // itself persists; re-decoding dedups back to the same canonical Rc).
-        crate::native::ir::intern::live_invalidate_frame(&mut self.cx);
-        self.boundary_memo.clear();
-        self.lookup_memo.clear();
-        self.hold_memo.clear();
-        self.bran_semi_memo.clear();
-        self.ktsg_fold_cache.clear();
-        self.burp_type_cache.clear();
-        // Pointer-keyed fast caches; the authoritative mug-keyed stores persist.
-        self.hold_repo_fan_leg_raw_ids.clear();
-        self.hold_repo_fan_leg_id_by_hold_raw.clear();
-        self.hold_repo_fan_leg_id_by_hold_raw_order.clear();
-        // Holds decoded from type data during the arm mint (scratch-resident).
-        self.decoded_hold_hoon_cache_raw.clear();
-        self.decoded_hold_hoon_cache_order.clear();
-        self.decoded_hold_hoon_ptr_cache.clear();
-        // AST lookup caches: keyed by the source noun (raw ptr / mug with a
-        // disambiguating Noun) which may be a frame-resident type noun produced
-        // during fire/play, so the keys/disambiguators dangle after the pop.
-        self.hoon_cache_raw.clear();
-        self.hoon_cache_raw_order.clear();
-        self.hoon_cache_struct.clear();
-        self.hoon_cache_struct_order.clear();
-        self.arm_key_term_cache.clear();
-        self.arm_key_term_cache_order.clear();
-        // Bare-Noun-valued / raw-ptr-keyed AST caches that may capture scratch.
-        self.hoon_ast_ptr_cache.clear();
-        self.hoon_ast_ptr_cache_order.clear();
-        self.hoon_identity_cache_raw.clear();
-        self.hoon_identity_cache_order.clear();
-        self.hoon_identity_cache_struct.clear();
-        self.hoon_identity_cache_struct_order.clear();
-        // Interpreter-side mack caches (raw-keyed copied cores / fold memos).
-        self.musk.clear_frame_caches();
-        // NOTE: the lazy resolvers are intentionally NOT touched here.
-        // - cached_formula_by_axis values are copied to base at insert
-        //   (see lazy_resolver_compile_arm), so they survive the pop. They must
-        //   NOT be cleared: re-minting on a later cross-arm reference would run
-        //   in the wrong %hold/fan scope and produce a wrong type.
-        // - in_progress_axes is a recursion GUARD, not a cache; a nested arm
-        //   frame can pop while an outer resolution is in progress, and clearing
-        //   it would corrupt that resolution.
-        // - core_type / arm AST are copied to base at registration.
-    }
-
-    /// Run one arm's mint inside a reclaimable frame (when enabled), preserving
-    /// only the resulting formula into the parent region. The frame is always
-    /// balanced (popped on both the Ok and Err paths) so nested arm frames and
-    /// error propagation keep the region stack consistent.
-    #[allow(clippy::too_many_arguments)]
-    fn build_arm_formula_framed(
-        &mut self,
-        key: Arc<str>,
-        // ATOMIC FLIP perf: native deepening core + native goal, passed through to
-        // build_arm_formula_direct. The frame-arena machinery is orthogonal — it
-        // wraps the mint and never decodes the (heap-resident) native core.
-        core_type: NRc<NTy>,
-        poly: Poly,
-        arm_goal: NRc<NTy>,
-        hoon: &Hoon,
-        hoon_noun: Noun,
-    ) -> Result<Noun> {
-        if !self.frame_arena_enabled() {
-            return self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
-        }
-        self.slab.push_frame();
-        // Open a matching intern-memo scope so the address-keyed decode memo
-        // evicts exactly this frame's entries on pop (see live_invalidate_frame).
-        crate::native::ir::intern::live_push_frame(&mut self.cx);
-        let result =
-            self.build_arm_formula_direct(key, core_type, poly, arm_goal, hoon, hoon_noun);
-        match result {
-            Ok(formula) => {
-                let mut roots = [formula];
-                unsafe { self.slab.pop_frame_preserving(&mut roots) };
-                self.invalidate_frame_caches();
-                Ok(roots[0])
-            }
-            Err(err) => {
-                let mut roots: [Noun; 0] = [];
-                unsafe { self.slab.pop_frame_preserving(&mut roots) };
-                self.invalidate_frame_caches();
-                Err(err)
-            }
-        }
-    }
-
     fn build_arms_battery_from_map(
         &mut self,
         arms_map: Noun,
@@ -7816,7 +7592,7 @@ impl<'a> Ut<'a> {
             .map_err(|err| CompilerError::Noun(format!("arm ast missing: {err}")))?;
         let arm_goal = self.goal_arm_expected_type(goal, expected_arms_map, key_noun)?;
 
-        let formula = self.build_arm_formula_framed(
+        let formula = self.build_arm_formula_direct(
             Arc::clone(&key),
             core_type.clone(),
             poly,
@@ -8019,7 +7795,7 @@ impl<'a> Ut<'a> {
         }
         let inner_noun = live_to_noun(&mut self.cx, &inner, self.slab);
         let head = T(self.slab, &[inner_noun, note]);
-        let head_leaf = NLeaf::from_noun_gated(head, &self.slab.noun_space(), self.cx.raw_leaves);
+        let head_leaf = NLeaf::from_noun_raw(head, &self.slab.noun_space());
         Ok(cons_hint(&mut self.cx, head_leaf, payload))
     }
 
@@ -9516,13 +9292,13 @@ impl<'a> Ut<'a> {
                 // cons_hint preserves the void/noun collapse hint_type applies.
                 let sut_noun = live_to_noun(&mut self.cx, &sut, self.slab);
                 let head_noun = T(self.slab, &[sut_noun, note_noun]);
-                let head_leaf = NLeaf::from_noun_gated(head_noun, &self.slab.noun_space(), self.cx.raw_leaves);
+                let head_leaf = NLeaf::from_noun_raw(head_noun, &self.slab.noun_space());
                 Ok(cons_hint(&mut self.cx, head_leaf, payload))
             }
             Skin::Name(name, inner) => {
                 let inner_ty = self.gain_skin_inner(sut, ref_, inner, seen)?;
                 let tool_noun = term_to_noun(self.slab, name);
-                let tool_leaf = NLeaf::from_noun_gated(tool_noun, &self.slab.noun_space(), self.cx.raw_leaves);
+                let tool_leaf = NLeaf::from_noun_raw(tool_noun, &self.slab.noun_space());
                 Ok(cons_face(&mut self.cx, tool_leaf, inner_ty))
             }
             Skin::Over(wing, inner) => {
@@ -10996,7 +10772,7 @@ impl<'a> Ut<'a> {
             // ---- Face: %tune ----
             Hoon::Tune(tune) => {
                 let tool = term_or_tune_to_noun(self.slab, tune)?;
-                let tool_leaf = NLeaf::from_noun_gated(tool, &self.slab.noun_space(), self.cx.raw_leaves);
+                let tool_leaf = NLeaf::from_noun_raw(tool, &self.slab.noun_space());
                 let p_ty = cons_face(&mut self.cx, tool_leaf.clone(), sut);
                 let q_ty = cons_face(&mut self.cx, tool_leaf, dox);
                 Ok((p_ty, q_ty))
@@ -11383,7 +11159,7 @@ impl<'a> Ut<'a> {
         let rest = T(self.slab, &[semi_noun, tomes_map]);
         let yet = {
             let space = self.slab.noun_space();
-            let rest_leaf = NLeaf::from_noun_gated(rest, &space, self.cx.raw_leaves);
+            let rest_leaf = NLeaf::from_noun_raw(rest, &space);
             cons_core(&mut self.cx,
                 sut.clone(),
                 garb.clone(),
@@ -11396,7 +11172,7 @@ impl<'a> Ut<'a> {
         let garb_hum = garb_native(nym, hud, Vair::Gold);
         let hum = {
             let space = self.slab.noun_space();
-            let rest_leaf = NLeaf::from_noun_gated(rest, &space, self.cx.raw_leaves);
+            let rest_leaf = NLeaf::from_noun_raw(rest, &space);
             cons_core(&mut self.cx,
                 dox.clone(),
                 garb_hum,
@@ -12737,7 +12513,7 @@ fn ty_face_tool_n(cx: &mut Context, slab: &mut NounSlab, tool: Noun, inner: (Nou
     let native = match kind {
         Ok(TypeTagKind::Void) => live_intern(cx, NTy::Void),
         _ => {
-            let tool_leaf = NLeaf::from_noun_gated(tool, &slab.noun_space(), cx.raw_leaves);
+            let tool_leaf = NLeaf::from_noun_raw(tool, &slab.noun_space());
             live_intern(cx, NTy::Face {
                 tool: tool_leaf,
                 inner: inner.1,
@@ -12769,7 +12545,7 @@ fn ty_hint_n(cx: &mut Context, slab: &mut NounSlab, inner: Noun, note: Noun, pay
                 .and_then(|c| c.tail().as_cell())
                 .map(|c| c.head().noun())
                 .expect("ty_hint_n: hint noun shape");
-            let head_leaf = NLeaf::from_noun_gated(head, &space, cx.raw_leaves);
+            let head_leaf = NLeaf::from_noun_raw(head, &space);
             live_intern(cx, NTy::Hint {
                 head: head_leaf,
                 payload: payload.1,
@@ -12782,7 +12558,7 @@ fn ty_hint_n(cx: &mut Context, slab: &mut NounSlab, inner: Noun, note: Noun, pay
 #[allow(dead_code)]
 fn ty_hold_n(cx: &mut Context, slab: &mut NounSlab, inner: (Noun, NRc<NTy>), hoon: Noun) -> (Noun, NRc<NTy>) {
     let noun = ty_hold(slab, inner.0, hoon);
-    let gene = NLeaf::from_noun_gated(hoon, &slab.noun_space(), cx.raw_leaves);
+    let gene = NLeaf::from_noun_raw(hoon, &slab.noun_space());
     let native = live_intern(cx, NTy::Hold {
         subject: inner.1,
         gene,
@@ -12806,7 +12582,7 @@ fn ty_core_n(
         Ok(TypeTagKind::Void) => live_intern(cx, NTy::Void),
         _ => {
             let garb_native = NGarb::from_noun(garb, &slab.noun_space()).expect("ty_core_n garb");
-            let rest_leaf = NLeaf::from_noun_gated(rest, &slab.noun_space(), cx.raw_leaves);
+            let rest_leaf = NLeaf::from_noun_raw(rest, &slab.noun_space());
             live_intern(cx, NTy::Core {
                 payload: payload.1,
                 garb: garb_native,

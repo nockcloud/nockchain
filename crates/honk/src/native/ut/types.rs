@@ -1011,9 +1011,9 @@ pub struct LazyResolverArmEntry {
 #[derive(Clone, Debug)]
 pub struct LazyResolverContext {
     // ATOMIC FLIP perf: the lazy core is the NATIVE deepening core (the interned
-    // Rc threaded from mint_core). It is heap-resident (not slab) so the
-    // frame-arena copy_to_base no longer applies, and it shares pointer identity
-    // with the in-progress entries pushed during the same core's arm builds.
+    // Rc threaded from mint_core). It is heap-resident (not slab) so it needs no
+    // relocation, and it shares pointer identity with the in-progress entries
+    // pushed during the same core's arm builds.
     pub core_type: NRc<NTy>,
     pub poly: Poly,
     pub arms_by_axis: HashMap<u64, LazyResolverArmEntry>,

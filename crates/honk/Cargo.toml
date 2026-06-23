@@ -10,7 +10,6 @@ name = "honk"
 path = "src/bin/honk.rs"
 
 [dependencies]
-libc = { workspace = true }
 blake3 = { workspace = true }
 chumsky = "0.10"
 hatch = { path = "../hatch" }

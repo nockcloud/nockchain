@@ -35,35 +35,25 @@ pub enum Leaf {
     /// hash — provenance-free, cued into the destination slab by `to_noun`.
     Jammed(Arc<[u8]>, u64),
     /// A RAW noun + cached mug. Carried WITHOUT jam/cue round-trips — the
-    /// jam-elimination win. SAFE only compile-wide when the frame arena is OFF
-    /// (no per-arm `push_frame`, so the slab never recycles the address the noun
-    /// points at, and the noun stays live for the whole compile). Gated by
-    /// `Context::raw_leaves`; built only via `from_noun_gated(.., raw=true)` so a
-    /// single compile is either ALL `Noun` or ALL `Jammed` for big leaves (never
-    /// mixed, which the cross-variant `PartialEq => false` would otherwise break).
+    /// jam-elimination win. Safe because the compile slab never recycles the
+    /// address the noun points at (the frame arena was retired), so the noun
+    /// stays live for the whole compile. Built only via [`Leaf::from_noun_raw`]
+    /// on the LIVE compile path; the oracle path ([`Leaf::from_noun`]) uses
+    /// `Jammed`. The two never share an interned table within one compile, so the
+    /// cross-variant `PartialEq => false` is never exercised.
     Noun(Noun, u32),
 }
 
 impl Leaf {
-    /// Capture `noun` (resolved in `space`) as an owned, provenance-free leaf.
-    /// The oracle/default path: big leaves become `Jammed`.
+    /// Capture `noun` (resolved in `space`) as an owned, provenance-free leaf:
+    /// atoms `<= u64` become `Direct`, everything larger is `Jammed` (owned jam
+    /// bytes). The ORACLE path — slab-agnostic, used by `Type::from_noun` and the
+    /// round-trip oracle. The LIVE compile path uses [`Leaf::from_noun_raw`].
     pub fn from_noun(noun: Noun, space: &NounSpace) -> Self {
-        Leaf::from_noun_gated(noun, space, false)
-    }
-
-    /// Capture `noun` as a leaf, choosing the big-leaf representation by `raw`:
-    /// `raw=true` carries the live noun directly (`Noun`, the jam/cue
-    /// elimination); `raw=false` jams it (`Jammed`, the oracle/default). Atoms
-    /// `<= u64` are always `Direct` (unchanged).
-    pub fn from_noun_gated(noun: Noun, space: &NounSpace, raw: bool) -> Self {
         if let Ok(atom) = noun.in_space(space).as_atom() {
             if let Ok(v) = atom.as_u64() {
                 return Leaf::Direct(v);
             }
-        }
-        if raw {
-            // Carry the live noun as-is; cache its mug as the hash bucket.
-            return Leaf::Noun(noun, crate::native::noun::slab_mug(noun, space));
         }
         // Larger / cell: jam through a scratch slab so we own the bytes.
         let mut scratch: NounSlab = NounSlab::new();
@@ -72,6 +62,21 @@ impl Leaf {
         let mut hasher = DefaultHasher::new();
         bytes[..].hash(&mut hasher);
         Leaf::Jammed(bytes, hasher.finish())
+    }
+
+    /// Capture `noun` as a LIVE-path leaf: atoms `<= u64` become `Direct`,
+    /// everything larger is carried as a raw `Leaf::Noun` (no jam/cue round-trip
+    /// — the jam-elimination win). Safe because the compile slab never recycles
+    /// the noun's address (the frame arena was retired), so the raw noun stays
+    /// live for the whole compile.
+    pub fn from_noun_raw(noun: Noun, space: &NounSpace) -> Self {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
+            if let Ok(v) = atom.as_u64() {
+                return Leaf::Direct(v);
+            }
+        }
+        // Carry the live noun as-is; cache its mug as the hash bucket.
+        Leaf::Noun(noun, crate::native::noun::slab_mug(noun, space))
     }
 
     /// Materialize the leaf into `dst` via a checked copy (no foreign pointer).

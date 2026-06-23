@@ -67,9 +67,6 @@ impl<'a> Ut<'a> {
     }
 
     fn fire_arm_wet(&mut self, arm_core: NRc<NTy>, hoon: Noun) -> Result<NRc<NTy>> {
-        if super::perf_on() {
-            super::NATIVE_PERF.with(|s| s.borrow_mut().fire_wet_calls += 1);
-        }
         let NTy::Core {
             payload,
             garb,
@@ -146,7 +143,7 @@ impl<'a> Ut<'a> {
     /// gene leaf interns to the SAME canonical `Rc` (mirrors `ty_hold_n`). The old
     /// `ty_hold_cached` was only a perf cache; the interned RESULT is what matters.
     fn cons_hold(&mut self, inner: NRc<NTy>, hoon: Noun) -> NRc<NTy> {
-        let gene = NLeaf::from_noun_gated(hoon, &self.slab.noun_space(), self.cx.raw_leaves);
+        let gene = NLeaf::from_noun_raw(hoon, &self.slab.noun_space());
         live_intern(&mut self.cx, NTy::Hold {
             subject: inner,
             gene,
