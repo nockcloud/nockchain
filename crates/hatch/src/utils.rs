@@ -6132,7 +6132,13 @@ impl LineMap {
             }
 
             let indent = leading_spaces(raw.as_bytes());
-            let is_code = indent >= detail_strip + 2;
+            // Hoon +docs accepts only the paragraph indent or exactly one extra
+            // step for code; over-aligned comments stop the detail section.
+            let is_line = indent == detail_strip;
+            let is_code = indent == detail_strip + 2;
+            if !is_line && !is_code {
+                break;
+            }
             if stop_plan_details_at_code && is_code {
                 break;
             }
