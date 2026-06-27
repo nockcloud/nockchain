@@ -133,7 +133,12 @@ fn attach_rune_help(hoon: Hoon, start: usize, end: usize, linemap: &LineMap) -> 
         if hoon_tail_has_help(&hoon, &help) {
             hoon
         } else {
-            Hoon::Note(Note::Help(help), Box::new(hoon))
+            match hoon {
+                Hoon::Dbug(spot, inner) => {
+                    Hoon::Dbug(spot, Box::new(Hoon::Note(Note::Help(help), inner)))
+                }
+                other => Hoon::Note(Note::Help(help), Box::new(other)),
+            }
         }
     } else {
         hoon
@@ -177,9 +182,9 @@ pub fn cenlus<'src>(
     linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
     gap()
-        .ignore_then(hoon.clone())
+        .ignore_then(documented_rune_body(hoon.clone(), linemap.clone()))
         .then_ignore(gap())
-        .then(hoon.clone())
+        .then(documented_rune_body(hoon.clone(), linemap.clone()))
         .then_ignore(gap())
         .then(documented_rune_body(hoon.clone(), linemap))
         .map(|((p, q), r)| Hoon::CenLus(Box::new(p), Box::new(q), Box::new(r)))

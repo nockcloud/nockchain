@@ -200,7 +200,7 @@ fn hoon_wide_parser<'src>(
             ';',
             choice((
                 sail_wide(hoon.clone(), hoon_wide.clone()),
-                mic_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                mic_runes_wide(hoon_wide.clone(), spec_wide.clone(), linemap.clone()),
             ))
         ),
         just('.')
@@ -374,11 +374,11 @@ pub fn hoon_parser<'src>(
             ';',
             choice((
                 sail_tall(hoon.clone(), hoon_wide.clone()),
-                mic_runes_tall(hoon.clone(), spec.clone()),
+                mic_runes_tall(hoon.clone(), spec.clone(), linemap.clone()),
             )),
             choice((
                 sail_wide(hoon.clone(), hoon_wide.clone()),
-                mic_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                mic_runes_wide(hoon_wide.clone(), spec_wide.clone(), linemap.clone()),
             ))
         ),
         rune_branch_pair!(

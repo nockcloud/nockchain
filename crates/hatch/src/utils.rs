@@ -4418,43 +4418,74 @@ pub fn chapters<'src>(
         .then_ignore(gap())
         .then(hoon.clone().map_with(|h: Hoon, e| (h, e.span().start(), e.span().end())))
         .map(move |((name, start, end), (hoon, body_start, body_end))| {
-            // Postfix doc on the arm. `arm_postfix_help` (keyed on the NAME span)
-            // catches `++  foo  :: doc` (a trailing `::` right after the name) as
-            // a linked "funk" help. For a single-line arm whose body sits between
-            // the name and the `::` (e.g. `++  sum  |=(...)  :: wrapping add`),
-            // hoonc anchors the line-trailing `::` to the arm BODY as a plain crib
-            // `[%note [%help [0 [summary 0]]] body]` — so anchor `help_after` over
-            // the name-start..body-end span (prefix is the `++` rune, `::` follows
-            // the body). Docs-off parses (the kernels) short-circuit inside.
-            // A `|$` body already self-anchors its postfix `::` doc onto the body
-            // spec (see `barbuc`), so the arm-body note must not double-wrap it.
+            // Prefix docs above a `++` arm and line-tail docs on the `++` header
+            // are both arm-local metadata. hoonc gives the preceding doc block
+            // priority when both are present (e.g. `::    +ff` before
+            // `++  ff  ::  ieee ...`); the header comment is then trivia.
+            // Body-local docs still attach before either arm-level doc.
             let body_is_barbuc = matches!(&hoon, Hoon::BarBuc(..));
-            let body_tail_owns_postfix = matches!(&hoon, Hoon::BarTis(_, inner) if matches!(inner.as_ref(), Hoon::KetHep(..)));
-            let hoon =
-                if let Some(help) = luslus_linemap.arm_postfix_help("funk", &name, start, end) {
-                    Hoon::Note(Note::Help(help), Box::new(hoon))
-                } else if let Some(help) =
-                    luslus_linemap.arm_scye_help_after_name(end, body_start)
-                {
-                    Hoon::Note(Note::Help(help), Box::new(hoon))
-                } else if let Some(help) = (!body_is_barbuc)
-                    .then(|| luslus_linemap.help_after(start, body_end))
-                    .flatten()
-                {
-                    if body_tail_owns_postfix {
-                        attach_help_to_bartis_tail(hoon, help)
-                    } else if hoon_tail_has_help(&hoon, &help) {
-                        hoon
-                    } else {
-                        Hoon::Note(Note::Help(help), Box::new(hoon))
+            let body_tail_owns_postfix = matches!(&hoon, Hoon::BarTis(..))
+                && !luslus_linemap.starts_with_compact_rune_call(body_start, b"|=(");
+            let body_can_own_postfix = !body_is_barbuc;
+            let mut hoon = hoon;
+            if matches!(&hoon, Hoon::KetCol(_)) {
+                if let Some(help) = luslus_linemap.help_before_hoon(body_start) {
+                    if !hoon_tail_has_help(&hoon, &help) {
+                        hoon = Hoon::Note(Note::Help(help), Box::new(hoon));
                     }
-                } else if let Some(help) = luslus_linemap.help_before_arm(start) {
-                    // Prefix doc block above `++ name` (e.g. `::  +aor: …`), which
-                    // the body's own help_before cannot reach across the `++` line.
-                    Hoon::Note(Note::Help(help), Box::new(hoon))
+                }
+            }
+
+
+            let attached_name_scye = if let Some(help) =
+                luslus_linemap.arm_scye_help_after_name(end, body_start)
+            {
+                hoon = Hoon::Note(Note::Help(help), Box::new(hoon));
+                true
+            } else {
+                false
+            };
+
+            if !attached_name_scye {
+                let help = if body_can_own_postfix {
+                    luslus_linemap
+                        .help_after(start, body_end)
+                        .or_else(|| luslus_linemap.help_after_rune(body_start, body_end))
+                } else {
+                    None
+                };
+                if let Some(help) = help {
+                    if body_tail_owns_postfix {
+                        hoon = attach_help_to_bartis_tail(hoon, help);
+                    } else if !hoon_tail_has_help(&hoon, &help) {
+                        hoon = Hoon::Note(Note::Help(help), Box::new(hoon));
+                    }
+                }
+            }
+
+            if let Some(help) = luslus_linemap
+                .help_before_arm(start)
+                .or_else(|| luslus_linemap.help_before_named_arm_summary(start, "funk", '+', &name))
+            {
+                // Prefix doc block above `++ name` (e.g. `::  +aor: …`) or a
+                // named summary from an arm list above the local arm group.
+                // hoonc splits linked docs at code-indented detail
+                // continuations: the link note keeps the prose before that
+                // boundary and the next prose detail becomes a plain body note.
+                let inner = if let Some(tail_help) = luslus_linemap.help_before_funk_tail(start) {
+                    Hoon::Note(Note::Help(tail_help), Box::new(hoon))
                 } else {
                     hoon
                 };
+                hoon = Hoon::Note(Note::Help(help), Box::new(inner));
+            }
+
+            if !attached_name_scye {
+                if let Some(help) = luslus_linemap.arm_postfix_help("funk", &name, start, end) {
+                    hoon = Hoon::Note(Note::Help(help), Box::new(hoon));
+                }
+            }
+
             (name, hoon)
         })
         .labelled("Arm ++");
@@ -4469,14 +4500,27 @@ pub fn chapters<'src>(
                 .map_with(|spec: Spec, e| (spec, e.span().start(), e.span().end())),
         )
         .map(move |((name, start, end), (spec, spec_start, spec_end))| {
-            let spec = Spec::Name(name.clone(), Box::new(spec));
-            let spec = if let Some(help) = lusbuc_linemap.help_before_spec(spec_start) {
+            // hoonc names a `+$` mold outside the doc-gisted body spec:
+            // `+$ bite :: doc $@(...)` serializes as [%name [%bite [%gist doc ...]]],
+            // not [%gist doc [%name [%bite ...]]].
+            let spec = if let Some(help) = if plus_linked_prefix_doc_for_name_before(&lusbuc_linemap, spec_start, &name) {
+                None
+            } else {
+                lusbuc_linemap.help_before_spec(spec_start)
+            } {
                 Spec::Gist(help, Box::new(spec))
-            } else if let Some(help) = lusbuc_linemap.help_after_rune(spec_start, spec_end) {
+            } else if let Some(help) = lusbuc_linemap.help_after_rune(spec_start, spec_end).or_else(|| {
+                let same_line = lusbuc_linemap.line_index(spec_start.min(lusbuc_linemap.source.len()))
+                    == lusbuc_linemap.line_index(spec_end.min(lusbuc_linemap.source.len()));
+                same_line
+                    .then(|| lusbuc_linemap.help_after_line_tail(spec_end))
+                    .flatten()
+            }) {
                 Spec::Gist(help, Box::new(spec))
             } else {
                 spec
             };
+            let spec = Spec::Name(name.clone(), Box::new(spec));
             let hoon = Hoon::KetCol(Box::new(spec));
             let hoon = if let Some(help) = lusbuc_linemap.help_before_plan_tail(start) {
                 Hoon::Note(Note::Help(help), Box::new(hoon))
@@ -4486,8 +4530,16 @@ pub fn chapters<'src>(
             let hoon =
                 if let Some(help) = lusbuc_linemap.arm_postfix_help("plan", &name, start, end) {
                     Hoon::Note(Note::Help(help), Box::new(hoon))
-                } else if let Some(help) = lusbuc_linemap.help_before_arm(start) {
-                    Hoon::Note(Note::Help(help), Box::new(hoon))
+                } else if let Some(help) = lusbuc_linemap
+                    .help_before_arm(start)
+                    .filter(|_| !plus_linked_prefix_doc_for_name_before(&lusbuc_linemap, start, &name))
+                    .or_else(|| lusbuc_linemap.help_before_named_arm_summary(start, "plan", '$', &name))
+                {
+                    if doc_help_cuff_tag_is(&help, "funk") {
+                        hoon
+                    } else {
+                        Hoon::Note(Note::Help(help), Box::new(hoon))
+                    }
                 } else {
                     hoon
                 };
@@ -6110,20 +6162,32 @@ impl LineMap {
             return None;
         };
         let summary = strip_doc_spaces(summary_raw, summary_strip);
-        let stop_plan_details_at_code =
-            summary.starts_with('$') && summary.split_once(": ").is_some();
         if summary.is_empty() {
             return None;
         }
 
+        // A doc summary beginning `+name: ` or `$name: ` is a cross-reference
+        // to an arm or mold: hoonc strips the marker and records a `[%funk name]`
+        // or `[%plan name]` link in the cuff. Bare `+name`/`$name` headings are
+        // links only at prose-doc indentation; code-indented headings such as
+        // `::    +ff` stay literal summary text.
+        // For linked summaries, a code-indented detail line terminates the linked
+        // prose block instead of becoming another detail row; `help_before_*_tail`
+        // can then attach the following prose detail to the arm body as a plain
+        // `%help` note.
+        let (cuff, summary) = Self::parse_doc_link(&summary, summary_indent < 4);
+        let has_link_cuff = !matches!(&cuff, NounExpr::ParsedAtom(ParsedAtom::Small(0)));
+
         let mut sections: Vec<NounExpr> = Vec::new();
         let mut section: Vec<NounExpr> = Vec::new();
+        let mut allow_link_code_continuation = false;
         let mut in_details = false;
         for (_, raw) in docs.iter().skip(1) {
             if raw.trim().is_empty() {
                 if !section.is_empty() {
                     sections.push(Self::doc_list(std::mem::take(&mut section)));
                 }
+                allow_link_code_continuation = false;
                 in_details = true;
                 continue;
             }
@@ -6133,7 +6197,7 @@ impl LineMap {
 
             let indent = leading_spaces(raw.as_bytes());
             let is_code = indent >= detail_strip + 2;
-            if stop_plan_details_at_code && is_code {
+            if has_link_cuff && is_code && !allow_link_code_continuation {
                 break;
             }
             let text = strip_doc_spaces(
@@ -6144,6 +6208,9 @@ impl LineMap {
                     detail_strip
                 },
             );
+            if has_link_cuff && text.starts_with("See:") {
+                continue;
+            }
             if text.is_empty() {
                 continue;
             }
@@ -6151,33 +6218,34 @@ impl LineMap {
                 Self::doc_atom(is_code as u128),
                 Self::doc_cord(&text),
             ));
+            allow_link_code_continuation =
+                text.starts_with("- ") || (is_code && allow_link_code_continuation);
         }
         if !section.is_empty() {
             sections.push(Self::doc_list(section));
         }
 
-        // A doc summary beginning `+name: ` or `$name: ` is a cross-reference to
-        // an arm or mold: hoonc strips the marker and records a `[%funk name]` or
-        // `[%plan name]` link in the cuff.
-        let (cuff, summary) = Self::parse_doc_link(&summary);
-        // A bare `+name`/`$name` cross-ref uses the following detail block as the
-        // body with a null summary (`0`), not a literal empty cord.
+        // A bare linked `+name`/`$name` heading uses the following detail block
+        // as the body with a null summary (`0`).
         if summary.is_empty() {
-            if cuff != Self::doc_atom(0) && !sections.is_empty() {
+            if has_link_cuff && !sections.is_empty() {
                 let crib = Self::doc_cell(Self::doc_atom(0), Self::doc_list(sections));
                 return Some(Self::doc_cell(cuff, crib));
             }
+            return None;
+        }
+        if sections.is_empty() && (summary.ends_with(':') || has_link_cuff) {
             return None;
         }
         let crib = Self::doc_cell(Self::doc_cord(&summary), Self::doc_list(sections));
         Some(Self::doc_cell(cuff, crib))
     }
 
-    /// Split a leading `+name`/`$name` cross-reference off a doc summary, returning
-    /// the cuff (`[[%funk name] 0]`, `[[%plan name] 0]`, or `~`) and the residual
-    /// summary text. `+name: text` and `$name: text` keep `text` as the summary; a
-    /// bare cross-ref returns an empty summary so the caller skips it.
-    fn parse_doc_link(summary: &str) -> (NounExpr, String) {
+    /// Split a leading `+name: ` / `$name: ` cross-reference off a doc summary,
+    /// returning the cuff (`[[%funk name] 0]`, `[[%plan name] 0]`, or `~`) and
+    /// the residual summary text. Bare `+name` and `$name` headings link only
+    /// when `allow_bare_link` is set by prose-doc indentation.
+    fn parse_doc_link(summary: &str, allow_bare_link: bool) -> (NounExpr, String) {
         let name_ok = |name: &str| {
             !name.is_empty()
                 && name
@@ -6194,24 +6262,122 @@ impl LineMap {
                     let link = Self::doc_cell(Self::doc_cord(tag), Self::doc_cord(name));
                     return (Self::doc_list(vec![link]), after.to_string());
                 }
-            } else if name_ok(rest) {
+            } else if allow_bare_link && name_ok(rest) {
                 let link = Self::doc_cell(Self::doc_cord(tag), Self::doc_cord(rest));
                 return (Self::doc_list(vec![link]), String::new());
             }
+
         }
 
         (Self::doc_atom(0), summary.to_string())
     }
 
     /// Doc block immediately preceding a `++`/`+$` arm (the `:: …` lines above the
-    /// `++ name` line). The arm line is always a valid anchor, so the target test
-    /// is unconditional; `parse_doc_funk_link` turns a `+name:` summary into the
-    /// `[%funk name]` cuff (e.g. `::  +aor: alphabetical order` above `++ aor`).
+    /// `++ name` line). Docs in the gap after a sampled core opener (`|_`/`|^`)
+    /// are consumed by the parent core's sample-to-arm gap in hoonc, so they do
+    /// not belong to that core's first arm.
     fn help_before_arm(&self, name_byte: usize) -> Option<NounExpr> {
-        self.help_before_with_target(name_byte, |_, _, _| true)
+        if !self.docs_enabled {
+            return None;
+        }
+        let line = self.line_index(name_byte.min(self.source.len()));
+        if line == 0 {
+            return None;
+        }
+        let target_indent = self.line_indent(line)?;
+
+        let mut docs = Vec::new();
+        let mut idx = line - 1;
+        while self.doc_section_marker(idx) {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+        }
+        let mut first_doc_line = idx;
+        loop {
+            if self.doc_section_marker(idx) {
+                break;
+            }
+            let Some((indent, content)) = self.doc_comment(idx) else {
+                break;
+            };
+            first_doc_line = idx;
+            docs.push((indent, content));
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+        }
+
+        docs.reverse();
+        while docs.first().is_some_and(|(_, line)| line.trim().is_empty()) {
+            docs.remove(0);
+        }
+        while docs.last().is_some_and(|(_, line)| line.trim().is_empty()) {
+            docs.pop();
+        }
+        if docs.is_empty() {
+            return None;
+        }
+        if self.doc_block_follows_core_sample_gap(first_doc_line, target_indent) {
+            return None;
+        }
+        let doc_indent = docs[0].0;
+        if target_indent > doc_indent {
+            return None;
+        }
+
+        Self::build_doc_help_from_lines(&docs)
     }
 
+    fn help_before_named_arm_summary(
+        &self,
+        byte: usize,
+        link_tag: &str,
+        prefix: char,
+        name: &str,
+    ) -> Option<NounExpr> {
+        if !self.docs_enabled {
+            return None;
+        }
+        let line = self.line_index(byte.min(self.source.len()));
+        let target_indent = self.line_indent(line)?;
+        let needle = format!("{prefix}{name}: ");
+
+        for idx in (0..line).rev().take(160) {
+            if let Some((indent, raw)) = self.doc_comment(idx) {
+                if indent > target_indent {
+                    continue;
+                }
+                let summary = strip_doc_spaces(&raw, 2);
+                if self.doc_block_follows_core_sample_gap(idx, target_indent) {
+                    continue;
+                }
+                if let Some(text) = summary.strip_prefix(&needle) {
+                    let link = Self::doc_cell(Self::doc_cord(link_tag), Self::doc_cord(name));
+                    let cuff = Self::doc_list(vec![link]);
+                    let crib = Self::doc_cell(Self::doc_cord(text), Self::doc_atom(0));
+                    return Some(Self::doc_cell(cuff, crib));
+                }
+            } else if self.line_indent(idx).is_some_and(|indent| indent < target_indent) {
+                break;
+            }
+        }
+
+        None
+    }
+
+
     fn help_before_plan_tail(&self, byte: usize) -> Option<NounExpr> {
+        self.help_before_link_tail(byte, b'$')
+    }
+
+    fn help_before_funk_tail(&self, byte: usize) -> Option<NounExpr> {
+        self.help_before_link_tail(byte, b'+')
+    }
+
+    fn help_before_link_tail(&self, byte: usize, prefix: u8) -> Option<NounExpr> {
         if !self.docs_enabled {
             return None;
         }
@@ -6260,15 +6426,19 @@ impl LineMap {
             return None;
         };
         let summary = strip_doc_spaces(summary_raw, summary_strip);
-        if !(summary.starts_with('$') && summary.split_once(": ").is_some()) {
+        if summary.as_bytes().first().copied() != Some(prefix)
+            || summary.split_once(": ").is_none()
+        {
             return None;
         }
 
         let mut in_details = false;
         let mut saw_code_detail = false;
+        let mut allow_code_continuation = false;
         for (_, raw) in docs.iter().skip(1) {
             if raw.trim().is_empty() {
                 in_details = true;
+                allow_code_continuation = false;
                 continue;
             }
             if !in_details {
@@ -6276,11 +6446,27 @@ impl LineMap {
             }
 
             let indent = leading_spaces(raw.as_bytes());
-            if indent >= detail_strip + 2 {
-                saw_code_detail = true;
+            let is_code = indent >= detail_strip + 2;
+            let text = strip_doc_spaces(
+                raw,
+                if is_code {
+                    detail_strip + 2
+                } else {
+                    detail_strip
+                },
+            );
+            if prefix == b'+' && !saw_code_detail && text.starts_with("See:") {
+                let crib = Self::doc_cell(Self::doc_cord(&text), Self::doc_atom(0));
+                return Some(Self::doc_cell(Self::doc_atom(0), crib));
+            }
+            if is_code {
+                if !allow_code_continuation {
+                    saw_code_detail = true;
+                }
                 continue;
             }
             if !saw_code_detail {
+                allow_code_continuation = text.starts_with("- ");
                 continue;
             }
 
@@ -6332,7 +6518,7 @@ impl LineMap {
         let (line_start, line_end) = self.line_bounds(end_line)?;
         let line = &self.source.as_bytes()[line_start..line_end];
         let start_offset = start_byte.saturating_sub(line_start).min(line.len());
-        // The prefix is the rune/token guarding a trailing `::  ` doc. Hoon callers
+        // The prefix is the rune/token guarding a trailing `::` doc. Hoon callers
         // use the whole line head (the node must begin right after a 2-char rune at
         // the line start). Spec callers use the IMMEDIATELY PRECEDING token so a
         // mid-line cast spec (`^- @  :: roll right` → prefix `^-`) anchors while a
@@ -6410,7 +6596,7 @@ impl LineMap {
             spaces += 1;
             content_start += 1;
         }
-        if spaces != 2 || content_start >= trimmed_end {
+        if spaces < 2 || content_start >= trimmed_end {
             return None;
         }
         if matches!(line.get(content_start), Some(b' ' | b'\t' | b':')) {
@@ -6429,7 +6615,7 @@ impl LineMap {
     /// Postfix-doc anchoring for SPECS: the prefix is the immediately preceding
     /// token, so a mid-line cast spec (`^- @  :: roll right`) anchors while a
     /// faced bind spec (`=| a=(tree)  :: doc`) does not. See `postfix_doc_summary`.
-    fn help_after_spec(&self, start_byte: usize, end_byte: usize) -> Option<NounExpr> {
+    pub(crate) fn help_after_spec(&self, start_byte: usize, end_byte: usize) -> Option<NounExpr> {
         let summary = self.postfix_doc_summary(start_byte, end_byte, true, true)?;
         let crib = Self::doc_cell(Self::doc_cord(&summary), Self::doc_atom(0));
         Some(Self::doc_cell(Self::doc_atom(0), crib))
@@ -6437,9 +6623,43 @@ impl LineMap {
 
     /// Postfix-doc anchoring at a RUNE-guaranteed position (e.g. the `|$` body
     /// spec), bypassing the line-head/preceding-token guard. The caller is a
-    /// specific rune parser that knows this span owns a trailing `::  ` doc.
+    /// specific rune parser that knows this span owns a trailing `::` doc.
     pub fn help_after_rune(&self, start_byte: usize, end_byte: usize) -> Option<NounExpr> {
         let summary = self.postfix_doc_summary(start_byte, end_byte, false, false)?;
+        let crib = Self::doc_cell(Self::doc_cord(&summary), Self::doc_atom(0));
+        Some(Self::doc_cell(Self::doc_atom(0), crib))
+    }
+
+    pub(crate) fn help_after_line_tail(&self, byte: usize) -> Option<NounExpr> {
+        if !self.docs_enabled {
+            return None;
+        }
+        let line_idx = self.line_index(byte.min(self.source.len()));
+        let (line_start, line_end) = self.line_bounds(line_idx)?;
+        let line = &self.source.as_bytes()[line_start..line_end];
+        let mut cursor = byte.saturating_sub(line_start).min(line.len());
+        while cursor < line.len() && (line[cursor] == b' ' || line[cursor] == b'\t') {
+            cursor += 1;
+        }
+        if line.get(cursor) != Some(&b':') || line.get(cursor + 1) != Some(&b':') {
+            return None;
+        }
+        let mut content_start = cursor + 2;
+        let mut spaces = 0usize;
+        while content_start < line.len() && line[content_start] == b' ' {
+            spaces += 1;
+            content_start += 1;
+        }
+        if spaces < 2 || content_start >= line.len() {
+            return None;
+        }
+        let mut trimmed_end = line.len();
+        while trimmed_end > content_start
+            && (line[trimmed_end - 1] == b' ' || line[trimmed_end - 1] == b'\t')
+        {
+            trimmed_end -= 1;
+        }
+        let summary = String::from_utf8_lossy(&line[content_start..trimmed_end]).to_string();
         let crib = Self::doc_cell(Self::doc_cord(&summary), Self::doc_atom(0));
         Some(Self::doc_cell(Self::doc_atom(0), crib))
     }
@@ -6547,6 +6767,62 @@ impl LineMap {
         }
     }
 
+    pub(crate) fn spec_starts_line(&self, byte: usize) -> bool {
+        let line_idx = self.line_index(byte.min(self.source.len()));
+        if Self::line_starts_like_spec_doc_target(self, line_idx, byte) {
+            return true;
+        }
+        let Some((line_start, line_end)) = self.line_bounds(line_idx) else {
+            return false;
+        };
+        let line = &self.source.as_bytes()[line_start..line_end];
+        let mut cursor = 0;
+        while cursor < line.len() && (line[cursor] == b' ' || line[cursor] == b'\t') {
+            cursor += 1;
+        }
+        let byte_offset = byte.saturating_sub(line_start).min(line.len());
+        if byte_offset >= cursor && line.get(cursor) == Some(&b'$') {
+            if line.get(cursor..cursor + 2) == Some(b"$@") {
+                let mut branch_start = cursor + 2;
+                while branch_start < line.len()
+                    && (line[branch_start] == b' ' || line[branch_start] == b'\t')
+                {
+                    branch_start += 1;
+                }
+                return byte_offset == branch_start;
+            }
+            return true;
+        }
+        false
+    }
+
+    fn starts_with_compact_rune_call(&self, byte: usize, rune: &[u8]) -> bool {
+        let line = self.line_index(byte.min(self.source.len()));
+        let Some((line_start, line_end)) = self.line_bounds(line) else {
+            return false;
+        };
+        let line = &self.source.as_bytes()[line_start..line_end];
+        let start = byte.saturating_sub(line_start).min(line.len());
+        line.get(start..start + rune.len()) == Some(rune)
+    }
+
+    fn spec_postfix_prefix_is(&self, byte: usize, token: &[u8]) -> bool {
+        let line = self.line_index(byte.min(self.source.len()));
+        let Some((line_start, line_end)) = self.line_bounds(line) else {
+            return false;
+        };
+        let line = &self.source.as_bytes()[line_start..line_end];
+        let mut end = byte.saturating_sub(line_start).min(line.len());
+        while end > 0 && (line[end - 1] == b' ' || line[end - 1] == b'\t') {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && line[start - 1] != b' ' && line[start - 1] != b'\t' {
+            start -= 1;
+        }
+        line.get(start..end) == Some(token)
+    }
+
     fn line_bounds(&self, idx: usize) -> Option<(usize, usize)> {
         let start = *self.starts.get(idx)?;
         let mut end = self
@@ -6602,6 +6878,63 @@ impl LineMap {
             return None;
         }
         Some((cursor, String::from_utf8_lossy(content).into_owned()))
+    }
+
+    fn doc_section_marker(&self, idx: usize) -> bool {
+        let Some((start, end)) = self.line_bounds(idx) else {
+            return false;
+        };
+        let line = &self.source.as_bytes()[start..end];
+        let mut cursor = 0;
+        while cursor < line.len() && (line[cursor] == b' ' || line[cursor] == b'\t') {
+            cursor += 1;
+        }
+        let mut trimmed_end = line.len();
+        while trimmed_end > cursor
+            && (line[trimmed_end - 1] == b' ' || line[trimmed_end - 1] == b'\t')
+        {
+            trimmed_end -= 1;
+        }
+        &line[cursor..trimmed_end] == b":::"
+    }
+
+    fn doc_block_follows_core_sample_gap(&self, first_doc_line: usize, target_indent: usize) -> bool {
+        let mut idx = first_doc_line;
+        while idx > 0 {
+            idx -= 1;
+            let Some((start, end)) = self.line_bounds(idx) else {
+                return false;
+            };
+            let line = &self.source.as_bytes()[start..end];
+            let mut cursor = 0;
+            while cursor < line.len() && (line[cursor] == b' ' || line[cursor] == b'\t') {
+                cursor += 1;
+            }
+            let mut trimmed_end = line.len();
+            while trimmed_end > cursor
+                && (line[trimmed_end - 1] == b' ' || line[trimmed_end - 1] == b'\t')
+            {
+                trimmed_end -= 1;
+            }
+            if cursor == trimmed_end {
+                continue;
+            }
+            if self.doc_comment(idx).is_some() || self.doc_section_marker(idx) {
+                continue;
+            }
+
+            let starts_sample_core = |rune: &[u8]| rune == b"|_" || rune == b"|^";
+            let at_line_indent = cursor == target_indent
+                && line
+                    .get(cursor..cursor + 2)
+                    .is_some_and(starts_sample_core);
+            let at_target_indent = line
+                .get(target_indent..target_indent + 2)
+                .is_some_and(starts_sample_core);
+            return at_line_indent || at_target_indent;
+        }
+
+        false
     }
 
     fn line_starts_like_spec_doc_target(&self, idx: usize, byte: usize) -> bool {
@@ -12857,8 +13190,44 @@ pub fn one_spec_closed_tall<'src>(
         .delimited_by(just('='), just('='))
 }
 
-fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
+// The parser has separate recursive entries for tall and wide forms. A tall
+// wrapper can therefore receive a wide child that already has the exact same
+// source spot; if docs are then applied before trace, the shape would become
+// `%dbug spot [%help ... [%dbug spot node]]`. Hoonc's wart/wert provenance is
+// the owner of that whole decorated node, so keep the help and collapse only
+// the redundant same-spot trace underneath it.
+fn promote_same_spot_trace_above_hoon_help(node: Hoon, spot: &Spot) -> Hoon {
     match node {
+        Hoon::Note(Note::Help(help), inner) => {
+            let inner = promote_same_spot_trace_above_hoon_help(*inner, spot);
+            match inner {
+                Hoon::Dbug(existing_spot, inner) if &existing_spot == spot => {
+                    Hoon::Dbug(existing_spot, Box::new(Hoon::Note(Note::Help(help), inner)))
+                }
+                other => Hoon::Note(Note::Help(help), Box::new(other)),
+            }
+        }
+        other => other,
+    }
+}
+
+fn promote_same_spot_trace_above_spec_help(node: Spec, spot: &Spot) -> Spec {
+    match node {
+        Spec::Gist(help, inner) => {
+            let inner = promote_same_spot_trace_above_spec_help(*inner, spot);
+            match inner {
+                Spec::Dbug(existing_spot, inner) if &existing_spot == spot => {
+                    Spec::Dbug(existing_spot, Box::new(Spec::Gist(help, inner)))
+                }
+                other => Spec::Gist(help, Box::new(other)),
+            }
+        }
+        other => other,
+    }
+}
+
+fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
+    match promote_same_spot_trace_above_hoon_help(node, &spot) {
         Hoon::Dbug(existing_spot, inner) if existing_spot == spot => {
             Hoon::Dbug(existing_spot, inner)
         }
@@ -12869,10 +13238,86 @@ fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
     }
 }
 
+
+fn doc_help_cuff_tag_is(help: &NounExpr, tag: &str) -> bool {
+    let tag_atom = NounExpr::ParsedAtom(string_to_atom(tag.to_string()));
+    match help {
+        NounExpr::Cell(cuff, _) => match cuff.as_ref() {
+            NounExpr::Cell(link, _) => match link.as_ref() {
+                NounExpr::Cell(head, _) => head.as_ref() == &tag_atom,
+                _ => false,
+            },
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn plus_linked_prefix_doc_before_line(linemap: &LineMap, byte: usize) -> bool {
+    let mut idx = linemap.line_index(byte.min(linemap.source.len()));
+    while idx > 0 {
+        idx -= 1;
+        if let Some((_, raw)) = linemap.doc_comment(idx) {
+            let indent = leading_spaces(raw.as_bytes());
+            let summary = strip_doc_spaces(&raw, if indent >= 4 { 4 } else { 2 });
+            if summary.trim().is_empty() {
+                continue;
+            }
+            return summary.as_bytes().first() == Some(&b'+') && summary.contains(':');
+        }
+        if let Some((start, end)) = linemap.line_bounds(idx) {
+            if linemap.source[start..end].trim().is_empty() {
+                continue;
+            }
+        }
+        break;
+    }
+    false
+}
+
+fn plus_linked_prefix_doc_for_name_before(linemap: &LineMap, byte: usize, name: &str) -> bool {
+    let needle = format!("+{name}:");
+    let mut idx = linemap.line_index(byte.min(linemap.source.len()));
+    let mut scanned = 0usize;
+    while idx > 0 && scanned < 16 {
+        idx -= 1;
+        scanned += 1;
+        if let Some((_, raw)) = linemap.doc_comment(idx) {
+            let indent = leading_spaces(raw.as_bytes());
+            let summary = strip_doc_spaces(&raw, if indent >= 4 { 4 } else { 2 });
+            if summary.trim().is_empty() {
+                continue;
+            }
+            return summary.starts_with(&needle);
+        }
+        if let Some((start, end)) = linemap.line_bounds(idx) {
+            let line = linemap.source[start..end].trim();
+            if line.is_empty() || line.starts_with("+$") {
+                continue;
+            }
+        }
+        break;
+    }
+    false
+}
+
+fn linked_prefix_doc_before_line(linemap: &LineMap, byte: usize) -> bool {
+    let idx = linemap.line_index(byte.min(linemap.source.len()));
+    linemap
+        .doc_summary_before_line(idx)
+        .is_some_and(|summary| matches!(summary.as_bytes().first(), Some(b'+' | b'$')) && summary.contains(':'))
+}
+
+
 fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> Hoon {
-    if let Some(help) = linemap.help_after(span.0, span.1) {
-        if !hoon_tail_has_help(&node, &help) {
-            node = attach_help_to_hoon(node, help);
+    // hoonc treats postfix `::` comments on `?:` as plain line comments, not
+    // generic `%help` notes. Preserve explicit/help-specialized anchoring for
+    // other runes while leaving `%wtcl` structure byte-compatible.
+    if !matches!(&node, Hoon::WutCol(..)) {
+        if let Some(help) = linemap.help_after(span.0, span.1) {
+            if !hoon_tail_has_help(&node, &help) {
+                node = attach_help_to_hoon(node, help);
+            }
         }
     }
     if let Some(help) = linemap.help_before_hoon(span.0) {
@@ -12881,9 +13326,30 @@ fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> H
     node
 }
 
+fn spec_can_own_line_tail_help(node: &Spec) -> bool {
+    match node {
+        Spec::Dbug(_, inner) | Spec::Gist(_, inner) => spec_can_own_line_tail_help(inner),
+        Spec::BucTis(..) | Spec::BucPat(..) | Spec::BucCen(..) | Spec::BucWut(..) => false,
+        _ => true,
+    }
+}
+
 fn apply_spec_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> Spec {
-    if let Some(help) = linemap.help_after_spec(span.0, span.1) {
-        node = attach_help_to_spec(node, help);
+    let same_line = linemap.line_index(span.0.min(linemap.source.len()))
+        == linemap.line_index(span.1.min(linemap.source.len()));
+    let line_tail_eligible =
+        same_line && linemap.spec_starts_line(span.0) && spec_can_own_line_tail_help(&node);
+    if let Some(help) = match &node {
+        Spec::BucTis(..) => linemap.help_after_spec(span.0, span.1),
+        Spec::BucPat(..) | Spec::BucCen(..) | Spec::BucWut(..) => None,
+        _ => linemap.help_after_spec(span.0, span.1),
+    }
+    .or_else(|| {
+        line_tail_eligible
+            .then(|| linemap.help_after_line_tail(span.1))
+            .flatten()
+    }) {
+        node = attach_postfix_help_to_spec(node, help);
     }
     if let Some(help) = linemap.help_before_spec(span.0) {
         node = attach_help_to_spec(node, help);
@@ -12892,17 +13358,33 @@ fn apply_spec_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> S
 }
 
 fn apply_spec_postfix_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> Spec {
-    if let Some(help) = linemap.help_after_spec(span.0, span.1) {
-        node = attach_help_to_spec(node, help);
+    let same_line = linemap.line_index(span.0.min(linemap.source.len()))
+        == linemap.line_index(span.1.min(linemap.source.len()));
+    let line_tail_eligible =
+        same_line && linemap.spec_starts_line(span.0) && spec_can_own_line_tail_help(&node);
+    if let Some(help) = match &node {
+        Spec::BucTis(..) => linemap.help_after_spec(span.0, span.1),
+        Spec::BucPat(..) | Spec::BucCen(..) | Spec::BucWut(..) => None,
+        _ => linemap.help_after_spec(span.0, span.1),
+    }
+    .or_else(|| {
+        line_tail_eligible
+            .then(|| linemap.help_after_line_tail(span.1))
+            .flatten()
+    }) {
+        node = attach_postfix_help_to_spec(node, help);
     }
     node
 }
 
 fn attach_help_to_hoon(node: Hoon, help: NounExpr) -> Hoon {
-    if matches!(&node, Hoon::Note(Note::Help(existing), _) if existing == &help) {
-        return node;
+    match node {
+        Hoon::Dbug(spot, inner) => {
+            Hoon::Dbug(spot, Box::new(attach_help_to_hoon(*inner, help)))
+        }
+        Hoon::Note(Note::Help(existing), inner) if existing == help => Hoon::Note(Note::Help(existing), inner),
+        other => Hoon::Note(Note::Help(help), Box::new(other)),
     }
-    Hoon::Note(Note::Help(help), Box::new(node))
 }
 
 fn attach_help_to_spec(node: Spec, help: NounExpr) -> Spec {
@@ -12910,6 +13392,61 @@ fn attach_help_to_spec(node: Spec, help: NounExpr) -> Spec {
         return node;
     }
     Spec::Gist(help, Box::new(node))
+}
+
+fn attach_help_to_skin(node: Skin, help: NounExpr) -> Skin {
+    if matches!(&node, Skin::Help(existing, _) if existing == &help) {
+        return node;
+    }
+    Skin::Help(help, Box::new(node))
+}
+
+fn attach_help_to_spec_owner(node: Spec, help: NounExpr) -> Spec {
+    match node {
+        Spec::Dbug(spot, inner) => {
+            Spec::Dbug(spot, Box::new(attach_help_to_spec_owner(*inner, help)))
+        }
+        Spec::BucTis(skin, spec) => Spec::BucTis(attach_help_to_skin(skin, help), spec),
+        other => attach_help_to_spec(other, help),
+    }
+}
+
+fn attach_postfix_help_to_spec(node: Spec, help: NounExpr) -> Spec {
+    match node {
+        Spec::Dbug(spot, inner) => {
+            Spec::Dbug(spot, Box::new(attach_postfix_help_to_spec(*inner, help)))
+        }
+        // Hoonc serializes postfix docs on faced specs as an ordinary `%help`
+        // around the spec. Putting the doc on the `Skin` changes the noun shape
+        // from `[%help help]` to `[%help [help %face]]`. If a recursive child
+        // already picked up the same line-tail doc, hoist it to the faced spec
+        // owner and drop the duplicate child wrapper.
+        Spec::BucTis(skin, inner) => {
+            let inner = match *inner {
+                Spec::Gist(existing, nested) if existing == help => nested,
+                other => Box::new(other),
+            };
+            attach_help_to_spec(Spec::BucTis(skin, inner), help)
+        }
+        other => attach_help_to_spec_owner(other, help),
+    }
+}
+
+fn attach_help_to_lusbuc_body(node: Spec, help: NounExpr) -> (Spec, bool) {
+    match node {
+        Spec::Dbug(spot, inner) => {
+            let (inner, attached) = attach_help_to_lusbuc_body(*inner, help);
+            (Spec::Dbug(spot, Box::new(inner)), attached)
+        }
+        Spec::BucSig(hoon, tail) => {
+            if hoon_tail_has_help(&hoon, &help) {
+                (Spec::BucSig(hoon, tail), true)
+            } else {
+                (Spec::BucSig(attach_help_to_hoon(hoon, help), tail), true)
+            }
+        }
+        other => (other, false),
+    }
 }
 
 pub fn hoon_with_span(
@@ -12929,7 +13466,8 @@ pub fn wrap_hoon_with_trace(
     move |node, e| {
         let span = (e.span().start(), e.span().end());
         let spot = chumsky_spot_to_hoon_spot(span, &wer, &linemap);
-        let node = apply_hoon_docs(node, span, &linemap);
+        let node =
+            promote_same_spot_trace_above_hoon_help(apply_hoon_docs(node, span, &linemap), &spot);
         if let Hoon::Dbug(existing_spot, inner) = node {
             if existing_spot == spot {
                 return Hoon::Dbug(existing_spot, inner);
@@ -12996,7 +13534,8 @@ pub fn wrap_spec_with_trace(
     move |node, e| {
         let span = (e.span().start(), e.span().end());
         let spot = chumsky_spot_to_hoon_spot(span, &wer, &linemap);
-        let node = apply_spec_docs(node, span, &linemap);
+        let node =
+            promote_same_spot_trace_above_spec_help(apply_spec_docs(node, span, &linemap), &spot);
 
         match node {
             Spec::Dbug(existing_spot, inner) => {
@@ -16942,10 +17481,12 @@ mod tests {
     use nockvm::noun::{Noun, NounAllocator, D, T};
 
     use super::{
-        chumsky_spot_to_hoon_spot, flay, gor_mug, limb_to_noun, map_to_noun, mor_mug, open,
-        rent_co, slab_mug, string_to_atom, term_to_noun, Limb, LineMap,
+        apply_hoon_trace, chumsky_spot_to_hoon_spot, flay, gor_mug, limb_to_noun, map_to_noun,
+        mor_mug, open, plus_linked_prefix_doc_for_name_before,
+        promote_same_spot_trace_above_spec_help, rent_co, slab_mug, string_to_atom, term_to_noun,
+        Limb, LineMap,
     };
-    use crate::ast::hoon::{BaseType, Coin, Hoon, Note, ParsedAtom, Skin, Spec};
+    use crate::ast::hoon::{BaseType, Coin, Hoon, Note, ParsedAtom, Pint, Skin, Spec, Spot};
 
     fn noun_is_zero(noun: Noun) -> bool {
         unsafe { noun.raw_equals(&D(0)) }
@@ -16953,6 +17494,67 @@ mod tests {
     fn slab_noun_equality<J>(slab: &NounSlab<J>, left: &Noun, right: &Noun) -> bool {
         let space = slab.noun_space();
         noun_equality(left.in_space(&space), right.in_space(&space))
+    }
+
+    fn spot_for_trace_promotion_tests() -> Spot {
+        Spot {
+            p: vec!["test".to_string()],
+            q: Pint {
+                p: (1, 1),
+                q: (1, 2),
+            },
+        }
+    }
+
+    #[test]
+    fn trace_promotion_keeps_hoon_help_and_collapses_same_spot_dbug() {
+        let spot = spot_for_trace_promotion_tests();
+        let help = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(LineMap::doc_cord("doc"), LineMap::doc_atom(0)),
+        );
+        let node = Hoon::Note(
+            Note::Help(help.clone()),
+            Box::new(Hoon::Dbug(spot.clone(), Box::new(Hoon::ZapZap))),
+        );
+
+        let Hoon::Dbug(actual_spot, inner) = apply_hoon_trace(node, spot.clone()) else {
+            panic!("trace should remain the outer wrapper");
+        };
+        assert_eq!(actual_spot, spot);
+        let Hoon::Note(Note::Help(actual_help), tail) = inner.as_ref() else {
+            panic!("help should stay under the trace");
+        };
+        assert_eq!(actual_help, &help);
+        assert!(matches!(tail.as_ref(), Hoon::ZapZap));
+    }
+
+    #[test]
+    fn trace_promotion_keeps_spec_help_and_collapses_same_spot_dbug() {
+        let spot = spot_for_trace_promotion_tests();
+        let help = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(LineMap::doc_cord("doc"), LineMap::doc_atom(0)),
+        );
+        let node = Spec::Gist(
+            help.clone(),
+            Box::new(Spec::Dbug(
+                spot.clone(),
+                Box::new(Spec::Base(BaseType::NounExpr)),
+            )),
+        );
+
+        let Spec::Dbug(actual_spot, inner) =
+            promote_same_spot_trace_above_spec_help(node, &spot)
+        else {
+            panic!("trace should remain the outer wrapper");
+        };
+        assert_eq!(actual_spot, spot);
+        let Spec::Gist(actual_help, tail) = inner.as_ref() else {
+            panic!("help should stay under the trace");
+        };
+        assert_eq!(actual_help, &help);
+        assert!(matches!(tail.as_ref(), Spec::Base(BaseType::NounExpr)));
     }
 
     #[test]
@@ -16967,7 +17569,7 @@ mod tests {
     }
 
     #[test]
-    fn postfix_docs_on_named_specs_wrap_whole_spec() {
+    fn postfix_docs_on_named_specs_wrap_spec_not_skin() {
         let src = "  =|  a=(tree (pair))  ::  (map)\n  *\n";
         let start = src.find("a=").expect("missing named spec");
         let end = src.find("  ::").expect("missing postfix doc");
@@ -16980,7 +17582,64 @@ mod tests {
         let spec = super::apply_spec_postfix_docs(spec, (start, end), &linemap);
         assert!(
             matches!(spec, Spec::Gist(_, _)),
-            "postfix doc should decorate the whole named spec"
+            "postfix doc should wrap the named sample spec, not decorate its skin"
+        );
+    }
+
+    #[test]
+    fn single_space_postfix_comments_do_not_become_spec_help() {
+        let src = "  =|  a=(tree)  :: (set)\n  *\n";
+        let start = src.find("a=").expect("missing named spec");
+        let end = src.find("  ::").expect("missing postfix comment");
+        let linemap = LineMap::new_with_docs(src, true);
+        let spec = Spec::BucTis(
+            Skin::Term("a".to_string()),
+            Box::new(Spec::Base(BaseType::NounExpr)),
+        );
+
+        let spec = super::apply_spec_postfix_docs(spec, (start, end), &linemap);
+        assert!(
+            matches!(spec, Spec::BucTis(Skin::Term(_), _)),
+            "single-space :: comments are not doccords"
+        );
+    }
+
+    #[test]
+    fn dollar_pat_faced_branch_comment_wraps_named_spec_once() {
+        let src = "  $@  mark=@tas  ::  auth=urbit\n";
+        let start = src.find("mark=").expect("missing named spec");
+        let end = src.find("  ::").expect("missing postfix doc");
+        let linemap = LineMap::new_with_docs(src, true);
+        let spec = Spec::BucTis(
+            Skin::Term("mark".to_string()),
+            Box::new(Spec::Base(BaseType::Atom("tas".to_string()))),
+        );
+
+        let spec = super::apply_spec_postfix_docs(spec, (start, end), &linemap);
+        assert!(
+            matches!(spec, Spec::Gist(_, inner) if matches!(inner.as_ref(), Spec::BucTis(Skin::Term(_), inner) if matches!(inner.as_ref(), Spec::Base(_)))),
+            "$@ branch doc should wrap the faced spec once, not the inner base"
+        );
+    }
+
+    #[test]
+    fn faced_spec_postfix_help_hoists_duplicate_inner_help() {
+        let help = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(LineMap::doc_cord("doc"), LineMap::doc_atom(0)),
+        );
+        let spec = Spec::BucTis(
+            Skin::Term("a".to_string()),
+            Box::new(Spec::Gist(
+                help.clone(),
+                Box::new(Spec::Base(BaseType::NounExpr)),
+            )),
+        );
+
+        let spec = super::attach_postfix_help_to_spec(spec, help);
+        assert!(
+            matches!(spec, Spec::Gist(_, inner) if matches!(inner.as_ref(), Spec::BucTis(Skin::Term(_), inner) if matches!(inner.as_ref(), Spec::Base(_)))),
+            "duplicate child help should be hoisted to the faced spec owner"
         );
     }
 
@@ -17005,7 +17664,7 @@ mod tests {
         };
         assert!(
             matches!(spec.as_ref(), Spec::Gist(_, _)),
-            "postfix doc should decorate the named sample spec"
+            "postfix doc should wrap the named sample spec, not decorate its skin"
         );
     }
 
@@ -17080,12 +17739,13 @@ mod tests {
         let Hoon::KetCol(spec) = arm else {
             panic!("expected +$ mold arm");
         };
-        let Spec::Gist(_, named) = spec.as_ref() else {
-            panic!("expected +$ postfix doc to wrap the named spec");
+        let Spec::Name(name, inner) = spec.as_ref() else {
+            panic!("expected +$ postfix doc to keep the named spec outermost");
         };
+        assert_eq!(name.as_str(), "path", "unexpected +$ arm name");
         assert!(
-            matches!(named.as_ref(), Spec::Name(_, _)),
-            "postfix +$ doc should preserve the named spec"
+            matches!(inner.as_ref(), Spec::Gist(_, _)),
+            "postfix +$ doc should decorate the named spec body"
         );
     }
 
@@ -17231,6 +17891,81 @@ mod tests {
     }
 
     #[test]
+    fn parser_attaches_arm_postfix_doc_before_multiline_door_body() {
+        let src = concat!(
+            "|%\n",
+            "::\n",
+            "::    +ff\n",
+            "::\n",
+            "::  this core has no use outside of the functionality\n",
+            "::  provided to ++rd, ++rs, ++rq, and ++rh\n",
+            "::\n",
+            "++  ff                                                  ::  ieee 754 format fp\n",
+            "  |_  [[w=@u p=@u b=@s] r=$?(%n %u %d %z %a)]\n",
+            "  ++  sb  0\n",
+            "  --\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "arm.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("door arm should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let arm = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("ff"))
+            .expect("expected ++ff arm");
+        let Hoon::Note(Note::Help(postfix_help), inner) = arm else {
+            panic!("postfix ++ arm doc should decorate the arm");
+        };
+        let expected_postfix = LineMap::doc_cell(
+            LineMap::doc_list(vec![LineMap::doc_cell(
+                LineMap::doc_cord("funk"),
+                LineMap::doc_cord("ff"),
+            )]),
+            LineMap::doc_cell(LineMap::doc_cord("ieee 754 format fp"), LineMap::doc_atom(0)),
+        );
+        assert_eq!(
+            postfix_help, &expected_postfix,
+            "postfix ++ arm doc should keep a linked funk cuff"
+        );
+        let Hoon::Note(Note::Help(prefix_help), inner) = inner.as_ref() else {
+            panic!("prefix +ff doc should stay inside the postfix arm doc");
+        };
+        assert!(
+            matches!(inner.as_ref(), Hoon::BarCab(..)),
+            "prefix doc should wrap the multiline door body, not the door sample spec"
+        );
+        let expected_prefix = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(
+                LineMap::doc_cord("+ff"),
+                LineMap::doc_list(vec![LineMap::doc_list(vec![
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(0),
+                        LineMap::doc_cord("this core has no use outside of the functionality"),
+                    ),
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(0),
+                        LineMap::doc_cord("provided to ++rd, ++rs, ++rq, and ++rh"),
+                    ),
+                ])]),
+            ),
+        );
+        assert_eq!(
+            prefix_help, &expected_prefix,
+            "prefix +ff doc should be preserved under the postfix arm doc"
+        );
+    }
+
+    #[test]
     fn parser_leaves_single_line_arm_doc_on_tail_when_tail_owns_it() {
         let src = concat!(
             "|%\n", "++  grd  |=  [a=dn]  ^-  @rq  (grd:ma a)  ::  decimal float to @rq\n", "--\n",
@@ -17264,7 +17999,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_wraps_single_line_gate_doc_when_gate_body_owns_it() {
+    fn parser_leaves_single_line_gate_doc_on_tail_expression() {
         let src = concat!("|%\n", "++  sum  |=  [a=@ b=@]  (add a b)  ::  wrapping add\n", "--\n",);
         let linemap = Arc::new(LineMap::new_with_docs(src, true));
         let parsed = crate::native_parser(vec!["test".into(), "arm.hoon".into()], false, linemap)
@@ -17282,9 +18017,12 @@ mod tests {
             .get("$")
             .and_then(|(_, arms)| arms.get("sum"))
             .expect("expected ++sum arm");
+        let Hoon::BarTis(_, tail) = arm else {
+            panic!("expected gate arm body");
+        };
         assert!(
-            matches!(arm, Hoon::Note(Note::Help(_), inner) if matches!(inner.as_ref(), Hoon::BarTis(..))),
-            "single-line gate doc should wrap the gate when no cast tail owns it"
+            matches!(tail.as_ref(), Hoon::Note(Note::Help(_), _)),
+            "single-line wide gate doc should wrap the tail expression"
         );
     }
 
@@ -17361,6 +18099,27 @@ mod tests {
             ),
             other => panic!("expected documented ?. expression, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parser_leaves_wutcol_postfix_doc_as_line_comment() {
+        let src = "?:  (gth m prc)  (^sub m prc)  0              ::  reduce precision\n";
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "cond.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("?: should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::WutCol(predicate, _, _)] = items.as_slice() else {
+            panic!("postfix ?: comment should not synthesize a help note");
+        };
+        assert!(
+            matches!(predicate.as_ref(), Hoon::CenCol(callee, _) if matches!(callee.as_ref(), Hoon::Wing(_))),
+            "predicate should remain the parsed (gth m prc) call"
+        );
     }
 
     #[test]
@@ -17500,6 +18259,336 @@ mod tests {
         let Hoon::Note(Note::Help(_), _) = arm else {
             panic!("expected inline scye doc to decorate arm body");
         };
+    }
+
+    #[test]
+    fn parser_splits_linked_funk_prefix_doc_tail_at_code_detail() {
+        let src = concat!(
+            "|%\n",
+            "  ::\n",
+            "  ::  +lug: central rounding mechanism\n",
+            "  ::\n",
+            "  ::    can perform: floor, ceiling, smaller, larger,\n",
+            "  ::                 nearest (round ties to: even, away from 0, toward 0)\n",
+            "  ::    s is sticky bit: represents a value less than ulp(a) = 2^(e.a)\n",
+            "  ::\n",
+            "  ++  lug\n",
+            "    0\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let arm = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("lug"))
+            .expect("expected ++lug arm");
+        let Hoon::Note(Note::Help(outer_help), inner) = arm else {
+            panic!("linked +lug doc should decorate the arm");
+        };
+        let Hoon::Note(Note::Help(tail_help), _) = inner.as_ref() else {
+            panic!("post-code +lug detail should decorate the arm body");
+        };
+
+        let expected_outer = LineMap::doc_cell(
+            LineMap::doc_list(vec![LineMap::doc_cell(
+                LineMap::doc_cord("funk"),
+                LineMap::doc_cord("lug"),
+            )]),
+            LineMap::doc_cell(
+                LineMap::doc_cord("central rounding mechanism"),
+                LineMap::doc_list(vec![LineMap::doc_list(vec![LineMap::doc_cell(
+                    LineMap::doc_atom(0),
+                    LineMap::doc_cord("can perform: floor, ceiling, smaller, larger,"),
+                )])]),
+            ),
+        );
+        assert_eq!(
+            outer_help, &expected_outer,
+            "linked +lug doc should stop before code-indented continuation"
+        );
+
+        let expected_tail = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(
+                LineMap::doc_cord("s is sticky bit: represents a value less than ulp(a) = 2^(e.a)"),
+                LineMap::doc_atom(0),
+            ),
+        );
+        assert_eq!(
+            tail_help, &expected_tail,
+            "post-code linked +lug prose should become a plain body help"
+        );
+    }
+
+    #[test]
+    fn parser_keeps_bullet_continuations_inside_linked_prefix_doc() {
+        let src = concat!(
+            "|%\n",
+            "  ::\n",
+            "  ::  +em-co: format in numeric base\n",
+            "  ::\n",
+            "  ::    - all available digits in .hol will be processed, but\n",
+            "  ::      .min digits can exceed the number available in .hol\n",
+            "  ::    - .par handles all accumulated output on each call,\n",
+            "  ::      and can edit it, prepend or append digits, &c\n",
+            "  ::\n",
+            "  ++  em-co\n",
+            "    0\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let arm = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("em-co"))
+            .expect("expected ++em-co arm");
+        let Hoon::Note(Note::Help(help), inner) = arm else {
+            panic!("linked +em-co doc should decorate the arm");
+        };
+        assert!(
+            !matches!(inner.as_ref(), Hoon::Note(Note::Help(_), _)),
+            "bullet continuation lines must not split off a separate body help"
+        );
+        let expected = LineMap::doc_cell(
+            LineMap::doc_list(vec![LineMap::doc_cell(
+                LineMap::doc_cord("funk"),
+                LineMap::doc_cord("em-co"),
+            )]),
+            LineMap::doc_cell(
+                LineMap::doc_cord("format in numeric base"),
+                LineMap::doc_list(vec![LineMap::doc_list(vec![
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(0),
+                        LineMap::doc_cord("- all available digits in .hol will be processed, but"),
+                    ),
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(1),
+                        LineMap::doc_cord(".min digits can exceed the number available in .hol"),
+                    ),
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(0),
+                        LineMap::doc_cord("- .par handles all accumulated output on each call,"),
+                    ),
+                    LineMap::doc_cell(
+                        LineMap::doc_atom(1),
+                        LineMap::doc_cord("and can edit it, prepend or append digits, &c"),
+                    ),
+                ])]),
+            ),
+        );
+        assert_eq!(
+            help, &expected,
+            "bullet continuations should stay in the linked prefix doc"
+        );
+    }
+
+    #[test]
+    fn parser_skips_linked_prefix_doc_after_barcab_sample_gap() {
+        let src = concat!(
+            "|%\n",
+            "++  re\n",
+            "  |_  tac=tank\n",
+            "  ::  +ram: render a tank to one line (flat)\n",
+            "  ::\n",
+            "  ++  ram\n",
+            "    ^-  tape\n",
+            "    ~\n",
+            "  ::  +win: render a tank to multiple lines (tall)\n",
+            "  ::\n",
+            "  ::    indented by .tab, soft-wrapped at .edg\n",
+            "  ::\n",
+            "  ++  win\n",
+            "    ^-  wall\n",
+            "    ~\n",
+            "  --\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let re = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("re"))
+            .expect("expected ++re arm");
+        let Hoon::BarCab(_, _, nested_tomes) = re else {
+            panic!("expected ++re body to be a door");
+        };
+        let ram = nested_tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("ram"))
+            .expect("expected ++ram arm");
+        assert!(
+            matches!(ram, Hoon::KetHep(_, _)),
+            "doc block in the |_ sample gap must not wrap the first arm body"
+        );
+        let win = nested_tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("win"))
+            .expect("expected ++win arm");
+        assert!(
+            matches!(win, Hoon::Note(Note::Help(_), _)),
+            "later linked prefix docs still belong to their arm"
+        );
+    }
+
+    #[test]
+    fn parser_keeps_linked_prefix_doc_on_first_barcen_arm() {
+        let src = concat!(
+            "|%\n",
+            "::  +ram: render a tank to one line (flat)\n",
+            "::\n",
+            "++  ram\n",
+            "  ^-  tape\n",
+            "  ~\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let ram = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("ram"))
+            .expect("expected ++ram arm");
+        let Hoon::Note(Note::Help(_), inner) = ram else {
+            panic!("linked prefix doc should decorate a |% first arm");
+        };
+        assert!(
+            matches!(inner.as_ref(), Hoon::KetHep(_, _)),
+            "the help note should wrap the parsed arm body"
+        );
+    }
+
+
+    #[test]
+    fn parser_skips_single_line_funk_doc_on_buclus_arm() {
+        let src = concat!(
+            "|%\n",
+            "::\n",
+            "::  +block: abstract identity of resource awaited\n",
+            "::\n",
+            "+$  block\n",
+            "  path\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        assert!(plus_linked_prefix_doc_for_name_before(
+            &linemap,
+            src.find("path").expect("missing body"),
+            "block"
+        ));
+        let parsed = crate::native_parser(vec!["test".into(), "types.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let block = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("block"))
+
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "types.hoon".into()], true, linemap)
+            .parse(src)
+            .into_result()
+            .expect("traced core should parse");
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level traced TisSig");
+        };
+        let [Hoon::Dbug(_, core)] = items.as_slice() else {
+            panic!("expected traced core expression");
+        };
+        let Hoon::BarCen(_, tomes) = core.as_ref() else {
+            panic!("expected traced core body");
+        };
+        let block = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("block"))
+            .expect("expected traced +$ block arm");
+        assert!(
+            !matches!(block, Hoon::Note(Note::Help(_), _)),
+            "debug mode must not wrap +$ mold in a funk help note"
+        );
+            .expect("expected +$ block arm");
+        assert!(
+            matches!(block, Hoon::KetCol(_)),
+            "single-line +name prefix before +$ should not wrap the mold arm"
+        );
+    }
+    #[test]
+    fn parser_attaches_semicolon_tilde_func_postfix_doc() {
+        let src = concat!(
+            "|%\n",
+            "++  qit  ;~  pose                                       ::  chars in a cord\n",
+            "            ;~(less bas soq prn)\n",
+            "        ==\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let arm = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("qit"))
+            .expect("expected ++qit arm");
+        let Hoon::MicSig(func, _) = arm else {
+            panic!("expected ;~ arm body");
+        };
+        assert!(
+            matches!(func.as_ref(), Hoon::Note(Note::Help(_), inner) if matches!(inner.as_ref(), Hoon::Wing(_))),
+            ";~ function postfix doc should decorate the function expression"
+        );
     }
 
     #[test]
