@@ -18528,6 +18528,11 @@ mod tests {
         let block = tomes
             .get("$")
             .and_then(|(_, arms)| arms.get("block"))
+            .expect("expected +$ block arm");
+        assert!(
+            matches!(block, Hoon::KetCol(_)),
+            "single-line +name prefix before +$ should not wrap the mold arm"
+        );
 
         let linemap = Arc::new(LineMap::new_with_docs(src, true));
         let parsed = crate::native_parser(vec!["test".into(), "types.hoon".into()], true, linemap)
@@ -18550,11 +18555,6 @@ mod tests {
         assert!(
             !matches!(block, Hoon::Note(Note::Help(_), _)),
             "debug mode must not wrap +$ mold in a funk help note"
-        );
-            .expect("expected +$ block arm");
-        assert!(
-            matches!(block, Hoon::KetCol(_)),
-            "single-line +name prefix before +$ should not wrap the mold arm"
         );
     }
     #[test]
