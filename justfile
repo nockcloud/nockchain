@@ -96,12 +96,24 @@ honk-parity:
     target/release/jam-diff --kernel-parity assets/bridge.jam assets/native/bridge.jam
     target/release/jam-diff --kernel-parity assets/roswell.jam assets/native/roswell.jam
 
+# Run every honk parity gate in one shot: the cargo gates (compiler_mint +
+# native_parity_138 full hoon-138 self-mint byte parity) AND the 6-kernel
+# byte/dir-hash parity vs hoonc. Builds hoonc + honk, the hoonc reference kernel
+# jams (assets/*.jam), and honk's native kernel jams (assets/native/*.jam) first
+# — so this is a long run (hoonc compiles 6 kernels). hatch's parser-oracle
+# parity is separate: it needs Bazel fixtures (`make build-hatch-test-assets`),
+# then `cargo nextest run --release -p hatch`.
+honk-parity-all: build-kernel-assets honk-kernel-jams
+    cargo nextest run --release -p honk
+    just honk-parity
+
 # Arbitrary-build parity for the hoon-138 prelude: honk's NATIVE mint
 # (HONK_NATIVE_PARITY=1, no embedded prelude) vs hoonc's arbitrary build,
-# byte-compared. NOTE: honk's native mint of the full prelude currently
-# exhausts memory before completing (~4GB/min, no plateau), so this reports the
-# blowup under an RSS guard; it becomes a real parity gate once native mint
-# memory is bounded. Build honk + hoonc first (`just build`).
+# byte-compared. PASSING (2026-06-28): the native mint completes with bounded
+# memory (~40s) and is BYTE-IDENTICAL to hoonc (2,286,744 B). The RSS guard is
+# now a cheap backstop, not expected to fire. Build honk + hoonc first
+# (`just build`). The hoonc-free cargo equivalent is the `native_parity_138`
+# test (default-embedded vs HONK_NATIVE_PARITY=1 honk build, byte-compared).
 honk-138-parity:
     crates/honk/test-assets/honk_138_native_parity.sh
 
@@ -123,3 +135,22 @@ honk-roswell-timed:
     cargo build --release -p honk
     mkdir -p assets/native
     bash -c 'start=$(date +%s); target/release/honk --new --output assets/native/roswell.jam --prelude hoon/common/hoon.hoon hoon/apps/roswell/roswell.hoon hoon; end=$(date +%s); elapsed=$((end-start)); echo "roswell native compile: ${elapsed}s"; test "$elapsed" -lt 60'
+
+# Peak RSS for honk's NATIVE mint of the hoon-138 prelude (HONK_NATIVE_PARITY=1,
+# embedded prelude disabled — the memory-heavy self-mint). macOS-only: uses
+# /usr/bin/time -l (peak RSS in bytes). The honk binary's own logs go to the
+# .log; only the rusage peak + wall time are printed.
+honk-138-rss:
+    cargo build --release -p honk
+    @echo "honk NATIVE hoon-138 mint — measuring peak RSS (~40s)..."
+    HONK_NATIVE_PARITY=1 /usr/bin/time -l target/release/honk --arbitrary --output /tmp/honk-138-rss.jam --prelude hoon/common/hoon.hoon hoon/common/hoon.hoon hoon >/dev/null 2>/tmp/honk-138-rss.log
+    @awk '/maximum resident set size/{printf "hoon-138 native mint  peak RSS: %.2f GB (%d bytes)\n", $1/1073741824, $1} / real/{printf "                      wall: %s s\n", $1}' /tmp/honk-138-rss.log
+
+# Peak RSS for honk compiling the roswell kernel (default build, embedded
+# prelude — the normal kernel compile path). macOS-only: /usr/bin/time -l.
+honk-roswell-rss:
+    cargo build --release -p honk
+    mkdir -p assets/native
+    @echo "honk roswell kernel compile — measuring peak RSS..."
+    /usr/bin/time -l target/release/honk --new --output assets/native/roswell.jam --prelude hoon/common/hoon.hoon hoon/apps/roswell/roswell.hoon hoon >/dev/null 2>/tmp/honk-roswell-rss.log
+    @awk '/maximum resident set size/{printf "roswell kernel  peak RSS: %.2f GB (%d bytes)\n", $1/1073741824, $1} / real/{printf "                wall: %s s\n", $1}' /tmp/honk-roswell-rss.log
