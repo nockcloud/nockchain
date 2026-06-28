@@ -496,7 +496,7 @@ pub fn parser<'src>(
         wer.clone(),
         linemap.clone(),
     )
-    .map_with(wrap_hoon_with_docs(linemap.clone()))
+    .map_with(wrap_hoon_wide_with_docs(linemap.clone()))
     .labelled("Hoon Wide")
     .boxed();
 
@@ -520,7 +520,7 @@ pub fn parser<'src>(
         hoon_wide_no_trace.clone(),
         linemap.clone(),
     )
-    .map_with(wrap_spec_with_docs(linemap.clone()))
+    .map_with(wrap_spec_wide_with_docs(linemap.clone()))
     .labelled("Spec Wide")
     .boxed();
 

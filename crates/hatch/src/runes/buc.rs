@@ -699,15 +699,11 @@ pub fn buccol_spec<'src>(
         .then_ignore(gap())
         .then_ignore(just("=="))
         .map(move |specs| {
-            let mut specs = specs.into_iter().enumerate().map(|(idx, (spec, start, end))| {
-                if idx == 0 {
-                    spec
-                } else if let Some(help) = linemap.help_after_rune(start, end) {
-                    Spec::Gist(help, Box::new(spec))
-                } else {
-                    spec
-                }
-            });
+            // Per-arm postfix gists are applied by the generic spec-`coat` path
+            // (each arm is a `loan`); no explicit anchor here (it would double,
+            // and it wrongly skipped the first arm).
+            let _ = &linemap;
+            let mut specs = specs.into_iter().map(|(spec, _start, _end)| spec);
             let first = specs.next().expect("$: requires at least one spec");
             Spec::BucCol(Box::new(first), specs.collect())
         })
@@ -750,15 +746,10 @@ pub fn buccen_spec<'src>(
         .then_ignore(gap())
         .then_ignore(just("=="))
         .map(move |specs| {
-            let mut specs = specs.into_iter().enumerate().map(|(idx, (spec, start, end))| {
-                if idx == 0 {
-                    spec
-                } else if let Some(help) = linemap.help_after_rune(start, end) {
-                    Spec::Gist(help, Box::new(spec))
-                } else {
-                    spec
-                }
-            });
+            // Per-arm postfix gists are applied by the generic spec-`coat` path;
+            // no explicit anchor here (would double / skipped the first arm).
+            let _ = &linemap;
+            let mut specs = specs.into_iter().map(|(spec, _start, _end)| spec);
             let first = specs.next().expect("$% requires at least one spec");
             Spec::BucCen(Box::new(first), specs.collect())
         })

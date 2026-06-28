@@ -156,11 +156,12 @@ pub fn barbuc<'src>(
                 .map_with(|body: Spec, e| (body, e.span().start(), e.span().end())),
         )
         .map(move |(list, (body, body_start, body_end))| {
+            // The postfix `::` on a one-line `|$ sample body  :: doc` is now
+            // anchored to the body spec by the generic spec-`coat` deepest-loan
+            // path (`apply_spec_postfix_docs`), so only the prefix block is
+            // applied here (avoids double-gisting, e.g. `++ jar`).
+            let _ = body_end;
             let body = if let Some(help) = linemap.help_before_body_spec(body_start) {
-                Spec::Gist(help, Box::new(body))
-            } else if let Some(help) = linemap.help_after_rune(body_start, body_end) {
-                // Postfix `::` on a one-line `|$ sample body  :: doc` anchors to
-                // the body spec (hoonc emits the `%gist` there, e.g. `++ jar`).
                 Spec::Gist(help, Box::new(body))
             } else {
                 body

@@ -4357,25 +4357,173 @@ pub fn tiki_tall<'src>(
         .or(hoon_tall.clone().map(|h| Tiki::Hoon((None, Box::new(h)))))
 }
 
-pub(crate) fn hoon_tail_has_help(node: &Hoon, help: &NounExpr) -> bool {
+/// The rightmost tall HOON child of `node` — the sub-hoon whose parse ENDS at
+/// `node`'s own end byte. In hoonc's `++vast`, every tall hoon (`loaf`) is
+/// `clad`-wrapped and greedily consumes its own trailing `::  ` doc (`apse`);
+/// so a trailing doc on a line attaches to the DEEPEST tall loaf ending there,
+/// not the enclosing rune. This walker names that deepest-ward child so the
+/// enclosing rune can tell when its tail already owns the doc.
+///
+/// Returns `None` for:
+///   - leaves / wings / specs / tapes (not a tall loaf),
+///   - core runes that close with `--` (`|%`, `|@`, `|_`, `|^` …) and list
+///     runes that close with `==` (`:~`, `:*`, `?-`, `?+`, `?|`, `?&`, `%=`,
+///     `%:`, `%*`, `%_`, `=~` …) — their last token is the terminator, so the
+///     last arg ends BEFORE the rune end and grabs its own apse independently
+///     (no dedup needed, and `None` is the safe default).
+fn last_trailing_loaf(node: &Hoon) -> Option<&Hoon> {
     match node {
-        Hoon::Note(Note::Help(existing), _) if existing == help => true,
-        Hoon::Note(_, inner)
-        | Hoon::Dbug(_, inner)
-        | Hoon::BarHep(inner)
-        | Hoon::BarTis(_, inner)
-        | Hoon::KetHep(_, inner)
-        | Hoon::KetTis(_, inner) => hoon_tail_has_help(inner, help),
-        Hoon::TisGar(_, tail) => hoon_tail_has_help(tail, help),
-        Hoon::CenHep(p, q) | Hoon::CenDot(p, q) | Hoon::TisLus(p, q) => {
-            hoon_tail_has_help(p, help) || hoon_tail_has_help(q, help)
+        // wrappers / passthrough
+        Hoon::Note(_, h)
+        | Hoon::Dbug(_, h)
+        | Hoon::Lost(h)
+        | Hoon::BarDot(h)
+        | Hoon::BarHep(h)
+        | Hoon::BarWut(h)
+        | Hoon::DotLus(h)
+        | Hoon::DotWut(h)
+        | Hoon::KetBar(h)
+        | Hoon::KetPam(h)
+        | Hoon::KetSig(h)
+        | Hoon::KetWut(h)
+        | Hoon::WutZap(h)
+        | Hoon::ZapGar(h)
+        | Hoon::ZapTis(h) => Some(h),
+        // [spec/skin/wing/term/…, tail-hoon] — trailing hoon ends the node
+        Hoon::BarSig(_, h)
+        | Hoon::BarTar(_, h)
+        | Hoon::BarTis(_, h)
+        | Hoon::DotKet(_, h)
+        | Hoon::KetHep(_, h)
+        | Hoon::KetTis(_, h)
+        | Hoon::SigFas(_, h)
+        | Hoon::SigGal(_, h)
+        | Hoon::SigGar(_, h)
+        | Hoon::SigBuc(_, h)
+        | Hoon::SigLus(_, h)
+        | Hoon::MicMic(_, h)
+        | Hoon::TisBar(_, h)
+        | Hoon::TisCol(_, h)
+        | Hoon::ZapGal(_, h)
+        | Hoon::ZapWut(_, h) => Some(h),
+        // [_, tail-hoon] binary runes whose 2nd field ends the node
+        Hoon::Pair(_, h)
+        | Hoon::BarCol(_, h)
+        | Hoon::ColCab(_, h)
+        | Hoon::ColHep(_, h)
+        | Hoon::CenDot(_, h)
+        | Hoon::CenHep(_, h)
+        | Hoon::DotTar(_, h)
+        | Hoon::DotTis(_, h)
+        | Hoon::KetDot(_, h)
+        | Hoon::KetLus(_, h)
+        | Hoon::SigBar(_, h)
+        | Hoon::SigCab(_, h)
+        | Hoon::SigTis(_, h)
+        | Hoon::SigZap(_, h)
+        | Hoon::TisGal(_, h)
+        | Hoon::TisHep(_, h)
+        | Hoon::TisGar(_, h)
+        | Hoon::TisLus(_, h)
+        | Hoon::WutGal(_, h)
+        | Hoon::WutGar(_, h)
+        | Hoon::TisCom(_, h)
+        | Hoon::ZapCom(_, h)
+        | Hoon::ZapMic(_, h) => Some(h),
+        // [_, _, tail-hoon] ternary runes
+        Hoon::ColLus(_, _, h)
+        | Hoon::CenLus(_, _, h)
+        | Hoon::SigPam(_, _, h)
+        | Hoon::WutCol(_, _, h)
+        | Hoon::WutDot(_, _, h)
+        | Hoon::WutKet(_, _, h)
+        | Hoon::WutPat(_, _, h)
+        | Hoon::WutSig(_, _, h)
+        | Hoon::TisFas(_, _, h)
+        | Hoon::TisMic(_, _, h)
+        | Hoon::TisDot(_, _, h)
+        | Hoon::TisTar(_, _, h)
+        | Hoon::ZapPat(_, _, h) => Some(h),
+        // [_, _, _, tail-hoon] quaternary runes
+        Hoon::ColKet(_, _, _, h)
+        | Hoon::CenKet(_, _, _, h)
+        | Hoon::SigCen(_, _, _, h)
+        | Hoon::SigWut(_, _, _, h)
+        | Hoon::TisWut(_, _, _, h)
+        | Hoon::TisKet(_, _, _, h)
+        | Hoon::MicGal(_, _, _, h) => Some(h),
+        // vec-tail runes that do NOT close with `==` — last element ends the node
+        Hoon::CenSig(_, h, vec) | Hoon::MicSig(h, vec) => vec.last().or(Some(h.as_ref())),
+        Hoon::MicFas(h) => Some(h),
+        _ => None,
+    }
+}
+
+pub(crate) fn hoon_tail_has_help(node: &Hoon, help: &NounExpr) -> bool {
+    if let Hoon::Note(Note::Help(existing), _) = node {
+        if existing == help {
+            return true;
         }
-        Hoon::CenLus(p, q, r) | Hoon::WutDot(p, q, r) | Hoon::WutCol(p, q, r) => {
-            hoon_tail_has_help(p, help)
-                || hoon_tail_has_help(q, help)
-                || hoon_tail_has_help(r, help)
+    }
+    match last_trailing_loaf(node) {
+        Some(inner) => hoon_tail_has_help(inner, help),
+        None => false,
+    }
+}
+
+/// True when the node's deepest tall tail is a HOON that ends in a trailing
+/// SPEC (`|$` body spec, `^*`/`^:` mold). In hoonc's `++vast` that trailing
+/// spec is a `loan` (coat-wrapped), so it greedily grabs the line's `::  ` doc
+/// as a `%gist` BEFORE the enclosing hoon's `clad` sees it — the enclosing
+/// hoon then gets nothing. So `apply_hoon_docs` must not also attach a hoon
+/// `%help` note here, or the doc is double-wrapped (gist + note).
+fn hoon_tail_owned_by_spec(node: &Hoon) -> bool {
+    match node {
+        Hoon::BarBuc(..) | Hoon::KetTar(..) | Hoon::KetCol(..) => true,
+        _ => match last_trailing_loaf(node) {
+            Some(inner) => hoon_tail_owned_by_spec(inner),
+            None => false,
+        },
+    }
+}
+
+/// The rightmost trailing SPEC child of `node` — the sub-spec whose `loan`
+/// parse ENDS at `node`'s end byte (the spec analog of `last_trailing_loaf`).
+/// `None` for leaves/wings, runes ending in a HOON or a map, and `==`-closed
+/// list runes (`$:`, `$%`, `$?` …) whose last token is the terminator.
+fn last_trailing_loan(node: &Spec) -> Option<&Spec> {
+    match node {
+        Spec::Dbug(_, s)
+        | Spec::Gist(_, s)
+        | Spec::Made(_, s)
+        | Spec::Name(_, s)
+        | Spec::Over(_, s)
+        | Spec::BucGar(_, s)
+        | Spec::BucGal(_, s)
+        | Spec::BucHep(_, s)
+        | Spec::BucKet(_, s)
+        | Spec::BucLus(_, s)
+        | Spec::BucSig(_, s)
+        | Spec::BucTis(_, s)
+        | Spec::BucPat(_, s) => Some(s),
+        Spec::Make(_, specs) => specs.last(),
+        _ => None,
+    }
+}
+
+/// True when `node`'s deepest trailing `loan` already carries `help` as a
+/// `%gist` — so an enclosing spec must not re-anchor a postfix doc its tail
+/// already owns (the spec analog of `hoon_tail_has_help`; hoonc's `coat` lets
+/// the DEEPEST tall loan ending the line grab the apse).
+fn spec_tail_has_gist(node: &Spec, help: &NounExpr) -> bool {
+    if let Spec::Gist(existing, _) = node {
+        if existing == help {
+            return true;
         }
-        _ => false,
+    }
+    match last_trailing_loan(node) {
+        Some(inner) => spec_tail_has_gist(inner, help),
+        None => false,
     }
 }
 
@@ -4430,6 +4578,38 @@ pub fn chapters<'src>(
             // spec (see `barbuc`), so the arm-body note must not double-wrap it.
             let body_is_barbuc = matches!(&hoon, Hoon::BarBuc(..));
             let body_tail_owns_postfix = matches!(&hoon, Hoon::BarTis(_, inner) if matches!(inner.as_ref(), Hoon::KetHep(..)));
+            // hoon-138 `++whap`/`++glow` (hoon.hoon:13440) doc nesting for a `++`
+            // arm, from the body OUTWARD:
+            //   body  <  UNLINKED prefix docs (`unt`, cuff=~ — e.g. a 4-space
+            //            `larg` block whose bare `+name` is NOT a link)
+            //         <  POSTFIX apse (`r.bog` — always `[%funk name]`-linked, per
+            //            `++bola` hoon.hoon:13398)
+            //         <  LINKED prefix docs (`tag` — e.g. a 2-space `smol`
+            //            `+name:` summary, whose `+name` IS a link).
+            // `whap` wraps the body with `unt` directly (innermost); `glow`
+            // distributes `duds=[r.bog tag…]` to the arm head-first, so the
+            // postfix lands just outside `unt` and the linked prefix docs outside
+            // that. Hence: unlinked prefix INNERMOST, then postfix, then linked
+            // prefix OUTERMOST. (`++  ff`'s larg `+ff` is unlinked → inner, with
+            // its `ieee 754 format fp` postfix outside; `++  slab`'s smol `+slab:`
+            // summary is linked → outer, with its `test if contains` postfix
+            // inside.) A linked doc whose target is a SIBLING arm is deferred for
+            // the chapter's `glow` to place. Docs-off parses short-circuit inside.
+            let mut deferred: Vec<(String, NounExpr)> = Vec::new();
+            let mut unlinked_prefix: Vec<NounExpr> = Vec::new();
+            let mut linked_prefix: Vec<NounExpr> = Vec::new();
+            for help in luslus_linemap.help_before_arm_blocks(start) {
+                match doc_help_link_target(&help) {
+                    Some(target) if target != name => deferred.push((target, help)),
+                    Some(_) => linked_prefix.push(help),
+                    None => unlinked_prefix.push(help),
+                }
+            }
+            // innermost: unlinked prefix docs (`unt`) wrap the body directly.
+            let hoon = unlinked_prefix
+                .into_iter()
+                .fold(hoon, |hoon, help| Hoon::Note(Note::Help(help), Box::new(hoon)));
+            // middle: the postfix apse (`r.bog`).
             let hoon =
                 if let Some(help) = luslus_linemap.arm_postfix_help("funk", &name, start, end) {
                     Hoon::Note(Note::Help(help), Box::new(hoon))
@@ -4448,14 +4628,14 @@ pub fn chapters<'src>(
                     } else {
                         Hoon::Note(Note::Help(help), Box::new(hoon))
                     }
-                } else if let Some(help) = luslus_linemap.help_before_arm(start) {
-                    // Prefix doc block above `++ name` (e.g. `::  +aor: …`), which
-                    // the body's own help_before cannot reach across the `++` line.
-                    Hoon::Note(Note::Help(help), Box::new(hoon))
                 } else {
                     hoon
                 };
-            (name, hoon)
+            // outermost: linked (self-targeted) prefix docs (`tag`).
+            let hoon = linked_prefix
+                .into_iter()
+                .fold(hoon, |hoon, help| Hoon::Note(Note::Help(help), Box::new(hoon)));
+            (name, hoon, deferred)
         })
         .labelled("Arm ++");
 
@@ -4469,29 +4649,54 @@ pub fn chapters<'src>(
                 .map_with(|spec: Spec, e| (spec, e.span().start(), e.span().end())),
         )
         .map(move |((name, start, end), (spec, spec_start, spec_end))| {
-            let spec = Spec::Name(name.clone(), Box::new(spec));
+            // hoonc names a `+$` mold outside the doc-gisted body spec:
+            // `+$ bite :: doc $@(...)` serializes as [%name [%bite [%gist doc ...]]],
+            // not [%gist doc [%name [%bite ...]]]. The body-spec POSTFIX gist is
+            // now applied by the generic spec-`coat` path; only the prefix block
+            // is anchored here (removing the explicit postfix avoids double-gist,
+            // e.g. `+$ path (list knot)  :: like unix path`).
+            let _ = spec_end;
             let spec = if let Some(help) = lusbuc_linemap.help_before_spec(spec_start) {
-                Spec::Gist(help, Box::new(spec))
-            } else if let Some(help) = lusbuc_linemap.help_after_rune(spec_start, spec_end) {
                 Spec::Gist(help, Box::new(spec))
             } else {
                 spec
             };
+            let spec = Spec::Name(name.clone(), Box::new(spec));
             let hoon = Hoon::KetCol(Box::new(spec));
             let hoon = if let Some(help) = lusbuc_linemap.help_before_plan_tail(start) {
                 Hoon::Note(Note::Help(help), Box::new(hoon))
             } else {
                 hoon
             };
+            // hoon-138 `++whap`/`++glow` doc anchoring for a `+$` mold. The
+            // single-block `help_before_arm` is the primary path (it keeps a
+            // `$name:` summary and its multi-line detail — e.g. `$tank:`'s
+            // `%leaf:`/`%palm:`/`%rose:` sub-items — as ONE doc, which
+            // `split_doc_blocks` would wrongly fragment). Only when that fails
+            // because the prefix is genuinely MULTI-block — a valid linked summary
+            // sitting under a dropped, unanchored section paragraph (e.g.
+            // `+gol-type:` below "all the below arms…") — fall back to the
+            // block-splitting path and anchor the valid sub-blocks, deferring any
+            // sibling-linked batch comment for the chapter's `glow`.
+            let mut deferred: Vec<(String, NounExpr)> = Vec::new();
             let hoon =
                 if let Some(help) = lusbuc_linemap.arm_postfix_help("plan", &name, start, end) {
                     Hoon::Note(Note::Help(help), Box::new(hoon))
                 } else if let Some(help) = lusbuc_linemap.help_before_arm(start) {
                     Hoon::Note(Note::Help(help), Box::new(hoon))
                 } else {
-                    hoon
+                    lusbuc_linemap.help_before_arm_blocks(start).into_iter().fold(
+                        hoon,
+                        |hoon, help| match doc_help_link_target(&help) {
+                            Some(target) if target != name => {
+                                deferred.push((target, help));
+                                hoon
+                            }
+                            _ => Hoon::Note(Note::Help(help), Box::new(hoon)),
+                        },
+                    )
                 };
-            (name, hoon)
+            (name, hoon, deferred)
         })
         .labelled("Arm +$");
 
@@ -4522,7 +4727,10 @@ pub fn chapters<'src>(
         .collect::<Vec<_>>()
         .then_ignore(just("--"))
         .map(
-            |chapters_vec: Vec<(Option<(String, Option<NounExpr>)>, Vec<(String, Hoon)>)>| {
+            |chapters_vec: Vec<(
+                Option<(String, Option<NounExpr>)>,
+                Vec<(String, Hoon, Vec<(String, NounExpr)>)>,
+            )>| {
                 let mut map_term_tome = HashMap::new();
                 for (opt_label, arms_vec) in chapters_vec {
                     let (key, what) = opt_label.unwrap_or_else(|| ("$".to_string(), None));
@@ -4534,10 +4742,23 @@ pub fn chapters<'src>(
                     if tome.0.is_none() {
                         tome.0 = what;
                     }
-                    for (name, hoon) in arms_vec {
+                    // hoonc's `++glow`: batch-comment docs (`+X:` linked docs that
+                    // a sibling arm carried in its prefix block) are distributed to
+                    // the arm named X, wrapping its body OUTSIDE its own docs. We
+                    // gather them across the chapter's arms, then apply after all
+                    // arm bodies are in place.
+                    let mut glow: Vec<(String, NounExpr)> = Vec::new();
+                    for (name, hoon, deferred) in arms_vec {
+                        glow.extend(deferred);
                         // If an arm is redefined within a later chunk of the same chapter, keep the
                         // last definition (matches typical "last wins" parse behavior).
                         tome.1.insert(name, hoon);
+                    }
+                    for (target, help) in glow {
+                        if let Some(body) = tome.1.remove(&target) {
+                            tome.1
+                                .insert(target, Hoon::Note(Note::Help(help), Box::new(body)));
+                        }
                     }
                 }
                 map_term_tome
@@ -5919,6 +6140,128 @@ fn leading_spaces(bytes: &[u8]) -> usize {
     bytes.iter().take_while(|&&b| b == b' ').count()
 }
 
+/// Classify a doc-comment line (content AFTER `::`) as a hoonc `++apex`
+/// doc-START. Returns the rant detail-strip (2 for `++larg`, 4 for `++smol`)
+/// if the line begins a doc, else `None`. `++larg` needs EXACTLY 4 leading
+/// spaces then a non-space summary; `++smol` needs EXACTLY 2 leading spaces
+/// then a cross-ref link char (`+ $ . | %`). Other indents are `leap`/`skip`
+/// (whitespace/non-doc comments), not doc-starts.
+fn doc_block_form(content: &str) -> Option<usize> {
+    match leading_spaces(content.as_bytes()) {
+        4 => Some(2), // larg
+        2 => match content.as_bytes().get(2) {
+            Some(b'+' | b'$' | b'.' | b'|' | b'%') => Some(4), // smol
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The cuff (key) of a `[cuff crib]` doc-help.
+fn doc_help_cuff(help: &NounExpr) -> &NounExpr {
+    match help {
+        NounExpr::Cell(cuff, _) => cuff,
+        other => other,
+    }
+}
+
+/// Decode a cord atom (`ParsedAtom`, chars LSB-first) back to its string.
+fn parsed_atom_to_string(a: &ParsedAtom) -> String {
+    let mut bytes = match a {
+        ParsedAtom::Small(v) => v.to_le_bytes().to_vec(),
+        ParsedAtom::Big(b) => b.to_bytes_le(),
+    };
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The cross-ref arm/mold NAME a `[cuff crib]` doc-help links to — `Some(name)`
+/// when the cuff is a `[[%funk name] ~]`/`[[%plan name] ~]` link, else `None`
+/// (a plain doc). hoonc's `whap`/`glow` distributes a linked prefix doc to the
+/// arm of that name (a "batch comment"), not the arm it sits above.
+fn doc_help_link_target(help: &NounExpr) -> Option<String> {
+    // cuff = doc_list([link]) = [link 0]; link = [tag name]
+    let NounExpr::Cell(link, _) = doc_help_cuff(help) else {
+        return None;
+    };
+    let NounExpr::Cell(_tag, name) = link.as_ref() else {
+        return None;
+    };
+    match name.as_ref() {
+        NounExpr::ParsedAtom(a) => Some(parsed_atom_to_string(a)),
+        _ => None,
+    }
+}
+
+/// `++dor` total order on the small nouns doc cuffs are: atoms before cells,
+/// atoms by value, cells head-then-tail. Only the `++mor` mug-collision
+/// tie-break needs it, so a structural compare on `NounExpr` suffices.
+fn doc_dor_nounexpr(a: &NounExpr, b: &NounExpr) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let atom_cmp = |x: &ParsedAtom, y: &ParsedAtom| match (x, y) {
+        (ParsedAtom::Small(p), ParsedAtom::Small(q)) => p.cmp(q),
+        (ParsedAtom::Small(_), ParsedAtom::Big(_)) => Ordering::Less,
+        (ParsedAtom::Big(_), ParsedAtom::Small(_)) => Ordering::Greater,
+        (ParsedAtom::Big(p), ParsedAtom::Big(q)) => p.cmp(q),
+    };
+    match (a, b) {
+        (NounExpr::ParsedAtom(x), NounExpr::ParsedAtom(y)) => atom_cmp(x, y),
+        (NounExpr::ParsedAtom(_), NounExpr::Cell(..)) => Ordering::Less,
+        (NounExpr::Cell(..), NounExpr::ParsedAtom(_)) => Ordering::Greater,
+        (NounExpr::Cell(ha, ta), NounExpr::Cell(hb, tb)) => {
+            doc_dor_nounexpr(ha, hb).then_with(|| doc_dor_nounexpr(ta, tb))
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+/// Split a collected doc-comment block (lines above an arm/expression) into the
+/// SEQUENCE of hoonc `++apex` docs it contains. hoonc parses a prefix block as
+/// `star(leap? into (larg|smol))`: a comment block can yield MULTIPLE helps.
+/// Each doc is a summary line plus its `rant` paragraphs (`star(blank +
+/// plus(teyt))`, where a teyt line sits at the rant detail-strip or +2 for
+/// code); lines that fit neither a doc-start nor the current rant are `skip`
+/// comments and are dropped. Returns `(start, end)` ranges into `docs`.
+fn split_doc_blocks(docs: &[(usize, String)]) -> Vec<(usize, usize)> {
+    let is_blank = |s: &str| s.trim().is_empty();
+    let mut blocks = Vec::new();
+    let mut i = 0;
+    while i < docs.len() {
+        if is_blank(&docs[i].1) {
+            i += 1; // leap blank
+            continue;
+        }
+        let Some(detail_strip) = doc_block_form(&docs[i].1) else {
+            i += 1; // skip: non-doc-start comment line (leap)
+            continue;
+        };
+        let start = i;
+        i += 1; // consume summary
+        // rant = star(blank + plus(teyt))
+        while i < docs.len() && is_blank(&docs[i].1) {
+            let mut j = i + 1;
+            let mut count = 0usize;
+            while j < docs.len() && !is_blank(&docs[j].1) {
+                let n = leading_spaces(docs[j].1.as_bytes());
+                if n == detail_strip || n == detail_strip + 2 {
+                    j += 1;
+                    count += 1;
+                } else {
+                    break; // non-teyt line ends the paragraph (and the rant)
+                }
+            }
+            if count == 0 {
+                break; // blank not followed by teyt: rant stops, leave blank for leap
+            }
+            i = j;
+        }
+        blocks.push((start, i));
+    }
+    blocks
+}
+
 fn strip_doc_spaces(line: &str, spaces: usize) -> String {
     let mut bytes = line.as_bytes();
     let mut stripped = 0;
@@ -6033,6 +6376,20 @@ impl LineMap {
         is_target: impl Fn(&Self, usize, usize) -> bool,
         skip_section_marker: bool,
     ) -> Option<NounExpr> {
+        let docs = self.collect_doc_lines(byte, is_target, skip_section_marker)?;
+        Self::build_doc_help_from_lines(&docs)
+    }
+
+    /// Collect the contiguous `:: …` doc-comment lines immediately above the
+    /// line containing `byte`, trimmed of blank borders (and an optional leading
+    /// `#` section marker). Returns the lines top-down, or `None` if there is no
+    /// doc block or the target line is indented deeper than the doc block.
+    fn collect_doc_lines(
+        &self,
+        byte: usize,
+        is_target: impl Fn(&Self, usize, usize) -> bool,
+        skip_section_marker: bool,
+    ) -> Option<Vec<(usize, String)>> {
         if !self.docs_enabled {
             return None;
         }
@@ -6048,8 +6405,10 @@ impl LineMap {
 
         let mut docs = Vec::new();
         let mut idx = line - 1;
+        let mut head_line: Option<usize> = None;
         loop {
             let Some((indent, content)) = self.doc_comment(idx) else {
+                head_line = Some(idx);
                 break;
             };
             docs.push((indent, content));
@@ -6057,6 +6416,25 @@ impl LineMap {
                 break;
             }
             idx -= 1;
+        }
+
+        // hoonc's `|_` (barcab) door separates its head from its arms with a
+        // doc-FREE `muck` gap (vs `|%`'s doc-aware `jump`), so an apex doc sitting
+        // directly under the door head is consumed by that gap and dropped — the
+        // first door arm gets no leading prefix doc (e.g. `+ram:`/`+fish:`).
+        if let Some(h) = head_line {
+            if !docs.is_empty() {
+                if let Some((s, e)) = self.line_bounds(h) {
+                    let lb = &self.source.as_bytes()[s..e];
+                    let mut c = 0;
+                    while c < lb.len() && (lb[c] == b' ' || lb[c] == b'\t') {
+                        c += 1;
+                    }
+                    if lb.get(c) == Some(&b'|') && lb.get(c + 1) == Some(&b'_') {
+                        return None;
+                    }
+                }
+            }
         }
 
         docs.reverse();
@@ -6088,8 +6466,70 @@ impl LineMap {
         if target_indent > doc_indent {
             return None;
         }
+        Some(docs)
+    }
 
-        Self::build_doc_help_from_lines(&docs)
+    /// The full SEQUENCE of `++apex` prefix-doc helps above an arm — one per
+    /// hoonc doc-block (a comment block can carry several, e.g. `+feis`'s smol
+    /// summary followed by a separate larg `See: …` note). Returned innermost
+    /// (source-first) to outermost so the caller can fold them onto the body.
+    fn help_before_arm_blocks(&self, name_byte: usize) -> Vec<NounExpr> {
+        self.help_before_blocks(name_byte, |_, _, _| true)
+    }
+
+    fn help_before_blocks(
+        &self,
+        byte: usize,
+        is_target: impl Fn(&Self, usize, usize) -> bool,
+    ) -> Vec<NounExpr> {
+        let Some(docs) = self.collect_doc_lines(byte, is_target, false) else {
+            return Vec::new();
+        };
+        let blocks = split_doc_blocks(&docs);
+        if blocks.len() <= 1 {
+            // Single (or no) doc-block: the legacy single-help path builds from
+            // the WHOLE collected block. If that fails because the one valid doc
+            // block sits below leading non-doc prose (e.g. a section paragraph
+            // like "all the below arms…" above `+gol-type:`), build from just the
+            // block's line range so the summary is the block head, not the prose.
+            if let Some(help) = Self::build_doc_help_from_lines(&docs) {
+                return vec![help];
+            }
+            return blocks
+                .first()
+                .and_then(|(s, e)| Self::build_doc_help_from_lines(&docs[*s..*e]))
+                .into_iter()
+                .collect();
+        }
+        let helps: Vec<NounExpr> = blocks
+            .into_iter()
+            .filter_map(|(s, e)| Self::build_doc_help_from_lines(&docs[s..e]))
+            .collect();
+        // hoonc's `clad` folds the apex docs in `~(tap by bat)` order. The bat
+        // map (`by`) is a treap whose BST is keyed by each doc's CUFF under
+        // `++gor` (ascending SINGLE mug `(mug cuff)`, `++dor` tie-break) — `mor`
+        // is only the heap priority. `tap:by` walks the RIGHT subtree first, so
+        // it yields cuffs in DESCENDING gor order, and `clad` wraps the list head
+        // innermost. So the LARGEST-single-mug cuff nests innermost (e.g.
+        // `+lug`/`+feis`'s plain note nests inside the linked summary; the ten
+        // `+x-co:` render docs nest in mug order, not source). Mug each cuff with
+        // the real nockvm `slab_mug`, then sort descending.
+        let mut slab: NounSlab = NounSlab::new();
+        let cuff_mug: Vec<u32> = helps
+            .iter()
+            .map(|h| {
+                let cuff = noun_expr_to_noun(&mut slab, doc_help_cuff(h));
+                let space = slab.noun_space();
+                slab_mug(cuff, &space)
+            })
+            .collect();
+        let mut keyed: Vec<(u32, NounExpr)> = cuff_mug.into_iter().zip(helps).collect();
+        // descending single-mug; `++dor` (reversed) tie-break for mug collisions.
+        keyed.sort_by(|(ma, ha), (mb, hb)| {
+            mb.cmp(ma)
+                .then_with(|| doc_dor_nounexpr(doc_help_cuff(hb), doc_help_cuff(ha)))
+        });
+        keyed.into_iter().map(|(_, h)| h).collect()
     }
 
     fn build_doc_help_from_lines(docs: &[(usize, String)]) -> Option<NounExpr> {
@@ -6110,9 +6550,22 @@ impl LineMap {
             return None;
         };
         let summary = strip_doc_spaces(summary_raw, summary_strip);
-        let stop_plan_details_at_code =
-            summary.starts_with('$') && summary.split_once(": ").is_some();
         if summary.is_empty() {
+            return None;
+        }
+
+        // A doc summary beginning `+name: ` or `$name: ` is a cross-reference to
+        // an arm or mold: hoonc strips the marker and records a `[%funk name]` or
+        // `[%plan name]` link in the cuff.
+        let (cuff, summary) = Self::parse_doc_link(&summary, summary_strip == 2);
+        let has_link_cuff = !matches!(&cuff, NounExpr::ParsedAtom(ParsedAtom::Small(0)));
+
+        // A `++smol` (2-ace) doc REQUIRES `(plus en-link)`. A `+`/`$`-led summary
+        // that does NOT yield a link cuff is a malformed link (e.g.
+        // `::  +seminoun:` — the `:` is not followed by a space, so neither
+        // `: summary` nor the empty form parses), which hoonc drops entirely.
+        if summary_strip == 2 && !has_link_cuff && matches!(summary.as_bytes().first(), Some(b'+' | b'$'))
+        {
             return None;
         }
 
@@ -6131,19 +6584,20 @@ impl LineMap {
                 continue;
             }
 
+            // A `rant` teyt line sits at EXACTLY the detail-strip (prose) or +2
+            // (code). Any other indent is not a teyt — it ends the paragraph and
+            // the rant (e.g. `$tank`'s 11-space `flat-mid` continuations after a
+            // 4-space prose line stop the block, while `+em-co`'s 6-space code
+            // rows are kept). `>= detail+2` would wrongly swallow the former.
             let indent = leading_spaces(raw.as_bytes());
-            let is_code = indent >= detail_strip + 2;
-            if stop_plan_details_at_code && is_code {
+            let is_code = if indent == detail_strip {
+                false
+            } else if indent == detail_strip + 2 {
+                true
+            } else {
                 break;
-            }
-            let text = strip_doc_spaces(
-                raw,
-                if is_code {
-                    detail_strip + 2
-                } else {
-                    detail_strip
-                },
-            );
+            };
+            let text = strip_doc_spaces(raw, indent);
             if text.is_empty() {
                 continue;
             }
@@ -6156,14 +6610,10 @@ impl LineMap {
             sections.push(Self::doc_list(section));
         }
 
-        // A doc summary beginning `+name: ` or `$name: ` is a cross-reference to
-        // an arm or mold: hoonc strips the marker and records a `[%funk name]` or
-        // `[%plan name]` link in the cuff.
-        let (cuff, summary) = Self::parse_doc_link(&summary);
         // A bare `+name`/`$name` cross-ref uses the following detail block as the
         // body with a null summary (`0`), not a literal empty cord.
         if summary.is_empty() {
-            if cuff != Self::doc_atom(0) && !sections.is_empty() {
+            if has_link_cuff && !sections.is_empty() {
                 let crib = Self::doc_cell(Self::doc_atom(0), Self::doc_list(sections));
                 return Some(Self::doc_cell(cuff, crib));
             }
@@ -6177,7 +6627,7 @@ impl LineMap {
     /// the cuff (`[[%funk name] 0]`, `[[%plan name] 0]`, or `~`) and the residual
     /// summary text. `+name: text` and `$name: text` keep `text` as the summary; a
     /// bare cross-ref returns an empty summary so the caller skips it.
-    fn parse_doc_link(summary: &str) -> (NounExpr, String) {
+    fn parse_doc_link(summary: &str, bare_link_ok: bool) -> (NounExpr, String) {
         let name_ok = |name: &str| {
             !name.is_empty()
                 && name
@@ -6194,7 +6644,12 @@ impl LineMap {
                     let link = Self::doc_cell(Self::doc_cord(tag), Self::doc_cord(name));
                     return (Self::doc_list(vec![link]), after.to_string());
                 }
-            } else if name_ok(rest) {
+            } else if bare_link_ok && name_ok(rest) {
+                // A BARE `+name`/`$name` (no `: `) is a link only in hoonc's
+                // `++smol` (2-ace summary) form, whose cuff is `(plus en-link)`
+                // without a required trailing `: `. In `++larg` (4-ace summary)
+                // the cuff REQUIRES `col ace` (`+name: `), so a bare `+name`
+                // there is plain summary text (e.g. `::    +ff`).
                 let link = Self::doc_cell(Self::doc_cord(tag), Self::doc_cord(rest));
                 return (Self::doc_list(vec![link]), String::new());
             }
@@ -6212,6 +6667,14 @@ impl LineMap {
     }
 
     fn help_before_plan_tail(&self, byte: usize) -> Option<NounExpr> {
+        self.help_before_link_tail(byte, b'$')
+    }
+
+    fn help_before_funk_tail(&self, byte: usize) -> Option<NounExpr> {
+        self.help_before_link_tail(byte, b'+')
+    }
+
+    fn help_before_link_tail(&self, byte: usize, prefix: u8) -> Option<NounExpr> {
         if !self.docs_enabled {
             return None;
         }
@@ -6224,8 +6687,10 @@ impl LineMap {
 
         let mut docs = Vec::new();
         let mut idx = line - 1;
+        let mut head_line: Option<usize> = None;
         loop {
             let Some((indent, content)) = self.doc_comment(idx) else {
+                head_line = Some(idx);
                 break;
             };
             docs.push((indent, content));
@@ -6233,6 +6698,25 @@ impl LineMap {
                 break;
             }
             idx -= 1;
+        }
+
+        // hoonc's `|_` (barcab) door separates its head from its arms with a
+        // doc-FREE `muck` gap (vs `|%`'s doc-aware `jump`), so an apex doc sitting
+        // directly under the door head is consumed by that gap and dropped — the
+        // first door arm gets no leading prefix doc (e.g. `+ram:`/`+fish:`).
+        if let Some(h) = head_line {
+            if !docs.is_empty() {
+                if let Some((s, e)) = self.line_bounds(h) {
+                    let lb = &self.source.as_bytes()[s..e];
+                    let mut c = 0;
+                    while c < lb.len() && (lb[c] == b' ' || lb[c] == b'\t') {
+                        c += 1;
+                    }
+                    if lb.get(c) == Some(&b'|') && lb.get(c + 1) == Some(&b'_') {
+                        return None;
+                    }
+                }
+            }
         }
 
         docs.reverse();
@@ -6260,7 +6744,9 @@ impl LineMap {
             return None;
         };
         let summary = strip_doc_spaces(summary_raw, summary_strip);
-        if !(summary.starts_with('$') && summary.split_once(": ").is_some()) {
+        if summary.as_bytes().first().copied() != Some(prefix)
+            || summary.split_once(": ").is_none()
+        {
             return None;
         }
 
@@ -6367,10 +6853,9 @@ impl LineMap {
         } else if prefix.is_empty() {
             // A node beginning at the line start (after indent) is the line-local
             // production; hoonc anchors the trailing `::  ` doc to it (e.g. a
-            // standalone `(bind b a)  :: bind`). Only the line-start (hoon) mode
-            // allows this — the preceding-token (spec) mode still needs a real
-            // 2-char rune before the spec, since a bare line-start spec's doc
-            // belongs to its enclosing hoon.
+            // standalone `(bind b a)  :: bind`). The hoon line-start mode allows
+            // this; the preceding-token (spec) mode does not use this branch
+            // because the spec postfix path is prefix-free (deepest `loan` wins).
             !preceding_token_prefix
         } else {
             prefix.len() == 2
@@ -6413,7 +6898,10 @@ impl LineMap {
         if spaces != 2 || content_start >= trimmed_end {
             return None;
         }
-        if matches!(line.get(content_start), Some(b' ' | b'\t' | b':')) {
+        // Exactly 2 spaces after `::`, then a non-space summary. `:` IS allowed
+        // as a first char (`::  :_ [q p]`, `:- [p q]` …): it is not a hoonc
+        // en-link char (`| . + $ %`), so `++apse` parses it as plain summary.
+        if matches!(line.get(content_start), Some(b' ' | b'\t')) {
             return None;
         }
 
@@ -6430,7 +6918,13 @@ impl LineMap {
     /// token, so a mid-line cast spec (`^- @  :: roll right`) anchors while a
     /// faced bind spec (`=| a=(tree)  :: doc`) does not. See `postfix_doc_summary`.
     fn help_after_spec(&self, start_byte: usize, end_byte: usize) -> Option<NounExpr> {
-        let summary = self.postfix_doc_summary(start_byte, end_byte, true, true)?;
+        // hoonc `coat`-wraps every tall spec (`loan`) so the DEEPEST loan ending
+        // the line grabs its own trailing `::  ` gist (a `$?`/`$%` arm `%cell ::
+        // any cell`, the `path` in `type=path`, or the `(map …)` body of a `|$`).
+        // So the spec postfix is prefix-free; `apply_spec_docs`'s
+        // `spec_tail_has_gist` dedup keeps an enclosing spec from double-anchoring
+        // a tail-owned doc, and the wide spec wrap grabs nothing.
+        let summary = self.postfix_doc_summary(start_byte, end_byte, false, false)?;
         let crib = Self::doc_cell(Self::doc_cord(&summary), Self::doc_atom(0));
         Some(Self::doc_cell(Self::doc_atom(0), crib))
     }
@@ -12870,8 +13364,15 @@ fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
 }
 
 fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> Hoon {
-    if let Some(help) = linemap.help_after(span.0, span.1) {
-        if !hoon_tail_has_help(&node, &help) {
+    // hoonc's `++vast` clad-wraps every tall hoon (`loaf`) so it greedily grabs
+    // its OWN trailing `::  ` doc (`apse`); the deepest tall loaf ending the
+    // line wins. `apply_hoon_docs` runs bottom-up on every tall node, so use the
+    // prefix-free postfix lookup (the deepest node here is processed first) and
+    // let `hoon_tail_has_help` keep the enclosing rune from double-wrapping a
+    // doc its tail already owns. (Wide sub-exprs are never wrapped, so they
+    // never grab — matching hoonc, where only tall loafs are clad-wrapped.)
+    if let Some(help) = linemap.help_after_rune(span.0, span.1) {
+        if !hoon_tail_has_help(&node, &help) && !hoon_tail_owned_by_spec(&node) {
             node = attach_help_to_hoon(node, help);
         }
     }
@@ -12881,9 +13382,34 @@ fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> H
     node
 }
 
+/// Doc anchoring for nodes produced by the WIDE hoon parser. In hoonc's
+/// `++vast` only tall hoons (`loaf`s) are `clad`-wrapped, so a wide sub-form
+/// (`|.(…)`, `(a b)`, `+(x)` …) never grabs a line's trailing `::  ` doc —
+/// that apse falls to the enclosing tall `loaf`. So the wide wrap must NOT run
+/// the postfix (`help_after`) anchor; otherwise a wide tail steals a doc hoonc
+/// gives to its tall parent (e.g. `=<  +:|.((a (b)))  ::  type check`, where
+/// hoonc anchors on the whole `=<` composition, not the inner `|.`). Prefix
+/// (`help_before`) docs sit on lines above a node and never key off a wide
+/// sub-form's mid-line start, so keeping them is inert and avoids regressing
+/// any block-comment anchor.
+fn apply_hoon_docs_wide(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> Hoon {
+    if let Some(help) = linemap.help_before_hoon(span.0) {
+        node = attach_help_to_hoon(node, help);
+    }
+    node
+}
+
+pub fn wrap_hoon_wide_with_docs(
+    linemap: Arc<LineMap>,
+) -> impl for<'src> Fn(Hoon, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Hoon + Clone {
+    move |node, e| apply_hoon_docs_wide(node, (e.span().start(), e.span().end()), &linemap)
+}
+
 fn apply_spec_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> Spec {
     if let Some(help) = linemap.help_after_spec(span.0, span.1) {
-        node = attach_help_to_spec(node, help);
+        if !spec_tail_has_gist(&node, &help) {
+            node = attach_help_to_spec(node, help);
+        }
     }
     if let Some(help) = linemap.help_before_spec(span.0) {
         node = attach_help_to_spec(node, help);
@@ -12893,7 +13419,9 @@ fn apply_spec_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> S
 
 fn apply_spec_postfix_docs(mut node: Spec, span: (usize, usize), linemap: &LineMap) -> Spec {
     if let Some(help) = linemap.help_after_spec(span.0, span.1) {
-        node = attach_help_to_spec(node, help);
+        if !spec_tail_has_gist(&node, &help) {
+            node = attach_help_to_spec(node, help);
+        }
     }
     node
 }
@@ -12987,6 +13515,16 @@ pub fn wrap_spec_with_docs(
     linemap: Arc<LineMap>,
 ) -> impl for<'src> Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
     move |node, e| apply_spec_postfix_docs(node, (e.span().start(), e.span().end()), &linemap)
+}
+
+/// Doc wrap for the WIDE spec parser. Like wide hoons, a wide spec sub-form
+/// (`(qeu …)`, `_foo`, …) is never `coat`-wrapped in hoonc, so it must NOT grab
+/// a line's trailing `::  ` gist — that apse falls to the enclosing tall `loan`
+/// (e.g. `a=(qeu …)  :: (qeu)` anchors on the whole `$=`, not the inner call).
+pub fn wrap_spec_wide_with_docs(
+    _linemap: Arc<LineMap>,
+) -> impl for<'src> Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
+    move |node, _e| node
 }
 
 pub fn wrap_spec_with_trace(
@@ -17080,12 +17618,13 @@ mod tests {
         let Hoon::KetCol(spec) = arm else {
             panic!("expected +$ mold arm");
         };
-        let Spec::Gist(_, named) = spec.as_ref() else {
-            panic!("expected +$ postfix doc to wrap the named spec");
+        let Spec::Name(name, inner) = spec.as_ref() else {
+            panic!("expected +$ postfix doc to keep the named spec outermost");
         };
+        assert_eq!(name.as_str(), "path", "unexpected +$ arm name");
         assert!(
-            matches!(named.as_ref(), Spec::Name(_, _)),
-            "postfix +$ doc should preserve the named spec"
+            matches!(inner.as_ref(), Spec::Gist(_, _)),
+            "postfix +$ doc should decorate the named spec body"
         );
     }
 
@@ -17500,6 +18039,75 @@ mod tests {
         let Hoon::Note(Note::Help(_), _) = arm else {
             panic!("expected inline scye doc to decorate arm body");
         };
+    }
+
+    #[test]
+    fn parser_splits_linked_funk_prefix_doc_tail_at_code_detail() {
+        let src = concat!(
+            "|%\n",
+            "  ::\n",
+            "  ::  +lug: central rounding mechanism\n",
+            "  ::\n",
+            "  ::    can perform: floor, ceiling, smaller, larger,\n",
+            "  ::                 nearest (round ties to: even, away from 0, toward 0)\n",
+            "  ::    s is sticky bit: represents a value less than ulp(a) = 2^(e.a)\n",
+            "  ::\n",
+            "  ++  lug\n",
+            "    0\n",
+            "--\n",
+        );
+        let linemap = Arc::new(LineMap::new_with_docs(src, true));
+        let parsed = crate::native_parser(vec!["test".into(), "core.hoon".into()], false, linemap)
+            .parse(src)
+            .into_result()
+            .expect("core should parse");
+
+        let Hoon::TisSig(items) = parsed else {
+            panic!("expected top-level TisSig");
+        };
+        let [Hoon::BarCen(_, tomes)] = items.as_slice() else {
+            panic!("expected one core expression");
+        };
+        let arm = tomes
+            .get("$")
+            .and_then(|(_, arms)| arms.get("lug"))
+            .expect("expected ++lug arm");
+        let Hoon::Note(Note::Help(outer_help), inner) = arm else {
+            panic!("linked +lug doc should decorate the arm");
+        };
+        let Hoon::Note(Note::Help(tail_help), _) = inner.as_ref() else {
+            panic!("post-code +lug detail should decorate the arm body");
+        };
+
+        let expected_outer = LineMap::doc_cell(
+            LineMap::doc_list(vec![LineMap::doc_cell(
+                LineMap::doc_cord("funk"),
+                LineMap::doc_cord("lug"),
+            )]),
+            LineMap::doc_cell(
+                LineMap::doc_cord("central rounding mechanism"),
+                LineMap::doc_list(vec![LineMap::doc_list(vec![LineMap::doc_cell(
+                    LineMap::doc_atom(0),
+                    LineMap::doc_cord("can perform: floor, ceiling, smaller, larger,"),
+                )])]),
+            ),
+        );
+        assert_eq!(
+            outer_help, &expected_outer,
+            "linked +lug doc should stop before code-indented continuation"
+        );
+
+        let expected_tail = LineMap::doc_cell(
+            LineMap::doc_atom(0),
+            LineMap::doc_cell(
+                LineMap::doc_cord("s is sticky bit: represents a value less than ulp(a) = 2^(e.a)"),
+                LineMap::doc_atom(0),
+            ),
+        );
+        assert_eq!(
+            tail_help, &expected_tail,
+            "post-code linked +lug prose should become a plain body help"
+        );
     }
 
     #[test]
