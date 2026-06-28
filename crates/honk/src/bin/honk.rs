@@ -878,12 +878,16 @@ fn hoon_relative_components(path: &Path) -> Option<Vec<String>> {
     Some(components[marker_idx + 2..].to_vec())
 }
 
-/// When set (HONK_NATIVE_PARITY), the canonical hoon-138 build does NOT
-/// substitute hoonc's embedded prelude formula/subject-type; honk mints them
-/// natively instead. This exposes whether honk's own +mint of the prelude
-/// matches hoonc, rather than passing parity by importing hoonc-produced
-/// nouns. The honk-produced cold state and the canonical $octs input are kept
-/// (they are jet-registration / data inputs, not compiler artifacts).
+/// Audit / cache-bypass knob. When set (HONK_NATIVE_PARITY), the canonical
+/// hoon-138 build does NOT cue hoonc's embedded prelude formula/subject-type;
+/// honk mints them natively instead. Native mint is now PROVEN byte-identical
+/// to hoonc (full hoon-138 prelude, 2,286,744 B, `cmp` clean; gated by
+/// crates/honk/tests/native_parity_138.rs and bounded in memory, ~40 s release).
+/// So the embedded prelude is a VALIDATED speed cache (~instant cue vs ~40 s
+/// mint), NOT a correctness substitution: this flag bypasses that cache to
+/// re-derive the artifacts natively for audit. The honk-produced cold state and
+/// the canonical $octs input are kept (they are jet-registration / data inputs,
+/// not compiler artifacts).
 fn native_parity_enabled() -> bool {
     std::env::var_os("HONK_NATIVE_PARITY").is_some()
 }
@@ -1352,8 +1356,10 @@ impl<'a> NativeBuildContext<'a> {
         self.empty_trap_vase = empty_trap;
 
         // hoonc arbitrary artifacts serialize the exact +build-honc formula produced by hoon.hoon.
-        // Keep canonical hoon-138 artifacts byte-identical while preserving the native fallback for
-        // non-canonical preludes (and for the HONK_NATIVE_PARITY audit, which mints natively).
+        // For the canonical prelude we cue that embedded formula as a VALIDATED speed cache (~instant
+        // vs ~40 s native mint) — native mint is proven byte-identical (native_parity_138.rs), so this
+        // is a perf shortcut, not a correctness one. The native path stays the default for non-canonical
+        // preludes and is taken for the canonical one under the HONK_NATIVE_PARITY audit (bypass the cache).
         let prelude_eval_formula =
             if prelude_source.as_bytes() == EMBEDDED_HOON_138_SOURCE && !native_parity_enabled() {
                 cue_honc_formula_to_slab(&mut *self.ut.slab, EMBEDDED_HONC_FORMULA_138_JAM)?
@@ -2595,20 +2601,33 @@ fn seed_honc_type_with_ut(
 }
 
 /// Chunked native mint of the canonical hoon-138 prelude (`=< ride => %138 =>
-/// |% … => |% …`), for the HONK_NATIVE_PARITY path. `=< ride stdlib` is `=>
-/// stdlib ride`; the whole-prelude goal is `%noun`, so every layer mints with
-/// goal `%noun`. Each top-level layer (and finally `ride`) is minted in its OWN
-/// cold-loaded `Ut`/working slab, carrying the subject type in a ping-ponged
-/// slab and accumulating per-layer formulas in `out_slab`, dropping each working
-/// slab — bounding peak memory to one layer + the current subject + the
-/// formulas. Composition mirrors `mint_tsgr` exactly (validated byte-exact by
+/// |% … => |% …`), taken on the cache-bypass HONK_NATIVE_PARITY path (and for
+/// any non-canonical prelude). `=< ride stdlib` is `=> stdlib ride`; the
+/// whole-prelude goal is `%noun`, so every layer mints with goal `%noun`. Each
+/// top-level layer (and finally `ride`) is minted in its OWN cold-loaded
+/// `Ut`/working slab, carrying the subject type in a ping-ponged slab and
+/// accumulating per-layer formulas in `out_slab`, dropping each working slab —
+/// bounding peak memory to one layer + the current subject + the formulas. This
+/// memory bounding (with the rest of the prelude work) is what makes the full
+/// native mint terminate with bounded RAM (~40 s release) instead of OOMing.
+/// Composition mirrors `mint_tsgr` exactly (validated byte-exact by
 /// `chunked_tisgar_chain_matches_monolithic_mint`).
 /// Peel transparent wrappers the parser adds around the prelude (a single-
 /// element `=~`/TisSig, and `Dbug`/`Note` spot/hint wrappers) to reach the
-/// underlying compose node. NOTE: this is for NAVIGATION only — minting the
-/// peeled layers loses the outer `Dbug` location stack, so chunked output is
-/// NOT byte-exact under dbug=true yet (spot preservation is follow-on work);
-/// it is correct for measuring the memory trajectory and for dbug=false.
+/// underlying compose node.
+/// HISTORICAL NOTE: chunked output once lost the outer `Dbug` location stack
+/// when minting the peeled layers, so it was not byte-exact under dbug=true
+/// (spot preservation was follow-on work). UPDATE 2026-06-28: RESOLVED for the
+/// canonical native-parity build — the full hoon-138 prelude minted on this
+/// chunked path now completes with bounded RAM (~40 s release) and reproduces
+/// hoonc's prelude byte-for-byte (the `--arbitrary` artifact is 2,286,744 B,
+/// `cmp` clean). Note this parity path parses the prelude leg dbug-OFF
+/// (`prelude_dbug = cli.dbug && !native_parity_enabled()`, matching hoonc's
+/// bare-dependency artifact), so the historical dbug-spot-loss no longer
+/// applies here; byte-exact chunked output under dbug=true on the prelude leg
+/// remains unproven and is not exercised by the gate. Enforced by
+/// crates/honk/tests/native_parity_138.rs (default-embedded vs
+/// HONK_NATIVE_PARITY=1 `--arbitrary` build, byte-compared).
 fn peel_transparent(mut hoon: &Hoon) -> &Hoon {
     loop {
         hoon = match hoon {

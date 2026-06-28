@@ -80,8 +80,8 @@ just honk-138-parity
 - Invokes `crates/honk/test-assets/honk_138_native_parity.sh`
 - Compiles `hoon/common/hoon.hoon` (= `crates/hoonc/hoon/hoon-138.hoon`) with both compilers
 - Compares artifacts with strict `cmp` (byte-exact)
-- Runs under RSS guard (75% physical RAM ceiling) to catch memory blowup safely
-- **Current status:** honk's native mint OOMs before completing; test reports memory blowup rather than parity result (as of 2026-06-14)
+- Runs under RSS guard (75% physical RAM ceiling) as a safety net
+- **Current status (2026-06-28):** RESOLVED — honk's native mint of the full hoon-138 prelude (`HONK_NATIVE_PARITY=1`) completes in ~40 s (release) with BOUNDED memory and is BYTE-IDENTICAL to hoonc's arbitrary build (both 2,286,744 bytes, `cmp` clean). The old "OOMs before completing / memory blowup" status (as of 2026-06-14) no longer holds; the RSS guard is now a backstop, not the typical outcome. A cargo gate enforces parity: `crates/honk/tests/native_parity_138.rs` (release-only)
 
 **Reference command:**
 ```bash
@@ -238,7 +238,7 @@ test "$elapsed" -lt 60 && echo "PASS" || echo "FAIL"
 
 - **Where:** `crates/honk/src/bin/honk.rs` lines 2603–2617 (canonical prelude routing when peeled root is `=<`)
 - **Issue:** Not byte-exact under `--dbug=true` (`honk.rs:2486–2500`)
-- **Gate impact:** It currently gates native-parity memory experiments because output consistency cannot be guaranteed
+- **Gate impact:** UPDATE 2026-06-28: native-parity is no longer blocked — the full hoon-138 native mint now completes (~40 s, bounded RAM) and is byte-identical to hoonc, gated by `crates/honk/tests/native_parity_138.rs`. The chunked path remains non-byte-exact under `--dbug=true`, so it stays unsuitable as parity evidence, but it no longer gates the native-parity result
 
 **Phase 0 decision required:**
 1. **DELETE:** Remove chunked mint entirely; force sequential compilation
@@ -288,7 +288,7 @@ target/release/jam-diff --kernel-parity assets/dumb.jam assets/native/dumb.jam
 | **Build honk binary** | `cargo build --release -p honk` | `bazel build //crates/honk:honk` | canonical |
 | **Build hatch parser** | `cargo build --release -p hatch` | `bazel build //crates/hatch` | canonical |
 | **Build hoonc (reference)** | `cargo build --release -p hoonc` | `bazel build //crates/hoonc` | canonical |
-| **Arbitrary hoon-138 parity** | `just honk-138-parity` | (no Bazel target) | **OOMs; memory issue** |
+| **Arbitrary hoon-138 parity** | `just honk-138-parity` | (no Bazel target) | **PASS — byte-identical (~40 s, bounded RAM); gated by `crates/honk/tests/native_parity_138.rs`** |
 | **Kernel parity (dumb only)** | `cargo build --release -p honk` + `cargo run --release -p honk -- --new --output assets/native/dumb.jam --prelude hoon/common/hoon.hoon hoon/apps/dumbnet/outer.hoon hoon` + `cmp assets/dumb.jam assets/native/dumb.jam` | `just bazel honk-kernel-jams` + `just bazel honk-parity` | canonical |
 | **All six kernel parity** | `just honk-kernel-jams` + `just honk-parity` | `just bazel honk-kernel-jams` + `just bazel honk-parity` | canonical |
 | **Roswell timing gate** | `just honk-roswell-timed` | (no Bazel target) | **~71–76s; exceeds 60s** |
@@ -348,7 +348,7 @@ target/release/jam-diff --kernel-parity assets/dumb.jam assets/native/dumb.jam
 - **NATIVE-TYPES-MIGRATION.md § 9:** Branch hygiene (RT-18, chunked decision)
 - **NATIVE-TYPES-MIGRATION-RT.md RT-18:** Stale docs/commands finding
 - **TODOS.md:** Resolved items section lists H0 kernel-parity harness
-- **TODOS-PERF.md:** Native prelude mint memory blowup + roswell <60s gate
+- **TODOS-PERF.md:** Native prelude mint memory history (RESOLVED 2026-06-28 — mint now completes ~40 s, bounded RAM, byte-identical to hoonc; see `crates/honk/tests/native_parity_138.rs`) + roswell <60s gate
 - **justfile:** Canonical cargo recipes
 - **bazel.just:** Bazel equivalents
 - **artifact-parity.md:** Parity test policy and workflow

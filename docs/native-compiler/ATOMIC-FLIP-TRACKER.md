@@ -1,5 +1,15 @@
 # Atomic-flip execution tracker (native-types migration)
 
+> UPDATE 2026-06-28: RESOLVED — the flip landed and the memory goal is MET. Native
+> hoon-138 mint now COMPLETES (~40 s release) with BOUNDED RSS and is
+> byte-identical to hoonc (both 2,286,744 B, `cmp` clean); the OOM / ~61 GB
+> non-convergence / "do not ship Phase 1 alone" regressions tracked below are all
+> resolved (frame arena + mack-cache cap + bottom-up interning + the ++vast
+> doc-anchoring port). Enforced by `crates/honk/tests/native_parity_138.rs`
+> (release-only gate, default build vs `HONK_NATIVE_PARITY=1`, byte-compared);
+> shadow_gate still PASS, compiler_mint 69/0. The dated journey below is preserved
+> intact as the record of how the regression was diagnosed and bounded.
+
 Resumption anchor for the atomic replace (the FLIP): types become native
 `Rc<Type>` as the working representation of `mint`/`play`; nouns are materialized
 only at boundaries via `Type::to_noun`. This survives context resets — **update
@@ -58,6 +68,12 @@ Do NOT run full-kernel flag-on as a routine gate (O(n^2) until flipped).
 11. [ ] full kernel byte-parity; delete _n duplicates / dead noun paths
 
 ## LAST MILE (2026-06-20) — frame-arena-default LANDS the memory win; kernel blocked by a fond/peek corpus-gap bug
+
+UPDATE 2026-06-28: RESOLVED — the fond/peek corpus-gap blocker described here is
+fixed; full native hoon-138 mint completes ~40 s with bounded RSS and is
+byte-identical to hoonc (2,286,744 B). See
+`crates/honk/tests/native_parity_138.rs`. The 2026-06-20 blocker analysis below is
+retained as the diagnosis record.
 
 frame-arena-default committed (602334f1: force_frame_arena=true on the binary's
 build-context Ut). Dumb kernel: COMPLETES in 153s at 10.1GB (vs >900s/61GB
@@ -180,6 +196,12 @@ not conclude. The architectural migration (native types end-to-end) IS done; the
 open question is purely the kernel-compile perf profile.
 
 ## CURRENT STATUS (2026-06-20) — correctness COMPLETE; perf tail remaining
+
+UPDATE 2026-06-28: SUPERSEDED — the perf/memory tail described in this section
+(and the "do NOT ship Phase 1 alone" caution at its end) is RESOLVED. Native
+hoon-138 mint now completes ~40 s with bounded RSS and is byte-identical to hoonc
+(2,286,744 B); see `crates/honk/tests/native_parity_138.rs`. The 2026-06-20
+snapshot below is kept as the point-in-time record.
 
 The functional migration is DONE: mint/play + EVERY type consumer (repo/peek/
 wrap_type/fuse/crop/miss/nest/mull/fish/find/take/fond/gain/lose/cool/chip) operate

@@ -1,5 +1,12 @@
 # Native Types Migration Red-Team Review
 
+> UPDATE 2026-06-28: RESOLVED — native hoon-138 mint now COMPLETES (~40 s release)
+> with BOUNDED memory and is byte-identical to hoonc (both 2,286,744 B, `cmp`
+> clean); the OOM/memory-wall that motivated this review is gone. Enforced by
+> `crates/honk/tests/native_parity_138.rs`. This red-team record (RT-01…RT-18) is
+> retained in full as the design/verification rationale — the findings remain
+> valuable for future representation work; only this banner is added.
+
 ## Verdict
 
 The native Type/Formula direction is probably right, but the current plan is not yet a safe executable migration plan: it overstates oracle readiness, understates non-final noun boundaries, treats several lifetime/provenance contracts as representation cleanup, and makes byte-exactness depend on underspecified behavior in formulas, lazy cores, source spots, jet registration, and typed Dynock output.

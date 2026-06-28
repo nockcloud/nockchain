@@ -42,7 +42,12 @@ The head comparison in util::dor (reached from gor/mor mug ties and direct dor/s
 - **Cached standard JAM cloned before write** → `jam_product` now `take()`s the `Vec<u8>` (`standard_jam.take()`, H1b).
 - **Dead cool/chip cache stubs** → `cool_cache_*`/`chip_cache_*` deleted (they were no-op plumbing).
 
-### OPEN — native prelude mint blows up (memory AND runtime): the headline finding
+### RESOLVED — native prelude mint completes and is byte-identical to hoonc
+UPDATE 2026-06-28: RESOLVED — honk's native mint of hoon-138 (`HONK_NATIVE_PARITY=1`, or `just honk-138-parity`) now COMPLETES with BOUNDED memory (~40 s release / ~26 s default embedded build; it does NOT exhaust RAM) and is BYTE-IDENTICAL to hoonc's arbitrary build (both 2,286,744 B, `cmp` clean). The memory work below (mack-cache cap, frame arena, bottom-up interning) plus a faithful ++vast doc-anchoring port bounded it and reached byte parity. Enforced by `crates/honk/tests/native_parity_138.rs` (release-only gate, default vs `HONK_NATIVE_PARITY=1` build, byte-compared). The embedded precompiled prelude is retained purely as a VALIDATED speed cache (~instant cue vs ~40 s mint), not a correctness crutch; native mint is proven correct but is not the build-path default.
+
+The original finding and ranked-cause analysis are kept below for the record:
+
+RESOLVED — native prelude mint blows up (memory AND runtime): the headline finding
 honk's native mint of hoon-138 (`HONK_NATIVE_PARITY=1`, or `just honk-138-parity`) does NOT complete: resident memory grows ~linearly at ~4 GB/min with no plateau, and it OOMs before finishing (reproduced 2026-06-14 on a 128 GB machine; ~30–50 min to exhaustion). Application kernels are unaffected — they compile against the embedded precompiled prelude. Ranked causes (full analysis in `docs/OSS-NEXT-PLAN.md`):
 1. **Leaked, never-freed bump slab + one monolithic `ut.mint`** — `NounSlab` has no free/reset/compaction (only `Drop`, which never runs on the `Box::leak`'d Ut slab) and the whole prelude is minted in one call, so memory = cumulative allocation. This is the linear curve.
 2. **No type interning / hash-consing** — `ty_*` re-allocate structurally-equal types at fresh addresses, defeating `noun_eq`'s pointer short-circuit and collapsing every mug/raw-pointer cache → super-linear deep walks (the runtime half) and permanent duplicate bytes.

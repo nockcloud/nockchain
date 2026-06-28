@@ -1,5 +1,13 @@
 # honk: Native-Types Migration Plan (v2)
 
+> UPDATE 2026-06-28: RESOLVED — native hoon-138 mint now COMPLETES (~40 s release)
+> with BOUNDED memory and is byte-identical to hoonc (both 2,286,744 B, `cmp`
+> clean); the OOM this plan set out to fix is gone. The win was reached by the
+> memory work described below (mack-cache cap, frame arena, bottom-up interning)
+> plus a faithful ++vast doc-anchoring port. Enforced by
+> `crates/honk/tests/native_parity_138.rs`. This plan is retained as the design
+> record of how the OOM was diagnosed and bounded; the body below is preserved.
+
 Migrate honk's *working* representation of the Hoon type system and Nock output
 from **Nouns** to **native Rust data structures** (`Type`, `Formula` enums with
 `Rc` sharing + hash-consing), emitting Nouns only at well-defined, provenanced
@@ -26,8 +34,12 @@ honk reimplements `++ut` in Rust but represents compiler **types** and
 **formulas** as `Noun`s in a grow-only `NounSlab`, mirroring hoon-138's noun
 encodings. That is the root of what this branch fixes:
 
-- **Memory.** Native hoon-138 mint OOMs: ~32 GB peak, no convergence (linear
-  ~3 GB/min). Cause = honk builds structurally-equal type nouns **with no
+- **Memory.** Native hoon-138 mint *historically* OOMed: ~32 GB peak, no
+  convergence (linear ~3 GB/min). (UPDATE 2026-06-28: RESOLVED — native mint now
+  completes ~40 s with bounded RSS and is byte-identical to hoonc; see
+  `crates/honk/tests/native_parity_138.rs`. The diagnosis below remains accurate
+  as the description of the original cause.) Cause = honk builds
+  structurally-equal type nouns **with no
   construction-time sharing**, compounded by **subject-deepening** (`mint_core`
   embeds the whole subject per core, O(N²)) and **resolver-id churn** (fresh
   `lazy_resolver_next_id` per core defeats dedup), all in a never-freed slab. The

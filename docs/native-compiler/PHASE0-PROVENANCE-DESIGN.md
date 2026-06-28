@@ -607,7 +607,7 @@ fn get_rss_bytes() -> u64 {
 
 6. **Debug Validation**: Run debug builds with `RUST_LOG=debug` on compiler_mint tests. All provenance proofs should validate (no "source space signature mismatch" errors).
 
-7. **RSS Attribution**: Publish before/after peak RSS numbers for honk's native prelude mint (if attempted) and native kernel compiles. Assembly peak should not exceed unoptimized baselines if the cache is working.
+7. **RSS Attribution**: Publish before/after peak RSS numbers for honk's native prelude mint and native kernel compiles. Assembly peak should not exceed unoptimized baselines if the cache is working. (UPDATE 2026-06-28: the native prelude mint is no longer hypothetical — `HONK_NATIVE_PARITY=1` now mints the full hoon-138 prelude in ~40 s with bounded RAM, byte-identical to hoonc; see `crates/honk/tests/native_parity_138.rs`.)
 
 ---
 
