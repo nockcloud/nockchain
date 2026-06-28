@@ -4651,16 +4651,13 @@ pub fn chapters<'src>(
         .map(move |((name, start, end), (spec, spec_start, spec_end))| {
             // hoonc names a `+$` mold outside the doc-gisted body spec:
             // `+$ bite :: doc $@(...)` serializes as [%name [%bite [%gist doc ...]]],
-            // not [%gist doc [%name [%bite ...]]]. The body-spec POSTFIX gist is
-            // now applied by the generic spec-`coat` path; only the prefix block
-            // is anchored here (removing the explicit postfix avoids double-gist,
-            // e.g. `+$ path (list knot)  :: like unix path`).
-            let _ = spec_end;
-            let spec = if let Some(help) = lusbuc_linemap.help_before_spec(spec_start) {
-                Spec::Gist(help, Box::new(spec))
-            } else {
-                spec
-            };
+            // not [%gist doc [%name [%bite ...]]]. BOTH the body-spec prefix (apex)
+            // AND postfix (apse) gists are now applied by the generic spec-`coat`
+            // path (wrap_spec_with_docs -> apply_spec_docs) when the body spec is
+            // parsed — anchoring the prefix again here would DOUBLE-gist (e.g.
+            // `+$ bite :: atom slice specifier  $@(…)`). Just name the mold outside
+            // the already-gisted body.
+            let _ = (spec_end, spec_start);
             let spec = Spec::Name(name.clone(), Box::new(spec));
             let hoon = Hoon::KetCol(Box::new(spec));
             let hoon = if let Some(help) = lusbuc_linemap.help_before_plan_tail(start) {
@@ -6593,11 +6590,17 @@ impl LineMap {
         let (cuff, summary) = Self::parse_doc_link(&summary, summary_strip == 2);
         let has_link_cuff = !matches!(&cuff, NounExpr::ParsedAtom(ParsedAtom::Small(0)));
 
-        // A `++smol` (2-ace) doc REQUIRES `(plus en-link)`. A `+`/`$`-led summary
-        // that does NOT yield a link cuff is a malformed link (e.g.
-        // `::  +seminoun:` — the `:` is not followed by a space, so neither
-        // `: summary` nor the empty form parses), which hoonc drops entirely.
-        if summary_strip == 2 && !has_link_cuff && matches!(summary.as_bytes().first(), Some(b'+' | b'$'))
+        // A `++smol` (2-ace) doc REQUIRES a valid `(plus en-link)`. A summary led
+        // by an en-link char (`|.+$%`) that does NOT yield a link cuff is a failed
+        // link, so the whole smol fails and hoonc LEAPS (drops) the comment:
+        //   - `::  +seminoun:` — `:` not followed by space, so the cuff parse fails.
+        //   - `::  %half: …` — `%`→`[%cone bisk:so]`, and `bisk:so` rejects a bare
+        //     term like `half`, so the cone (and the en-link) fail. hoon-138 has no
+        //     valid bisk-constant cones (`%`-cuffs aren't formed by parse_doc_link),
+        //     so every `%name:` smol drops here — matching the fixture.
+        if summary_strip == 2
+            && !has_link_cuff
+            && matches!(summary.as_bytes().first(), Some(b'+' | b'$' | b'%' | b'.' | b'|'))
         {
             return None;
         }
@@ -6668,7 +6671,12 @@ impl LineMap {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         };
 
-        for (prefix, tag) in [('+', "funk"), ('$', "plan")] {
+        // `++en-link` (hoon.hoon 11651): `|`→chat `.`→frag `+`→funk `$`→plan
+        // `%`→cone. Funk/plan/frag/chat names are a `sym` (term); cone (`%`) is a
+        // `bisk:so` constant — handled separately where needed. A `.name: text`
+        // smol (e.g. `.dom: axis to home`) keeps `text` as the summary with a
+        // `[%frag name]` cuff, exactly like `+`/`$`.
+        for (prefix, tag) in [('+', "funk"), ('$', "plan"), ('.', "frag"), ('|', "chat")] {
             let Some(rest) = summary.strip_prefix(prefix) else {
                 continue;
             };
@@ -7195,10 +7203,24 @@ impl LineMap {
             return None;
         }
         let content = &line[colon + 2..trimmed_end];
-        // larg = EXACTLY 4 aces then a non-ace summary (`++larg`'s `less ace`
-        // rejects a 5th ace). Fewer than 4 is an apse (this line's own member);
-        // more than 4 is leaped by hoonc, not a larg — so don't steal it.
-        if content.iter().take_while(|&&c| c == b' ').count() != 4 {
+        let aces = content.iter().take_while(|&&c| c == b' ').count();
+        // Two trailing forms route FORWARD (to the next member's prefix apex)
+        // instead of being this line's apse:
+        //   - larg: EXACTLY 4 aces then a non-ace summary (`++larg`'s `less ace`
+        //     rejects a 5th ace; >4 is leaped, not a larg).
+        //   - LINKED smol: EXACTLY 2 aces then an en-link (`|.+$%`) + `: ` — the
+        //     apse `;~(less (into step en-link col ace) …)` EXCLUDES exactly this
+        //     shape, so e.g. `=+  :*  ::  .dom: axis to home` prefixes the first
+        //     binding. A PLAIN 2-ace trailing comment IS an apse (its own
+        //     member's) — leave it.
+        let routes_forward = aces == 4 || {
+            aces == 2 && {
+                let after = &content[2..];
+                matches!(after.first(), Some(b'|' | b'.' | b'+' | b'$' | b'%'))
+                    && after.windows(2).any(|w| w == b": ")
+            }
+        };
+        if !routes_forward {
             return None;
         }
         Some((colon, String::from_utf8_lossy(content).into_owned()))
@@ -7296,6 +7318,12 @@ impl LineMap {
         match line.get(cursor).copied() {
             Some(b':') => !matches!(line.get(cursor + 1), Some(b':')),
             Some(b'-') => !matches!(line.get(cursor + 1), Some(b'-')),
+            // A leading LETTER is a tall-loaf start too — a `=+`/`:*` binding
+            // (`dom=…`) or a wing lookup. hoonc's `clad` apex runs on any tall
+            // loaf, so these must be doc-anchor targets (mirrors the
+            // `is_ascii_alphabetic` arm in `line_starts_like_spec_doc_target`),
+            // letting the `.face:` smol cluster (hoon.hoon 7506-11) anchor.
+            Some(c) if c.is_ascii_alphabetic() => true,
             Some(
                 b'!' | b'"' | b'$' | b'%' | b'&' | b'\'' | b'(' | b'+' | b',' | b'.' | b'/' | b';'
                 | b'<' | b'=' | b'>' | b'?' | b'@' | b'[' | b'^' | b'_' | b'`' | b'~' | b'|',
@@ -13491,19 +13519,16 @@ fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> H
 }
 
 /// Doc anchoring for nodes produced by the WIDE hoon parser. In hoonc's
-/// `++vast` only tall hoons (`loaf`s) are `clad`-wrapped, so a wide sub-form
-/// (`|.(…)`, `(a b)`, `+(x)` …) never grabs a line's trailing `::  ` doc —
-/// that apse falls to the enclosing tall `loaf`. So the wide wrap must NOT run
-/// the postfix (`help_after`) anchor; otherwise a wide tail steals a doc hoonc
-/// gives to its tall parent (e.g. `=<  +:|.((a (b)))  ::  type check`, where
-/// hoonc anchors on the whole `=<` composition, not the inner `|.`). Prefix
-/// (`help_before`) docs sit on lines above a node and never key off a wide
-/// sub-form's mid-line start, so keeping them is inert and avoids regressing
-/// any block-comment anchor.
-fn apply_hoon_docs_wide(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> Hoon {
-    if let Some(help) = linemap.help_before_hoon(span.0) {
-        node = attach_help_to_hoon(node, help);
-    }
+/// `++vast` only tall hoons (`loaf`s) are `clad`-wrapped, so a wide form
+/// (`|.(…)`, `(a b)`, `$(…)` …) never grabs ANY doc — neither the trailing
+/// `::  ` apse nor a prefix apex; both fall to the enclosing tall `loaf`. The
+/// postfix was already excluded; the PREFIX is now too. It was thought inert
+/// (a wide SUB-form starts mid-line, so `help_before` keys off nothing), but a
+/// wide form at the LINE START (e.g. a `$(…)` `%+`-argument) DOES fire it,
+/// double-grabbing the routed prefix larg that the enclosing tall loaf also
+/// takes (`note(from-goo, note(recurse, note(from-goo, cnts)))`). So grab
+/// nothing here.
+fn apply_hoon_docs_wide(node: Hoon, _span: (usize, usize), _linemap: &LineMap) -> Hoon {
     node
 }
 
@@ -13659,15 +13684,12 @@ pub fn wrap_hoon_with_docs(
 pub fn wrap_spec_with_docs(
     linemap: Arc<LineMap>,
 ) -> impl for<'src> Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
-    // NOTE: the prefix-apex (`++scye`) gist is doc-controlled, not bug-controlled,
-    // so in principle a tall spec should grab prefix doccords even at bug=| (this
-    // is the path the docs-on/spots-off parity fixture exercises). Switching this
-    // to the full `apply_spec_docs` recovers the `$?(%done %stet %dent)` %dent
-    // larg (+6 docs) BUT over-anchors ~6 LINKED smol prefixes on union members
-    // (`%done: output is complete`, …) that hoonc places elsewhere — i.e. the
-    // prefix collection still needs the trailing-smol-to-next rule + tighter
-    // member gating before this can flip cleanly. Keep postfix-only until then.
-    move |node, e| apply_spec_postfix_docs(node, (e.span().start(), e.span().end()), &linemap)
+    // The prefix-apex (`++scye`) gist is doc-controlled, not bug-controlled, so a
+    // tall spec grabs its prefix doccords even at bug=| (the parity fixture's
+    // setting). Full prefix+postfix apply (adds no spot — that's the trace
+    // wrapper's job) so `$?(… %stet %dent)`'s `%dent` gets the `::    == end of
+    // markdown` larg trailing `%stet`, and `%fens` gets `--- horz rule`.
+    move |node, e| apply_spec_docs(node, (e.span().start(), e.span().end()), &linemap)
 }
 
 /// Doc wrap for the WIDE spec parser. Like wide hoons, a wide spec sub-form

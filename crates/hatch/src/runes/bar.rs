@@ -156,16 +156,12 @@ pub fn barbuc<'src>(
                 .map_with(|body: Spec, e| (body, e.span().start(), e.span().end())),
         )
         .map(move |(list, (body, body_start, body_end))| {
-            // The postfix `::` on a one-line `|$ sample body  :: doc` is now
-            // anchored to the body spec by the generic spec-`coat` deepest-loan
-            // path (`apply_spec_postfix_docs`), so only the prefix block is
-            // applied here (avoids double-gisting, e.g. `++ jar`).
-            let _ = body_end;
-            let body = if let Some(help) = linemap.help_before_body_spec(body_start) {
-                Spec::Gist(help, Box::new(body))
-            } else {
-                body
-            };
+            // BOTH the body-spec prefix (apex) AND postfix (apse) gists are now
+            // anchored by the generic spec-`coat` path: the TALL `|$` body is
+            // parsed by the tall `spec` parser (wrap_spec_with_docs ->
+            // apply_spec_docs), which already grabs the prefix block. Re-grabbing
+            // here would DOUBLE-gist (e.g. `++ qual  ::    quadruple tuple`).
+            let _ = (body_end, body_start, &linemap);
             Hoon::BarBuc(list, Box::new(body))
         })
 }
