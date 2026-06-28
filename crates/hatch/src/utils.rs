@@ -6243,9 +6243,20 @@ fn split_doc_blocks(docs: &[(usize, String)]) -> Vec<(usize, usize)> {
         while i < docs.len() && is_blank(&docs[i].1) {
             let mut j = i + 1;
             let mut count = 0usize;
+            // A teyt is either a `line` (prose at detail_strip) or `pfix step code`
+            // (code at detail_strip+2). Code only nests UNDER prose — a paragraph
+            // that opens at detail_strip+2 with no preceding prose line is not a
+            // valid rant continuation; those deeper lines are fresh apex docs (the
+            // `+lip` block's four 4-ace larg lines must stay SEPARATE, not collapse
+            // into one larg's rant), so stop the paragraph before consuming them.
+            let mut saw_prose = false;
             while j < docs.len() && !is_blank(&docs[j].1) {
                 let n = leading_spaces(docs[j].1.as_bytes());
-                if n == detail_strip || n == detail_strip + 2 {
+                if n == detail_strip {
+                    saw_prose = true;
+                    j += 1;
+                    count += 1;
+                } else if n == detail_strip + 2 && saw_prose {
                     j += 1;
                     count += 1;
                 } else {
@@ -6408,6 +6419,12 @@ impl LineMap {
         let mut head_line: Option<usize> = None;
         loop {
             let Some((indent, content)) = self.doc_comment(idx) else {
+                // A 4-ace `::    larg` TRAILING the previous member on its code
+                // line is THIS member's prefix apex doc (apse only takes 2 aces);
+                // e.g. `::    == end of markdown` trailing `%stet` prefixes `%dent`.
+                if let Some((indent, content)) = self.trailing_larg_doc(idx) {
+                    docs.push((indent, content));
+                }
                 head_line = Some(idx);
                 break;
             };
@@ -6501,10 +6518,26 @@ impl LineMap {
                 .into_iter()
                 .collect();
         }
-        let helps: Vec<NounExpr> = blocks
+        let raw_helps: Vec<NounExpr> = blocks
             .into_iter()
             .filter_map(|(s, e)| Self::build_doc_help_from_lines(&docs[s..e]))
             .collect();
+        // hoonc builds the apex `bat` map with `~(put by ...)` per doc IN SOURCE
+        // ORDER, so docs with the SAME cuff OVERWRITE — last wins. The `+lip`
+        // block's four plain (cuff=0) larg lines collapse to just the last,
+        // "almost always 0.  brute force is fine.". Dedup by cuff (last-wins)
+        // before ordering; LINKED cuffs (distinct) are all kept.
+        let mut helps: Vec<NounExpr> = Vec::new();
+        for help in raw_helps {
+            let pos = helps.iter().position(|h| {
+                doc_dor_nounexpr(doc_help_cuff(h), doc_help_cuff(&help))
+                    == std::cmp::Ordering::Equal
+            });
+            match pos {
+                Some(p) => helps[p] = help,
+                None => helps.push(help),
+            }
+        }
         // hoonc's `clad` folds the apex docs in `~(tap by bat)` order. The bat
         // map (`by`) is a treap whose BST is keyed by each doc's CUFF under
         // `++gor` (ascending SINGLE mug `(mug cuff)`, `++dor` tie-break) — `mor`
@@ -6791,6 +6824,16 @@ impl LineMap {
 
     fn help_before_hoon(&self, byte: usize) -> Option<NounExpr> {
         self.help_before_with_target(byte, Self::line_starts_like_hoon_target)
+    }
+
+    /// The full `++apex` prefix-doc SEQUENCE above a general tall hoon (not an
+    /// arm), faithfully split + cuff-deduped like `help_before_arm_blocks`. A
+    /// block can carry several apex docs (e.g. a `=/` whose prefix has a section
+    /// paragraph then multiple larg lines, like `+lip`); same-cuff docs collapse
+    /// last-wins. Gated by `line_starts_like_hoon_target` so non-anchor nodes
+    /// grab nothing.
+    fn help_before_hoon_blocks(&self, byte: usize) -> Vec<NounExpr> {
+        self.help_before_blocks(byte, Self::line_starts_like_hoon_target)
     }
 
     fn help_before_chapter_label(&self, byte: usize) -> Option<NounExpr> {
@@ -7096,6 +7139,69 @@ impl LineMap {
             return None;
         }
         Some((cursor, String::from_utf8_lossy(content).into_owned()))
+    }
+
+    /// A TRAILING `::    larg` (4+ aces after `::`) on a code line. `++apse`
+    /// (postfix) only consumes a 2-ace `::  ` comment, so a 4-ace trailing
+    /// comment is too indented for the postfix and falls through to the NEXT
+    /// loaf/loan's `++apex` (prefix `larg`) — e.g. in `$?(%done %stet %dent)` the
+    /// `::    == end of markdown` trailing `%stet` becomes `%dent`'s prefix gist.
+    /// Returns `(col-before-::, content-after-::)` like `doc_comment`. A 2/3-ace
+    /// trailing comment (an apse for this very line's member) returns None.
+    fn trailing_larg_doc(&self, idx: usize) -> Option<(usize, String)> {
+        let (start, end) = self.line_bounds(idx)?;
+        let line = &self.source.as_bytes()[start..end];
+        let mut first = 0;
+        while first < line.len() && (line[first] == b' ' || line[first] == b'\t') {
+            first += 1;
+        }
+        // A standalone `::` line is doc_comment's job, not ours.
+        if line.get(first) == Some(&b':') && line.get(first + 1) == Some(&b':') {
+            return None;
+        }
+        // An arm header (`++`, `+$`, `+*`, `+|`) owns its OWN trailing larg as the
+        // arm's doccord (handled by the luslus path); it does NOT fall through to
+        // the body spec below. Don't steal it (e.g. `++  fn  ::    float, …`).
+        if line.get(first) == Some(&b'+')
+            && matches!(
+                line.get(first + 1),
+                Some(b'+') | Some(b'$') | Some(b'*') | Some(b'|')
+            )
+        {
+            return None;
+        }
+        // Find a trailing `:: ` (space-guarded so we don't match `::` in code).
+        let mut colon = None;
+        let mut i = first + 1;
+        while i + 1 < line.len() {
+            if line[i] == b':'
+                && line[i + 1] == b':'
+                && (line[i - 1] == b' ' || line[i - 1] == b'\t')
+            {
+                colon = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let colon = colon?;
+        let mut trimmed_end = line.len();
+        while trimmed_end > colon + 2
+            && (line[trimmed_end - 1] == b' ' || line[trimmed_end - 1] == b'\t')
+        {
+            trimmed_end -= 1;
+        }
+        // `::::`-style decorative rule: not a doc.
+        if line.get(colon + 2) == Some(&b':') {
+            return None;
+        }
+        let content = &line[colon + 2..trimmed_end];
+        // larg = EXACTLY 4 aces then a non-ace summary (`++larg`'s `less ace`
+        // rejects a 5th ace). Fewer than 4 is an apse (this line's own member);
+        // more than 4 is leaped by hoonc, not a larg — so don't steal it.
+        if content.iter().take_while(|&&c| c == b' ').count() != 4 {
+            return None;
+        }
+        Some((colon, String::from_utf8_lossy(content).into_owned()))
     }
 
     fn line_starts_like_spec_doc_target(&self, idx: usize, byte: usize) -> bool {
@@ -13376,7 +13482,9 @@ fn apply_hoon_docs(mut node: Hoon, span: (usize, usize), linemap: &LineMap) -> H
             node = attach_help_to_hoon(node, help);
         }
     }
-    if let Some(help) = linemap.help_before_hoon(span.0) {
+    // Faithful `++apex`: a tall hoon's prefix can carry SEVERAL apex docs
+    // (cuff-deduped, last-wins per cuff); fold them on, like `clad`.
+    for help in linemap.help_before_hoon_blocks(span.0) {
         node = attach_help_to_hoon(node, help);
     }
     node
@@ -13426,9 +13534,39 @@ fn apply_spec_postfix_docs(mut node: Spec, span: (usize, usize), linemap: &LineM
     node
 }
 
+/// When a note (`++clad` doc) wraps a tall hoon, hoonc leaves the note's BODY
+/// bare — the enclosing loaf-spot is the only `%dbug`. hatch parses bottom-up so
+/// the body was already spotted; recurse through any nested notes and drop the
+/// single `%dbug` directly under the innermost note. Non-note nodes are returned
+/// unchanged (so only freshly doc-wrapped forms are affected).
+fn strip_note_inner_spot(node: Hoon) -> Hoon {
+    match node {
+        Hoon::Note(n, body) => {
+            let stripped = match *body {
+                // Strip a loaf-spot directly under the note, but NOT if it shields
+                // a nested note (that would expose a double-grab); leave those.
+                Hoon::Dbug(_, inner) if !matches!(inner.as_ref(), Hoon::Note(..)) => *inner,
+                inner @ Hoon::Note(..) => strip_note_inner_spot(inner),
+                other => other,
+            };
+            Hoon::Note(n, Box::new(stripped))
+        }
+        other => other,
+    }
+}
+
 fn attach_help_to_hoon(node: Hoon, help: NounExpr) -> Hoon {
     if matches!(&node, Hoon::Note(Note::Help(existing), _) if existing == &help) {
         return node;
+    }
+    // The same prefix doc can be reached by an inner loaf and its enclosing
+    // loaf-wrapper (same span, e.g. the `[~ (dial ham)]` case body): the inner
+    // already grabbed it and a loaf-spot now sits between. Don't double-wrap —
+    // peek through a single leading `%dbug`.
+    if let Hoon::Dbug(_, inner) = &node {
+        if matches!(inner.as_ref(), Hoon::Note(Note::Help(existing), _) if existing == &help) {
+            return node;
+        }
     }
     Hoon::Note(Note::Help(help), Box::new(node))
 }
@@ -13458,6 +13596,13 @@ pub fn wrap_hoon_with_trace(
         let span = (e.span().start(), e.span().end());
         let spot = chumsky_spot_to_hoon_spot(span, &wer, &linemap);
         let node = apply_hoon_docs(node, span, &linemap);
+        // hoonc's doc-bearing loaf is `[%dbug spot [%note help BODY]]` with BODY
+        // left BARE: `clad` wraps the note around the loaf body and the loaf-spot
+        // (added next, below) is the ONLY spot. hatch's sub-parser already spotted
+        // the body before the note wrapped it, so drop that inner loaf-spot now —
+        // the outer spot we add below covers the very same form. (Only fires when
+        // a note was just attached; bare nodes are untouched.)
+        let node = strip_note_inner_spot(node);
         if let Hoon::Dbug(existing_spot, inner) = node {
             if existing_spot == spot {
                 return Hoon::Dbug(existing_spot, inner);
@@ -13514,6 +13659,14 @@ pub fn wrap_hoon_with_docs(
 pub fn wrap_spec_with_docs(
     linemap: Arc<LineMap>,
 ) -> impl for<'src> Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
+    // NOTE: the prefix-apex (`++scye`) gist is doc-controlled, not bug-controlled,
+    // so in principle a tall spec should grab prefix doccords even at bug=| (this
+    // is the path the docs-on/spots-off parity fixture exercises). Switching this
+    // to the full `apply_spec_docs` recovers the `$?(%done %stet %dent)` %dent
+    // larg (+6 docs) BUT over-anchors ~6 LINKED smol prefixes on union members
+    // (`%done: output is complete`, …) that hoonc places elsewhere — i.e. the
+    // prefix collection still needs the trailing-smol-to-next rule + tighter
+    // member gating before this can flip cleanly. Keep postfix-only until then.
     move |node, e| apply_spec_postfix_docs(node, (e.span().start(), e.span().end()), &linemap)
 }
 

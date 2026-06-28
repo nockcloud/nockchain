@@ -9,6 +9,10 @@ build = "build.rs"
 name = "honk"
 path = "src/bin/honk.rs"
 
+[[bin]]
+name = "dump_ast"
+path = "src/bin/dump_ast.rs"
+
 [dependencies]
 blake3 = { workspace = true }
 chumsky = "0.10"
