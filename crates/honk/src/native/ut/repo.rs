@@ -1,6 +1,163 @@
 use super::*;
 
+thread_local! {
+    static REST_DUAL_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl<'a> Ut<'a> {
+    /// DIAGNOSTIC: strip BOTH spot forms from a noun — `%dbug` AST wrappers
+    /// (`[dbug [spot inner]]`→inner) and `%spot` nock hints
+    /// (`[11 [spot ..] body]`→body) — recursively, sharing unchanged subtrees.
+    /// Two types that differ ONLY in source spots become equal; a difference that
+    /// survives is a genuine structural divergence.
+    fn strip_all_spots(slab: &mut NounSlab, space: &NounSpace, n: Noun) -> Noun {
+        let Ok(cell) = n.in_space(space).as_cell() else {
+            return n;
+        };
+        let h = cell.head().noun();
+        let t = cell.tail().noun();
+        if let Ok(tag) = h.in_space(space).as_atom() {
+            if tag.eq_bytes(b"dbug") {
+                if let Ok(tc) = t.in_space(space).as_cell() {
+                    return Self::strip_all_spots(slab, space, tc.tail().noun());
+                }
+            }
+            if tag.as_u64() == Ok(11) {
+                if let Ok(tc) = t.in_space(space).as_cell() {
+                    let p = tc.head().noun();
+                    let q = tc.tail().noun();
+                    if let Ok(pc) = p.in_space(space).as_cell() {
+                        if let Ok(ptag) = pc.head().noun().in_space(space).as_atom() {
+                            if ptag.eq_bytes(b"spot") {
+                                return Self::strip_all_spots(slab, space, q);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let nh = Self::strip_all_spots(slab, space, h);
+        let nt = Self::strip_all_spots(slab, space, t);
+        if unsafe { nh.as_raw() == h.as_raw() && nt.as_raw() == t.as_raw() } {
+            return n;
+        }
+        T(slab, &[nh, nt])
+    }
+
+    /// DIAGNOSTIC: unwrap head-level `%dbug`/`%spot` wrappers (no recursion, no
+    /// alloc) — used by the bounded spot-blind compare + preview.
+    fn unwrap_spots(mut n: Noun, space: &NounSpace) -> Noun {
+        loop {
+            let Ok(cell) = n.in_space(space).as_cell() else {
+                return n;
+            };
+            let h = cell.head().noun();
+            let t = cell.tail().noun();
+            if let Ok(tag) = h.in_space(space).as_atom() {
+                if tag.eq_bytes(b"dbug") {
+                    if let Ok(tc) = t.in_space(space).as_cell() {
+                        n = tc.tail().noun();
+                        continue;
+                    }
+                }
+                if tag.as_u64() == Ok(11) {
+                    if let Ok(tc) = t.in_space(space).as_cell() {
+                        let p = tc.head().noun();
+                        if let Ok(pc) = p.in_space(space).as_cell() {
+                            if let Ok(ptag) = pc.head().noun().in_space(space).as_atom() {
+                                if ptag.eq_bytes(b"spot") {
+                                    n = tc.tail().noun();
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return n;
+        }
+    }
+
+    /// DIAGNOSTIC: bounded, zero-alloc structural equality MODULO spots. Big atoms
+    /// are treated as equal (benign aura/bits noise); the divergence we hunt is
+    /// atom-vs-cell (a resolved `0` vs a `%hold`), which this flags immediately.
+    /// `fuel` bounds total work so it can never hang.
+    fn spot_blind_eq(a: Noun, b: Noun, space: &NounSpace, fuel: &mut u64) -> bool {
+        if *fuel == 0 {
+            return true;
+        }
+        *fuel -= 1;
+        let a = Self::unwrap_spots(a, space);
+        let b = Self::unwrap_spots(b, space);
+        match (a.in_space(space).as_cell(), b.in_space(space).as_cell()) {
+            (Ok(ca), Ok(cb)) => {
+                Self::spot_blind_eq(ca.head().noun(), cb.head().noun(), space, fuel)
+                    && Self::spot_blind_eq(ca.tail().noun(), cb.tail().noun(), space, fuel)
+            }
+            (Err(_), Err(_)) => {
+                match (
+                    a.in_space(space).as_atom().ok().and_then(|x| x.as_u64().ok()),
+                    b.in_space(space).as_atom().ok().and_then(|x| x.as_u64().ok()),
+                ) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => true,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// DIAGNOSTIC: depth-limited structural preview of a noun (atoms as values or
+    /// `%cord`; cells recursed to `depth`, deeper shown as `..`). Spot wrappers
+    /// are skipped so the structure reads cleanly.
+    fn preview_noun(n: Noun, space: &NounSpace, depth: u32) -> String {
+        let n = Self::unwrap_spots(n, space);
+        if let Ok(atom) = n.in_space(space).as_atom() {
+            if let Ok(v) = atom.as_u64() {
+                if (0x20..0x7f_ffff).contains(&v) {
+                    if let Ok(s) = atom_to_string(atom) {
+                        if s.chars().all(|c| c.is_ascii_graphic()) {
+                            return format!("%{s}");
+                        }
+                    }
+                }
+                return format!("{v}");
+            }
+            return "BIG".to_string();
+        }
+        if depth == 0 {
+            return "..".to_string();
+        }
+        match n.in_space(space).as_cell() {
+            Ok(cell) => format!(
+                "[{} {}]",
+                Self::preview_noun(cell.head().noun(), space, depth - 1),
+                Self::preview_noun(cell.tail().noun(), space, depth - 1),
+            ),
+            Err(_) => "?".to_string(),
+        }
+    }
+
+    /// DIAGNOSTIC: short tag for a type noun — the head cord for a tagged
+    /// `[%tag ..]` type, `atom:<n>` for a small atom (so `0` reads as `atom:0`),
+    /// else `cell`.
+    fn type_top_tag(t: Noun, space: &NounSpace) -> String {
+        if let Ok(atom) = t.in_space(space).as_atom() {
+            return match atom.as_u64() {
+                Ok(v) => format!("atom:{v}"),
+                Err(_) => "atom:big".to_string(),
+            };
+        }
+        if let Ok(cell) = t.in_space(space).as_cell() {
+            if let Ok(head) = cell.head().noun().in_space(space).as_atom() {
+                if let Ok(s) = atom_to_string(head) {
+                    return format!("%{s}");
+                }
+            }
+        }
+        "cell".to_string()
+    }
+
     #[cfg(test)]
     fn collect_rest_leg_ids(&mut self, legs: &[(Noun, Noun)]) -> Result<Vec<u64>> {
         let mut unique_leg_ids = Vec::new();
@@ -82,6 +239,46 @@ impl<'a> Ut<'a> {
                 ))
             })?;
             let play_ty = self.play(inner.clone(), hoon.as_ref())?;
+            // DIAGNOSTIC (HONK_PLAY_DUAL): scoped to consensus.hoon ONLY (cheap loc
+            // check first, so tx-engine etc. skip the expensive bare-play+strip).
+            // Re-play the %dbug-stripped gene and compare the type MODULO ALL SPOTS.
+            if std::env::var_os("HONK_PLAY_DUAL").is_some()
+                && !REST_DUAL_ACTIVE.with(|c| c.get())
+                && self
+                    .dbug_locations
+                    .last()
+                    .and_then(|l| l.file.as_deref())
+                    .is_some_and(|f| f.contains("consensus"))
+            {
+                let space = self.slab.noun_space();
+                let bare_noun = Self::strip_dbug_deep(self.slab, &space, *hoon_noun);
+                if unsafe { bare_noun.as_raw() != hoon_noun.as_raw() } {
+                    REST_DUAL_ACTIVE.with(|c| c.set(true));
+                    let bare_play = match self.hoon_ast_lookup_result(bare_noun) {
+                        Ok(bh) => self.play(inner.clone(), bh.as_ref()).ok(),
+                        Err(_) => None,
+                    };
+                    REST_DUAL_ACTIVE.with(|c| c.set(false));
+                    if let Some(bare_ty) = bare_play {
+                        let space = self.slab.noun_space();
+                        let a = live_to_noun(&mut self.cx, &play_ty, self.slab);
+                        let b = live_to_noun(&mut self.cx, &bare_ty, self.slab);
+                        let mut fuel: u64 = 2_000_000;
+                        if !Self::spot_blind_eq(a, b, &space, &mut fuel) {
+                            let gtag = Self::hoon_noun_tag(*hoon_noun, &space)
+                                .unwrap_or_else(|| "?".to_string());
+                            eprintln!(
+                                "PLAY_REAL_DIVERGE gene_tag={gtag} spotted={} bared={}",
+                                Self::type_top_tag(a, &space),
+                                Self::type_top_tag(b, &space),
+                            );
+                            eprintln!("  GENE   ={}", Self::preview_noun(bare_noun, &space, 8));
+                            eprintln!("  SPOTTED={}", Self::preview_noun(a, &space, 12));
+                            eprintln!("  BARED  ={}", Self::preview_noun(b, &space, 12));
+                        }
+                    }
+                }
+            }
             played.push(live_to_noun(&mut self.cx, &play_ty, self.slab));
         }
         self.fork_from_options(played)

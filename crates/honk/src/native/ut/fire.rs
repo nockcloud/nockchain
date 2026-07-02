@@ -149,6 +149,13 @@ impl<'a> Ut<'a> {
     /// gene leaf interns to the SAME canonical `Rc` (mirrors `ty_hold_n`). The old
     /// `ty_hold_cached` was only a perf cache; the interned RESULT is what matters.
     fn cons_hold(&mut self, inner: NRc<NTy>, hoon: Noun) -> NRc<NTy> {
+        // GROUND-TRUTH PROBE (HONK_CONS_HOLD_BARE): store the %dbug-stripped gene.
+        let hoon = if std::env::var_os("HONK_CONS_HOLD_BARE").is_some() {
+            let space = self.slab.noun_space();
+            Self::strip_dbug_deep(self.slab, &space, hoon)
+        } else {
+            hoon
+        };
         let gene = NLeaf::from_noun_raw(hoon, &self.slab.noun_space());
         live_intern(
             &mut self.cx,

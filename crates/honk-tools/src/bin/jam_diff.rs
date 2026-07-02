@@ -938,12 +938,68 @@ fn preview_axis(jam_path: &str, axis: &str, depth: usize) {
         eprintln!("axis {axis} not found");
         process::exit(1);
     };
-    println!("{}", preview_with_depth(node, depth, &space));
+    let m = nockvm::mug::mug_u32(&mut stack, node);
+    println!("mug={m} {}", preview_with_depth(node, depth, &space));
+}
+
+fn drill_diff(jam_a: &str, axis_a: &str, jam_b: &str, axis_b: &str) {
+    let ja = fs::read(jam_a).unwrap_or_else(|e| {
+        eprintln!("read {jam_a}: {e}");
+        process::exit(1);
+    });
+    let jb = fs::read(jam_b).unwrap_or_else(|e| {
+        eprintln!("read {jam_b}: {e}");
+        process::exit(1);
+    });
+    let mut sa = NockStack::new(NOCK_STACK_SIZE_MEDIUM, 0);
+    let mut sb = NockStack::new(NOCK_STACK_SIZE_MEDIUM, 0);
+    let ra = cue(&mut sa, &ja, "drill-a");
+    let rb = cue(&mut sb, &jb, "drill-b");
+    let spa = sa.noun_space();
+    let spb = sb.noun_space();
+    let mut na = axis_at(ra, axis_a, &spa).expect("axis a");
+    let mut nb = axis_at(rb, axis_b, &spb).expect("axis b");
+    let mut path = String::new();
+    for _ in 0..200 {
+        if nockvm::mug::mug_u32(&mut sa, na) == nockvm::mug::mug_u32(&mut sb, nb) {
+            println!("CONVERGED (equal) at sub-path {path}");
+            return;
+        }
+        let (ha, ta) = (noun_head(na, &spa), noun_tail(na, &spa));
+        let (hb, tb) = (noun_head(nb, &spb), noun_tail(nb, &spb));
+        match (ha, ta, hb, tb) {
+            (Some(ha), Some(ta), Some(hb), Some(tb)) => {
+                let mha = nockvm::mug::mug_u32(&mut sa, ha);
+                let mhb = nockvm::mug::mug_u32(&mut sb, hb);
+                if mha != mhb {
+                    na = ha;
+                    nb = hb;
+                    path.push_str(".2");
+                } else {
+                    na = ta;
+                    nb = tb;
+                    path.push_str(".3");
+                }
+            }
+            _ => break,
+        }
+    }
+    println!("LEAF/TAG DIVERGENCE at sub-path {path}");
+    println!("  A: {}", preview_with_depth(na, 8, &spa));
+    println!("  B: {}", preview_with_depth(nb, 8, &spb));
 }
 
 fn main() {
     let program = env::args().next().unwrap_or_else(|| "jam-diff".to_string());
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("--drill-diff") {
+        if args.len() != 5 {
+            eprintln!("usage: {program} --drill-diff <jamA> <axisA> <jamB> <axisB>");
+            process::exit(2);
+        }
+        drill_diff(&args[1], &args[2], &args[3], &args[4]);
+        return;
+    }
     if args.first().map(String::as_str) == Some("--preview") {
         if args.len() < 3 {
             eprintln!("usage: {program} --preview <jam> <axis> [depth]");

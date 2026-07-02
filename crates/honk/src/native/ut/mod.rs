@@ -2526,7 +2526,11 @@ impl<'a> Ut<'a> {
     /// the old never-completing 38-46 GB). Kept as a single source of truth so the
     /// cache helpers and the partition tests share one switch.
     fn scoped_fan_enabled() -> bool {
-        true
+        // DIAGNOSTIC: HONK_NO_SCOPED_FAN=1 falls back to the whole-active-leg key
+        // (the sound approximation of hoon's fully-threaded `fan`), bypassing the
+        // `reachable_legs` projection — used to confirm reachable_legs unsoundness
+        // is the dumb-kernel %hold spot divergence.
+        std::env::var_os("HONK_NO_SCOPED_FAN").is_none()
     }
 
     /// Scope-precise fan key for a descent op on `scope` (the deepening subject).
@@ -2717,6 +2721,31 @@ impl<'a> Ut<'a> {
             hoon_noun = tail.tail().noun();
         }
         hoon_noun
+    }
+
+    /// Deep-strip `%dbug` (Hoon-AST source-spot) wrappers from a mold/gene Hoon
+    /// noun (diagnostic + spot-invariance helper). `[%dbug [spot inner]]` → the
+    /// deep-stripped `inner`; unchanged subtrees are shared.
+    pub(super) fn strip_dbug_deep(slab: &mut NounSlab, space: &NounSpace, hoon: Noun) -> Noun {
+        let Ok(cell) = hoon.in_space(space).as_cell() else {
+            return hoon;
+        };
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
+        if let Ok(tag) = head.in_space(space).as_atom() {
+            if tag.eq_bytes(b"dbug") {
+                if let Ok(tail_cell) = tail.in_space(space).as_cell() {
+                    let inner = tail_cell.tail().noun();
+                    return Self::strip_dbug_deep(slab, space, inner);
+                }
+            }
+        }
+        let new_head = Self::strip_dbug_deep(slab, space, head);
+        let new_tail = Self::strip_dbug_deep(slab, space, tail);
+        if unsafe { new_head.as_raw() == head.as_raw() && new_tail.as_raw() == tail.as_raw() } {
+            return hoon;
+        }
+        T(slab, &[new_head, new_tail])
     }
 
     fn strip_spec_gist_wrapper_noun(mut spec_noun: Noun, space: &NounSpace) -> Noun {
@@ -11853,6 +11882,36 @@ fn dor(slab: &mut NounSlab, a: Noun, b: Noun) -> bool {
     }
 }
 
+/// Recompute a noun's mug WITHOUT consulting the cached header mug — used to test
+/// whether the fork-ordering divergence is a stale cached mug.
+thread_local! {
+    static FRESH_MUG_MEMO: std::cell::RefCell<std::collections::HashMap<u64, u32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn fresh_mug(noun: Noun, space: &NounSpace) -> u32 {
+    match noun.in_space(space).as_cell() {
+        Ok(cell) => {
+            let addr = unsafe { noun.as_raw() };
+            if let Some(m) = FRESH_MUG_MEMO.with(|m| m.borrow().get(&addr).copied()) {
+                return m;
+            }
+            let h = fresh_mug(cell.head().noun(), space);
+            let t = fresh_mug(cell.tail().noun(), space);
+            let m = unsafe { nockvm::mug::calc_cell_mug_u32(h, t, space) };
+            FRESH_MUG_MEMO.with(|memo| memo.borrow_mut().insert(addr, m));
+            m
+        }
+        Err(_) => {
+            let atom = noun
+                .in_space(space)
+                .as_atom()
+                .expect("atom expected when not cell");
+            unsafe { nockvm::mug::calc_atom_mug_u32(atom.atom(), space) }
+        }
+    }
+}
+
 fn gor_mug(slab: &mut NounSlab, a: Noun, b: Noun) -> bool {
     let space = slab.noun_space();
     match slab_mug(a, &space).cmp(&slab_mug(b, &space)) {
@@ -12993,6 +13052,30 @@ mod native_ctor_tests {
 
     fn check(slab: &NounSlab, noun: Noun, native: &NRc<NTy>) {
         assert_native_eq(noun, native, &slab.noun_space());
+    }
+
+    #[test]
+    fn fork_order_face_atom_vs_zero() {
+        // Reconstruct the dumb-kernel divergent fork's root key n and sibling 0.
+        // n = [%face [%a [%atom [%n [0 0]]]]] ; hoonc orders 0 < n (0 is n's left
+        // child in the treap), so honk's gor_mug(0, n) must be `true`.
+        let mut slab: NounSlab = NounSlab::new();
+        let face = term_to_noun(&mut slab, "face");
+        let a = term_to_noun(&mut slab, "a");
+        let atom = term_to_noun(&mut slab, "atom");
+        let naura = term_to_noun(&mut slab, "n");
+        let bits = T(&mut slab, &[D(0), D(0)]);
+        let atomty = T(&mut slab, &[atom, naura, bits]);
+        let aface = T(&mut slab, &[a, atomty]);
+        let n = T(&mut slab, &[face, aface]);
+        let zero = D(0);
+        let space = slab.noun_space();
+        let mug0 = slab_mug(zero, &space);
+        let mugn = slab_mug(n, &space);
+        let g = gor_mug(&mut slab, zero, n);
+        eprintln!(
+            "FORKORD mug(0)={mug0} mug(n)={mugn} gor_mug(0,n)={g} (hoonc=>expect true / 0<n)"
+        );
     }
 
     #[test]
