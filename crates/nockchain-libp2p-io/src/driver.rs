@@ -1282,11 +1282,15 @@ async fn handle_effect_with_dispatcher(
                 )
             };
 
-            if suppress_outgoing_gossip {
-                // We are demonstrably behind tip (SyncMode::CatchingUp). The
-                // node is intentionally quiet: no historic block rebroadcasts,
-                // local tx submission gossip, or mining output until catch-up
-                // exits.
+            if suppress_outgoing_gossip && !is_heard_block_gossip {
+                // We are demonstrably behind tip (SyncMode::CatchingUp). Keep
+                // non-block gossip quiet while the deferred backlog drains,
+                // but never suppress a kernel-emitted heard-block. In
+                // particular, a locally mined block may make the kernel's
+                // heaviest chain while stale side-branch traffic has put the
+                // height-only catch-up signal into CatchingUp. Dropping that
+                // block here would let mining continue on a private branch
+                // that no peer can learn about.
                 trace!(
                     behind_tip_estimate, gossip_kind,
                     "Suppressing outgoing gossip while catching up"

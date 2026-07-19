@@ -142,9 +142,9 @@ impl CatchUpSignal {
     }
 
     /// True when the node is demonstrably behind tip (`SyncMode::CatchingUp`).
-    /// Used to suppress all outgoing gossip while catching up. That includes
-    /// historic block rebroadcasts, tx submission gossip, and mining output.
-    /// A catching-up node stays quiet until this returns to `false`.
+    /// Used to suppress non-block outgoing gossip while catching up. The
+    /// driver deliberately exempts kernel-emitted heard-block gossip so a
+    /// stale deferred side branch cannot make locally mined blocks private.
     pub fn is_catching_up(&self) -> bool {
         matches!(self.mode, SyncMode::CatchingUp)
     }

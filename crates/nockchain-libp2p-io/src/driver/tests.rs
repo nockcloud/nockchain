@@ -8428,7 +8428,7 @@ async fn test_gossip_effect_current_version_forwards_payload_and_clears_caches()
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
-async fn test_gossip_effect_suppresses_all_outbound_gossip_while_catching_up() {
+async fn test_gossip_effect_keeps_blocks_live_while_catching_up() {
     use tokio::sync::mpsc;
 
     let peer_a = PeerId::random();
@@ -8461,25 +8461,56 @@ async fn test_gossip_effect_suppresses_all_outbound_gossip_while_catching_up() {
     }
 
     let (swarm_tx, mut swarm_rx) = mpsc::channel(4);
-    for (tag, seed) in [("heard-block", 10), ("heard-tx", 20)] {
-        let (effect_slab, _) = build_gossip_effect_with_tag(FACT_POKE_VERSION, tag, &[seed]);
-        handle_effect(
-            effect_slab,
-            swarm_tx.clone(),
-            peers.clone(),
-            false,
-            state_arc.clone(),
-            metrics.clone(),
-        )
-        .await
-        .expect("catch-up gossip suppression should not error");
+    let (block_effect, expected_block_message) =
+        build_gossip_effect_with_tag(FACT_POKE_VERSION, "heard-block", &[10]);
+    handle_effect(
+        block_effect,
+        swarm_tx.clone(),
+        peers.clone(),
+        false,
+        state_arc.clone(),
+        metrics.clone(),
+    )
+    .await
+    .expect("catch-up block gossip should not error");
+
+    for expected_peer in peers {
+        match swarm_rx.recv().await {
+            Some(SwarmAction::SendRequest {
+                peer_id,
+                request,
+                request_context,
+            }) => {
+                assert_eq!(peer_id, expected_peer);
+                assert!(request_context.is_none());
+                assert_eq!(
+                    request,
+                    NockchainRequest::Gossip {
+                        message: expected_block_message.clone(),
+                    }
+                );
+            }
+            other => panic!("expected heard-block gossip action, got {other:?}"),
+        }
     }
+
+    let (tx_effect, _) = build_gossip_effect_with_tag(FACT_POKE_VERSION, "heard-tx", &[20]);
+    handle_effect(
+        tx_effect,
+        swarm_tx,
+        vec![peer_a, peer_b],
+        false,
+        state_arc,
+        metrics.clone(),
+    )
+    .await
+    .expect("catch-up tx suppression should not error");
 
     assert!(
         swarm_rx.try_recv().is_err(),
-        "catching-up nodes must not fan out block, tx, or mining gossip",
+        "catching-up nodes should suppress non-block gossip only",
     );
-    assert_eq!(metrics.gossip_suppressed_behind_tip_total.fetch_add(0), 2);
+    assert_eq!(metrics.gossip_suppressed_behind_tip_total.fetch_add(0), 1);
 }
 
 #[tokio::test]

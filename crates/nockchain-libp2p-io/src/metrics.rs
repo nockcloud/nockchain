@@ -386,12 +386,11 @@ metrics_struct![
         "nockchain-libp2p-io.prefetch_peer_no_gen2_range_peer_total", Count
     ),
     // ---- outgoing-gossip suppression while behind tip ----
-    // gossip_suppressed_behind_tip_total: kernel-emitted %gossip effects
-    // (heard-block / heard-tx / future variants) that were NOT broadcast
-    // because the catch-up signal reports SyncMode::CatchingUp. While
-    // catching up, a node is intentionally quiet: no historic block
-    // rebroadcasts, local tx submission gossip, or mining output. Should
-    // fall to ~0 once a node reaches Tip.
+    // gossip_suppressed_behind_tip_total: non-block kernel-emitted %gossip
+    // effects that were NOT broadcast because the catch-up signal reports
+    // SyncMode::CatchingUp. Heard-block is never suppressed: doing so can
+    // partition locally mined blocks when stale side-branch traffic trips the
+    // height-only catch-up signal. Should fall to ~0 once a node reaches Tip.
     (
         gossip_suppressed_behind_tip_total,
         "nockchain-libp2p-io.gossip_suppressed_behind_tip_total", Count

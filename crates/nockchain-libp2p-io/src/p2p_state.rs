@@ -2596,10 +2596,9 @@ impl P2PState {
 
     /// Whether outgoing gossip should be suppressed right now.
     /// True only while the catch-up signal reports `CatchingUp` (demonstrably
-    /// behind tip). This deliberately covers every outbound gossip effect:
-    /// historic block rebroadcasts, tx submission gossip, and mining output.
-    /// A catching-up node is not allowed to originate gossip until it returns
-    /// to `Tip`.
+    /// behind tip). The driver applies this to non-block gossip only;
+    /// kernel-emitted heard-block gossip must remain live so catch-up signal
+    /// errors cannot partition locally mined blocks from the network.
     pub fn should_suppress_outgoing_gossip(&mut self) -> bool {
         self.refresh_catch_up_mode(Instant::now());
         self.catch_up.is_catching_up()
