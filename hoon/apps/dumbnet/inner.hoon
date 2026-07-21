@@ -1831,7 +1831,7 @@
         [%request %block %elders block-id peer-id]~ :: ask for elders
     ::
     ::  only if mining: re-gossip transactions included in block when block is fully validated
-    ::  precondition: all transactions for block are in raw-txs
+    ::  transactions can be absent after candidate filtering or block acceptance
     ++  regossip-block-txs-effects
       ~/  %regossip-block-txs-effects
       |=  =page:t
@@ -1840,8 +1840,9 @@
       %-  ~(rep z-in ~(tx-ids get:page:t page))
       |=  [=tx-id:t effects=(list effect:dk)]
       ^-  (list effect:dk)
-      =/  tx=raw-tx:t  raw-tx:(~(got h-by raw-txs.c.k) tx-id)
-      =/  fec=effect:dk  [%gossip %0 %heard-tx tx]
+      =/  tx  (~(get h-by raw-txs.c.k) tx-id)
+      ?~  tx  effects
+      =/  fec=effect:dk  [%gossip %0 %heard-tx raw-tx.u.tx]
       [fec effects]
     ::
     ::  only if mining: regossip transactions included in candidate block
