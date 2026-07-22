@@ -102,16 +102,12 @@ impl<F> BaseAir<F> for CompositeFullAir {
 /// control chip already enforces `CONTROL_PREP == pack(selectors,
 /// mat_id)`), so a malicious prover can no longer zero selectors
 /// to vacate the C1/C3/C4 bindings (ZKP_SECURITY_REPORT CRIT-1).
-// HIGH-2.2 §4.C Route C (naive form) — REVERTED. Extending this
-// to pin `A_NOISED_UNPACK`/`B_NOISED_UNPACK` is mechanically the
-// least-invasive binding, but it widens the *preprocessed* trace
-// 5 → 69 columns, committed + FRI'd at full trace height every
-// `composite_setup`. Empirically pathological: the composite_proof
-// suite went from fast to ~22 min CPU (a 10x+ prover blow-up),
-// and the binding is *vacuous* in the shipping path anyway
-// (`zk_bridge` places no matmul rows until §4.A). The
-// cost-aware redesign (pin only verifier-derived row metadata rather
-// than all matmul bytes) is in `2026-05-15_HIGH2_2_DESIGN.md` §4.C.8.
+// Extending the CRIT-1 pin to `A_NOISED_UNPACK`/`B_NOISED_UNPACK`
+// widens the verifier-fixed preprocessed trace from 5 to 69 columns,
+// committed and FRI'd at full trace height for every `composite_setup`.
+// That binding is unnecessarily expensive: the production proof pins
+// verifier-derived row metadata and enforces noised-matrix reads through
+// LogUp instead of committing every noised byte as preprocessed data.
 // §4.C.2 c-exact (cx.2-pcols/X1): `NOISE_PACKED_PREP` widened
 // 1→8 (one `polyval(noise_subslice,129)` per co-located leaf
 // block sub-slice), and positioned A/B chunk IDs add 8 more cols.

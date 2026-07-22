@@ -226,10 +226,9 @@ impl Blake3Chip {
         // blake init STATE0 cannot satisfy. That made a block only
         // verifiable when contiguous from trace row 0 (no leading
         // boundary). Factor (2) disables the round at that leading
-        // boundary because the next row is `is_new_blake = 1`. See
-        // `2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`. Factor (1) is KEPT so the
-        // trailing boundary (finalize → following row) stays
-        // disabled exactly as before. `verify_init_state`
+        // boundary because the next row is `is_new_blake = 1`.
+        // Factor (1) keeps the trailing boundary (finalize → following
+        // row) disabled exactly as before. `verify_init_state`
         // (gated by `is_new_blake`) independently pins the block's
         // first-row STATE0, so dropping the leading round link does
         // not unconstrain it.

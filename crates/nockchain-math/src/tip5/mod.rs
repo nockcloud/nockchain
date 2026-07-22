@@ -93,9 +93,8 @@ pub const NUM_ROUNDS_5ROUND: usize = 5;
 /// **5-round Tip5 variant for ai-pow-zk recursive-certificate proving** —
 /// identical to [`permute`] (same S-box, same cyclomul MDS, same round-constant
 /// schedule) but iterating only the first 5 rounds
-/// (`ROUND_CONSTANTS_MONT_7[0..5*STATE_SIZE]`). Being the first 5 rounds of the
-/// canonical Tip5 round function, it is byte-identical to the branch's original
-/// `permute_5round` and must match the in-circuit Tip5 adapter the recursion uses.
+/// (`ROUND_CONSTANTS_MONT_7[0..5*STATE_SIZE]`). It must match the in-circuit
+/// Tip5 adapter the recursion uses.
 ///
 /// **Do not use this for canonical Nockchain hashing** — use 7-round [`permute`].
 pub fn permute_5round(sponge: &mut [u64; 16]) {

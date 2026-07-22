@@ -1614,9 +1614,8 @@ impl CompositeTrace {
     /// step (slot 0, `V_BITS = bitdecomp(JACKPOT_MSG[0])`,
     /// `X_BITS = 0`).
     ///
-    /// Relies on the `verify_round` leading-boundary gate fix
-    /// (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`) — before it, no
-    /// non-row-0 blake block verified.
+    /// Relies on `verify_round` skipping the non-blake row immediately
+    /// before a new BLAKE3 block; otherwise non-row-0 blocks cannot verify.
     ///
     /// `jackpot_state` must be all-zero in the current bridge: the
     /// preceding rows carry no jackpot activity, so the passthrough
@@ -4037,10 +4036,9 @@ mod tests {
             .expect("key-pin row must prove+verify (C1 non-vacuous, tractable)");
     }
 
-    /// Regression for the `verify_round` leading-boundary gate fix
-    /// (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`): a bare blake3 block
-    /// (no jackpot / no extra selectors) must now prove+verify
-    /// at a mid-trace offset AND trace-terminal — not just
+    /// Regression for `verify_round` leading-boundary gating: a bare
+    /// BLAKE3 block with no jackpot or extra selectors must prove and
+    /// verify at a mid-trace offset and at trace-terminal, not just
     /// contiguous from row 0.
     #[test]
     fn blake_block_verifies_off_row_zero_after_gate_fix() {

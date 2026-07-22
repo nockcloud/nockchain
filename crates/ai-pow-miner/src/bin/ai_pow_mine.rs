@@ -1,7 +1,7 @@
 //! `ai-pow-mine` — standalone AI-PoW (matmul puzzle) block miner.
 //!
 //! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
-//! private NockAppService gRPC, subscribes to `%mine` candidate
+//! private NockAppService gRPC, subscribes to `%mine-ai` candidate
 //! effects, searches Pearl-compatible tickets, builds the recursive
 //! certificate only after a Nockchain target hit, and submits
 //! `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire

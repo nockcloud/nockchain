@@ -31,9 +31,7 @@
 //!
 //! Blocks `1..start` are replayed as warmup to position the target; the
 //! `start..=end` window is what you care about in the profile (its wall time is
-//! reported separately). `--skip-pow` flips the `check-pow` flag in the replayed
-//! constants so the STARK verifier is bypassed -- useful for isolating
-//! transaction/hashing cost from PoW cost.
+//! reported separately). PoW verification is unconditional in the replay path.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -80,11 +78,6 @@ struct Args {
     /// Last height to replay/measure (inclusive).
     #[arg(long, default_value_t = 2000)]
     end: u64,
-    /// Flip the `check-pow` flag off in the replayed constants to bypass the
-    /// STARK verifier (isolates tx/hash cost from PoW cost). Only applies when
-    /// the target boots fresh (ignored with `--target-state-jam`).
-    #[arg(long, default_value_t = false)]
-    skip_pow: bool,
     /// Boot the target from this previously-exported state jam instead of a
     /// fresh genesis, skipping the warmup replay. Pair with a prior
     /// `--export-state-jam` run to profile a late range without replaying the
@@ -160,12 +153,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (None, None)
         } else {
             let constants = peek_constants(&mut source).await?;
-            if args.skip_pow {
-                // PoW verification is unconditional in this codebase — the legacy
-                // `check_pow_flag` constant was removed (the noun slot is retained
-                // but always %.y). `--skip-pow` therefore cannot disable it here.
-                info!("bench: --skip-pow set but PoW verification is unconditional; ignoring flag");
-            }
             let genesis = extract_block(&mut source, 0)
                 .await?
                 .ok_or("source node has no genesis block (height 0); cannot initialize target")?;

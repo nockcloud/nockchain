@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)] // integration test: unwrap is acceptable
 use ai_pow::fiat_shamir::attempt_tile_index;
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, MineError, ProverOptions};
+use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, MineError};
 use ai_pow::synth::synth_matrices;
 use ai_pow::tile_hash::hash_le_target;
 use ai_pow::verifier::{verify, verify_at_target, VerifyError};
@@ -19,16 +19,9 @@ fn proof_round_trip_against_easy_target() {
     let (a, b) = synth_matrices(b"ab-seed-1", &params);
     let block_commitment = b"block-header-bytes";
     let nonce = b"nonce-1";
-    let proof = mine(
-        block_commitment,
-        nonce,
-        &a,
-        &b,
-        &params,
-        ProverOptions::default(),
-    )
-    .unwrap()
-    .expect("easy target must yield a proof");
+    let proof = mine(block_commitment, nonce, &a, &b, &params)
+        .unwrap()
+        .expect("easy target must yield a proof");
     verify(block_commitment, nonce, &params, &proof).unwrap();
 }
 
@@ -40,15 +33,9 @@ fn verifier_rejects_proof_mined_for_easier_external_target() {
     let nonce = b"external-target-nonce";
     let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).unwrap();
     let easy_target = [0xff; 32];
-    let proof = mine_with_context_at_target(
-        &ctx,
-        block_commitment,
-        nonce,
-        &easy_target,
-        ProverOptions::default(),
-    )
-    .unwrap()
-    .expect("max external target must yield a proof");
+    let proof = mine_with_context_at_target(&ctx, block_commitment, nonce, &easy_target)
+        .unwrap()
+        .expect("max external target must yield a proof");
 
     let impossible_chain_target = [0u8; 32];
     assert_eq!(
@@ -61,12 +48,8 @@ fn verifier_rejects_proof_mined_for_easier_external_target() {
 fn proof_is_deterministic() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let p1 = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
-    let p2 = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let p1 = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
+    let p2 = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     assert_eq!(p1, p2, "same inputs must yield identical proof bytes");
 }
 
@@ -127,13 +110,7 @@ fn stale_attempt_context_cannot_be_reused_for_another_nonce() {
     let target = [0xff; 32];
 
     assert_eq!(
-        mine_with_context_at_target(
-            &ctx_a,
-            block_commitment,
-            nonce_b,
-            &target,
-            ProverOptions::default(),
-        ),
+        mine_with_context_at_target(&ctx_a, block_commitment, nonce_b, &target,),
         Err(MineError::ContextAttemptMismatch)
     );
 }
@@ -171,7 +148,6 @@ fn raw_s_a_hash_target_hit_is_not_a_valid_pow_attempt() {
                 block_commitment,
                 nonce.as_bytes(),
                 &raw_s_a_hash,
-                ProverOptions::default(),
             )
             .expect("valid context");
             assert!(
@@ -194,16 +170,9 @@ fn proof_for_one_nonce_fails_verification_under_another_nonce() {
     let nonce_b = b"nonce-substitution-b";
     let target = [0xff; 32];
 
-    let proof = mine(
-        block_commitment,
-        nonce_a,
-        &a,
-        &b,
-        &params,
-        ProverOptions::default(),
-    )
-    .unwrap()
-    .expect("max target must yield a proof");
+    let proof = mine(block_commitment, nonce_a, &a, &b, &params)
+        .unwrap()
+        .expect("max target must yield a proof");
 
     verify_at_target(block_commitment, nonce_a, &params, &target, &proof).unwrap();
     assert!(
@@ -216,12 +185,8 @@ fn proof_for_one_nonce_fails_verification_under_another_nonce() {
 fn different_nonce_yields_different_proof() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let p1 = mine(b"hdr", b"nce-1", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
-    let p2 = mine(b"hdr", b"nce-2", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let p1 = mine(b"hdr", b"nce-1", &a, &b, &params).unwrap().unwrap();
+    let p2 = mine(b"hdr", b"nce-2", &a, &b, &params).unwrap().unwrap();
     assert_ne!(p1, p2);
     // The nonce is part of Pearl's attempt state, so matrix commitments are
     // re-keyed per nonce before noise and matmul are computed.
@@ -234,12 +199,8 @@ fn different_a_yields_different_proof() {
     let params = small_params();
     let (a1, b) = synth_matrices(b"ab-seed-1", &params);
     let (a2, _) = synth_matrices(b"ab-seed-2", &params);
-    let p1 = mine(b"hdr", b"nce", &a1, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
-    let p2 = mine(b"hdr", b"nce", &a2, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let p1 = mine(b"hdr", b"nce", &a1, &b, &params).unwrap().unwrap();
+    let p2 = mine(b"hdr", b"nce", &a2, &b, &params).unwrap().unwrap();
     assert_ne!(p1.h_a, p2.h_a, "H_A must change when A changes");
 }
 
@@ -248,7 +209,7 @@ fn unreachable_target_yields_none() {
     let mut params = small_params();
     params.difficulty_bits = 400; // target = 0 ⇒ no tile passes.
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let r = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default()).unwrap();
+    let r = mine(b"hdr", b"nce", &a, &b, &params).unwrap();
     assert!(r.is_none());
 }
 
@@ -256,9 +217,7 @@ fn unreachable_target_yields_none() {
 fn wire_format_round_trip() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     let bytes = proof.encode();
     let decoded = ai_pow::proof::MatmulProof::decode_for_params(&bytes, &params).unwrap();
     assert_eq!(proof, decoded);
@@ -269,9 +228,7 @@ fn wire_format_round_trip() {
 fn verify_rejects_wrong_block_commitment() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr-A", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr-A", b"nce", &a, &b, &params).unwrap().unwrap();
     let r = verify(b"hdr-B", b"nce", &params, &proof);
     assert!(r.is_err(), "verifier must reject mismatched header");
 }
@@ -280,9 +237,7 @@ fn verify_rejects_wrong_block_commitment() {
 fn verify_rejects_wrong_nonce() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce-A", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce-A", &a, &b, &params).unwrap().unwrap();
     let r = verify(b"hdr", b"nce-B", &params, &proof);
     assert!(r.is_err());
 }
@@ -293,9 +248,7 @@ fn verify_rejects_proof_for_different_params() {
     let mut other = params;
     other.spot_checks = params.spot_checks - 1;
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     let r = verify(b"hdr", b"nce", &other, &proof);
     assert!(matches!(
         r,
@@ -315,34 +268,8 @@ fn medium_params_round_trip() {
         difficulty_bits: 0,
     };
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     verify(b"hdr", b"nce", &params, &proof).unwrap();
-}
-
-#[test]
-fn seek_best_does_not_scan_beyond_verifier_derived_attempt_tile() {
-    let params = small_params();
-    let (a, b) = synth_matrices(b"ab-seed", &params);
-    let default_proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
-    let seek_best_proof = mine(
-        b"hdr",
-        b"nce",
-        &a,
-        &b,
-        &params,
-        ProverOptions { seek_best: true },
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        (seek_best_proof.found.i, seek_best_proof.found.j),
-        (default_proof.found.i, default_proof.found.j)
-    );
-    verify(b"hdr", b"nce", &params, &seek_best_proof).unwrap();
 }
 
 #[test]
@@ -350,7 +277,7 @@ fn rejects_wrong_input_shape() {
     let params = small_params();
     let (mut a, b) = synth_matrices(b"ab-seed", &params);
     a.pop();
-    let r = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default());
+    let r = mine(b"hdr", b"nce", &a, &b, &params);
     assert!(matches!(
         r,
         Err(ai_pow::prover::MineError::InputAShape { .. })
@@ -362,7 +289,7 @@ fn rejects_out_of_range_input() {
     let params = small_params();
     let (mut a, b) = synth_matrices(b"ab-seed", &params);
     a[0] = 100; // > 64
-    let r = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default());
+    let r = mine(b"hdr", b"nce", &a, &b, &params);
     assert!(matches!(
         r,
         Err(ai_pow::prover::MineError::InputOutOfRange { matrix: "A", .. })

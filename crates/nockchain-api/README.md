@@ -35,7 +35,7 @@ This document is NOT canonical for:
 When public API behavior, flags, or risk posture changes, update this doc in the same change.
 
 Minimum validation:
-- `make -C open docs-check`
+- `make docs-check`
 - `cargo check -p nockchain-api`
 
 ## What it does
@@ -88,6 +88,6 @@ That’s it—the API surface piggybacks on the running node; there is no separa
 - Cache warm-up: on first successful seed, the newest up to 1024 blocks (one range chunk) are available first, then older heights backfill in the background. Plan for a brief window where pagination returns nothing until seeding succeeds.
 - Reorgs: the cache follows the reported heaviest chain but does not yet prune orphaned entries, so short-lived stale data can appear after a reorg.
 - Observability: gnort metrics (prefixed `nockchain_public_grpc.*`) emit cache timings, heaviest-chain freshness, and RPC success/error counts. Use them to verify your deployment is healthy.
-- This binary shares the same hot prover state (`zkvm-jetpack::produce_prover_hot_state`) as every other Nockchain node; make sure the host has enough RAM for the prover plus the gRPC caches.
+- This binary boots with the `zkvm-jetpack::produce_prover_hot_state` jet set. Use the main `nockchain` binary for node operation that requires AI-PoW verifier jets and setup tables.
 
 Deployments today are integration testbeds, not hardened services. Control access, scrape the metrics, and expect breaking changes until we tag an official release.

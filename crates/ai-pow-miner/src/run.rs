@@ -2151,7 +2151,7 @@ mod tests {
     //! Strategy: stand up a private `NockAppService` gRPC server on an
     //! ephemeral port (same fixture pattern as `zk-pow-miner`'s
     //! run-loop tests), drive [`run`] against it, push a synthetic
-    //! `%mine` effect, and assert the miner pokes an
+    //! `%mine-ai` effect, and assert the miner pokes an
     //! `AiPowMinerWire::Mined` slab back at the server within a
     //! generous timeout. Uses `MatmulParams::TEST_SMALL` + trivial
     //! uint256 `FF..FF` target so the real ai-pow prover wins on extranonce 0.
@@ -2392,7 +2392,7 @@ mod tests {
             let plen = D(pow_len);
             let effect = T(&mut slab, &[head, version, commit, target, plen]);
             slab.set_root(effect);
-            self.effect_tx.send(slab).expect("publish %mine effect");
+            self.effect_tx.send(slab).expect("publish %mine-ai effect");
         }
 
         async fn shutdown(self) {

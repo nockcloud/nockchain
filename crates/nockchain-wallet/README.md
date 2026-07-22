@@ -77,7 +77,7 @@ This document is NOT canonical for:
 When wallet CLI behavior or flags change, update this doc in the same change.
 
 Minimum validation:
-- `make -C open docs-check`
+- `make docs-check`
 - `cargo check -p nockchain-wallet`
 
 ## Setup
@@ -385,7 +385,7 @@ Notes:
 - The command may create multiple transactions, not just one: it creates up to one migration tx per active local v0 signer under the active master
 - Inspect the migration summary before submitting anything. It tells you which signer each tx belongs to, how many notes were selected, the fee, the expected migrated amount, where the tx was saved, and how to submit it
 - Watch-only imports are not enough; the wallet must hold the matching v0 signing key
-- If you are using the bridge helper scripts, `open/crates/bridge/scripts/wallet.sh --new` imports both the default v1 fakenet key and the legacy v0 fakenet key
+- Import the matching v0 signing key before migrating legacy v0 notes.
 
 ### Manual V0 Fan-In With `create-tx`
 

@@ -160,9 +160,8 @@ impl PrivateNockApp for PrivateNockAppGrpcServer {
                     Ok(slab) => {
                         let effect_noun = unsafe { *slab.root() };
                         // Filter on the head atom of the effect cell. Empty
-                        // filter ⇒ forward everything. Post-h-zoon: must
-                        // explicitly thread the slab's NounSpace through
-                        // `in_space` to access cell head.
+                        // filter forwards everything. Use the slab noun space
+                        // when reading the effect head.
                         let head_matches = if head_filter.is_empty() {
                             true
                         } else {

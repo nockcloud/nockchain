@@ -28,8 +28,8 @@
 //!   the BLAKE3 finalize and a degenerate-but-valid jackpot step, so the
 //!   jackpot `when_transition` is vacuous on the last row).
 //!   Non-vacuous: the bridge rejects a zero `HASH_JACKPOT`.
-//!   Enabled by the `verify_round` leading-boundary gate fix
-//!   (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`).
+//!   Enabled by `verify_round` gating that skips the non-blake row
+//!   immediately before a new BLAKE3 block.
 //! - **C2** — the difficulty check on the bound `HASH_JACKPOT`
 //!   vs the real `difficulty_target`.
 //!
@@ -40,9 +40,8 @@
 //! `composite_verify_pow_pinned_logup` (batch-stark): CRIT-1
 //! program-pin **and** the `noised_packed`/range LogUp enforced
 //! in one proof. The verifier rebuilds the canonical program
-//! from the trusted `ctx`/`params` (never the proof). See
-//! `ai_pow_zk::composite_proof` (entrypoint tier table) and
-//! `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md` §4.C.
+//! from the trusted `ctx`/`params` (never the proof); `composite_proof`
+//! owns the entrypoint tier table.
 //!
 //! This bridge produces and verifies the Layer-0 composite proof for one
 //! opened jackpot tile. It is soundness-critical, but it is not by itself a
@@ -245,10 +244,10 @@ fn validate_scheduled_params(params: &MatmulParams) -> Result<(), BridgeError> {
 
 /// Outcome of a successful F1 bridge run.
 pub struct ZkOutcome {
-    /// The derived public inputs the proof commits to. Callers
-    /// that need encoded proof size measure it themselves (the
-    /// `f1_harness` example does — `bincode` is dev-only for this
-    /// crate so the production lib path does not serialize here).
+    /// The derived public inputs the proof commits to. Callers that
+    /// need encoded proof size measure it outside this production path;
+    /// `bincode` is dev-only for this crate so the production library
+    /// path does not serialize here.
     pub pis: CompositePublicInputs,
     /// Always `true`: the §6(b) in-circuit matmul sweep is the only
     /// matmul path. (The legacy off-circuit `compute_tile_trace`
@@ -2712,13 +2711,11 @@ fn verified_block_public(verified: &VerifiedZkStatement) -> ai_pow_zk::canonical
 /// soundness of the difficulty bound is *conditional* on the
 /// verifier deriving the correct chain-pinned `target` itself —
 /// it must **never** accept a counterparty-supplied target. CRIT-1
-/// (now fixed) closes the other MED-3 precondition (`HASH_JACKPOT`
-/// genuinely bound). Production code MUST therefore call
-/// [`prove_and_verify_for_block`] (which derives
-/// `target = difficulty_target(params)` internally and cannot be
-/// passed a forged target); this primitive is retained only for
-/// tests that deliberately inject a non-chain target. See
-/// `crates/ai-pow-zk/docs/2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
+/// closes the other precondition: `HASH_JACKPOT` is genuinely bound.
+/// Production code MUST therefore call [`prove_and_verify_for_block`],
+/// which derives `target = difficulty_target(params)` internally and
+/// cannot be passed a forged target. This primitive is retained only
+/// for tests that deliberately inject a non-chain target.
 #[cfg(test)]
 pub(crate) fn prove_and_verify(
     ctx: &BlockContext<'_>,
@@ -3314,8 +3311,8 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // program from the trusted shape — a pure function of
     // `ctx`/`params`, never the proof; a zeroed-selector forge is
     // bound to a different program and rejected vs the canonical
-    // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
-    // the uni-stark pinned path (2026-05-15_HIGH2_2_DESIGN.md §4.C.10).
+    // VK (ai-pow-zk `routea_*` regression suite) while staying close
+    // to the uni-stark pinned cost.
     // §6(b)/G1+G2 keystone `sx_bound`: `true` for `num_stripes ≤
     // STRIPE_MAX` (the SX 64-lane keystone forces the sub-block-major
     // matmul→fold binding); `false` for the §6(b)-R-b stripe-major path

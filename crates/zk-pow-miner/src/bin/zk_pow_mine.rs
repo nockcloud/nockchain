@@ -1,7 +1,7 @@
 //! `zk-pow-mine` — standalone ZK-PoW (puzzle-nock STARK) miner.
 //!
 //! Connects to a `nockchain` node's private NockAppService gRPC,
-//! subscribes to `%mine` candidate effects, runs the STARK in a
+//! subscribes to `%mine-zk` candidate effects, runs the STARK in a
 //! worker pool, and pokes solutions back as `%pow` commands on the
 //! `ZkPowMinerWire::Mined` wire.
 //!
@@ -27,7 +27,7 @@ use zk_pow_miner::run::{run, MinerConfig, MinerError};
 #[derive(Parser, Debug)]
 #[command(
     name = "zk-pow-mine",
-    about = "Standalone ZK PoW block miner. Subscribes to a nockchain node's %mine effects via gRPC and submits solutions back.",
+    about = "Standalone ZK PoW block miner. Subscribes to a nockchain node's %mine-zk effects via gRPC and submits solutions back.",
     version
 )]
 struct Args {

@@ -3,7 +3,7 @@
 //! Spins up a private `NockAppService` gRPC server backed by a hand-built
 //! `NockAppHandle` (no real chain kernel), runs `zk_pow_miner::run::run_with_pool`
 //! against it with a **real** `SerfWorker` pool (loaded with `assets/miner.jam`),
-//! publishes one synthetic `%mine` effect with `target = 2^400` so any
+//! publishes one synthetic `%mine-zk` effect with `target = 2^400` so any
 //! digest passes, and asserts that within 60 seconds the mock observes a
 //! `ZkPowMinerWire::Mined`-wire poke whose payload begins with
 //! `[%command %pow …]` — proving the miner ran the real STARK and routed
@@ -155,13 +155,13 @@ async fn miner_finds_and_submits_block_against_mock_node() {
     // Brief pause for the miner to connect + configure + subscribe.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ── 4. Publish a synthetic %mine effect with target = 2^400 (any
-    // digest from the STARK passes).
+    // Publish a synthetic %mine-zk effect with target = 2^400; any
+    // digest from the STARK passes.
     let mine_effect = build_synth_mine_effect(2);
     effect_tx
         .send(mine_effect)
-        .expect("publish synthetic %mine effect");
-    eprintln!("[test] published synthetic %mine effect; awaiting %mined poke ...");
+        .expect("publish synthetic %mine-zk effect");
+    eprintln!("[test] published synthetic %mine-zk effect; awaiting %mined poke ...");
 
     // ── 5. Poll for a %mined poke, up to 60s.
     let deadline = Instant::now() + Duration::from_secs(60);

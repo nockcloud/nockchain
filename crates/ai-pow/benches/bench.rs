@@ -9,7 +9,7 @@ use std::env;
 use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{mine, mine_block, ProverOptions};
+use ai_pow::prover::{mine, mine_block};
 use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::verify;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -36,16 +36,14 @@ fn bench_prover(c: &mut Criterion) {
     let params = pick_params();
     let (a, b) = synth_matrices(b"bench-ab", &params);
     c.bench_function("prover.mine.one_attempt", |bencher| {
-        bencher.iter(|| mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default()).unwrap())
+        bencher.iter(|| mine(b"hdr", b"nce", &a, &b, &params).unwrap())
     });
 }
 
 fn bench_verifier(c: &mut Criterion) {
     let params = pick_params();
     let (a, b) = synth_matrices(b"bench-ab", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     c.bench_function("verifier.verify", |bencher| {
         bencher.iter(|| verify(b"hdr", b"nce", &params, &proof).unwrap())
     });
@@ -67,13 +65,12 @@ fn bench_mine_block_nonce_bound(c: &mut Criterion) {
                 &a,
                 &b,
                 &params,
-                ProverOptions::default(),
             )
             .unwrap()
         })
     });
     c.bench_function("prover.mine.one_attempt_no_match", |bencher| {
-        bencher.iter(|| mine(b"hdr", b"n1", &a, &b, &params, ProverOptions::default()).unwrap())
+        bencher.iter(|| mine(b"hdr", b"n1", &a, &b, &params).unwrap())
     });
 }
 

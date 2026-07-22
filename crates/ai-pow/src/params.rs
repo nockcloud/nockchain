@@ -16,11 +16,9 @@
 //!
 //! # Pearl §4.8 envelope (the Pearl-faithful PROD path, "γ")
 //!
-//! The Pearl whitepaper §4.8 ("Supported PoW Parameters") *caps* the
-//! mining parameters so that **one opened tile's proof always fits a
-//! single STARK** — Pearl deliberately never segments (see
-//! `crates/ai-pow-zk/docs/2026-05-17_M_S2_PEARL_EVALUATION.md`). We adopt that
-//! envelope here, split into two layers:
+//! The Pearl whitepaper §4.8 ("Supported PoW Parameters") caps
+//! mining parameters so one opened tile fits a single STARK. Nockchain
+//! mirrors that envelope here, split into two layers:
 //!
 //! * [`MatmulParams::validate`] enforces the **universal** Pearl §4.8
 //!   trace bound `k·(h+w) ≤ 2²²` (the verifier's restriction; with
@@ -36,8 +34,7 @@
 //!   Small in-crate test profiles (e.g. [`MatmulParams::TEST_SMALL`],
 //!   `r = 4`) are intentionally *below* this envelope: they exercise
 //!   the circuit machinery fast and are **not** consensus-valid by
-//!   design. The future consensus/block-admission layer (M-C1) calls
-//!   `validate_prod_envelope`.
+//!   design. Consensus/block-admission code calls `validate_prod_envelope`.
 
 use thiserror::Error;
 
@@ -285,14 +282,10 @@ impl MatmulParams {
         if self.k == 0 || self.k > PEARL_K_MAX {
             return Err(ParamError::KOutOfRange);
         }
-        // Pearl §4.8 **universal trace bound** `k·(h+w) ≤ 2²²`
-        // (square tiles ⇒ `h = w = tile`). This is THE
-        // one-tile-one-STARK guarantee: it bounds the Layer-0 trace
-        // so a single opened tile always proves in one STARK — the
-        // Pearl-faithful reason segmentation (G3) is unnecessary.
-        // Holds for every accepted puzzle (test and production); the
-        // §4.8 *security* caps are layered on in
-        // `validate_prod_envelope`. See `2026-05-17_M_S2_PEARL_EVALUATION.md`.
+        // Pearl §4.8 universal trace proxy `k·(h+w) ≤ 2²²`
+        // (square tiles ⇒ `h = w = tile`). The security caps layered
+        // on in `validate_prod_envelope` keep production shapes inside
+        // Pearl's one-opened-tile envelope.
         if self.pearl_trace_bound() > PEARL_TRACE_BOUND {
             return Err(ParamError::TraceBoundExceeded);
         }
@@ -356,12 +349,12 @@ impl MatmulParams {
     /// * `64 | k` (commitment-hash alignment)
     /// * `h·w ≥ 32` (entropy in `M`; square tiles ⇒ `tile² ≥ 32`)
     /// * `h·w ≤ 256` (Pearl reference-prover per-tile cap ⇒ `tile ≤ 16`)
-    /// * `num_stripes = k/noise_rank ≤ STRIPE_MAX` (so the §6(b)
-    ///   matmul sweep is proven in-circuit, not the off-circuit fallback)
+    /// * `num_stripes = k/noise_rank ≤ PEARL_STRIPE_MAX` (Pearl's
+    ///   implied stripe ceiling; the sub-block-major path handles
+    ///   `≤ STRIPE_MAX`, and the R-b stripe-major path handles the
+    ///   remaining admissible stripe band in-circuit)
     ///
-    /// Within this envelope Pearl proves one opened tile in a single
-    /// STARK — which is exactly why the Pearl-faithful PROD path
-    /// needs no segmentation (`2026-05-17_M_S2_PEARL_EVALUATION.md`).
+    /// Within this envelope Pearl proves one opened tile in a single STARK.
     pub fn validate_prod_envelope(&self) -> Result<(), ParamError> {
         self.validate()?;
         if self.m > PEARL_MN_MAX || self.n > PEARL_MN_MAX {
@@ -459,10 +452,9 @@ impl MatmulParams {
 //  only** (`[−64,64]`, int32 accumulate); §1.1 defers an FP PoUW
 //  to an UNSHIPPED upgrade. ⇒ production mines group_1's INT7
 //  GEMMs ONLY; group_0 (FP8) is a documented production
-//  limitation, machine-enforced here (DB-3(a) /
-//  `2026-05-18_PHASE_B_DESIGN.md` §3/§7). This is the in-repo admission
-//  guard mirroring `validate_prod_envelope`; the vLLM plugin
-//  (Phase D, external) is the operational filter on top.
+//  limitation, machine-enforced here. This is the in-repo admission
+//  guard mirroring `validate_prod_envelope`; the vLLM plugin is the
+//  operational filter on top.
 // ───────────────────────────────────────────────────────────────
 
 /// The model's `quantization_config` group for a layer.

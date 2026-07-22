@@ -114,11 +114,10 @@ where
 /// then emits every LogUp bus. Proven via `p3-batch-stark`
 /// (`prove_batch`), whose multi-phase prover supports a
 /// preprocessed/verifier-fixed trace *and* the permutation
-/// argument simultaneously (2026-05-15_HIGH2_2_DESIGN.md §4.C.9). The
-/// `noised_packed` bus then binds the matmul `A_NOISED`/`B_NOISED`
-/// reads to the canonical `NOISED_PACKED` store (C3-tied to the
-/// CRIT-1-pinned `HASH_A`/`HASH_B`) — closing §4.C with **no**
-/// preprocessed-width blow-up (the §4.C.8 cost trap).
+/// argument simultaneously. The `noised_packed` bus binds the
+/// matmul `A_NOISED`/`B_NOISED` reads to the canonical
+/// `NOISED_PACKED` store (C3-tied to the CRIT-1-pinned
+/// `HASH_A`/`HASH_B`) without widening the preprocessed trace.
 ///
 /// Preprocessed exposure rides the standard
 /// `BaseAir::preprocessed_trace()` API that batch-stark's

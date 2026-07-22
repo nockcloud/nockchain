@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used)] // integration test: unwrap is acceptable
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{mine, ProverOptions};
+use ai_pow::prover::mine;
 use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::verify;
 
@@ -40,9 +40,7 @@ fn rect_b() -> MatmulParams {
 fn rectangle_round_trip_a() {
     let params = rect_a();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     verify(b"hdr", b"nce", &params, &proof).unwrap();
 }
 
@@ -50,9 +48,7 @@ fn rectangle_round_trip_a() {
 fn rectangle_round_trip_b() {
     let params = rect_b();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     verify(b"hdr", b"nce", &params, &proof).unwrap();
 }
 
@@ -66,12 +62,8 @@ fn swapping_m_and_n_changes_proof() {
     };
     let (a_a, b_a) = synth_matrices(b"ab-a", &pa);
     let (a_b, b_b) = synth_matrices(b"ab-b", &pb);
-    let pa_proof = mine(b"hdr", b"nce", &a_a, &b_a, &pa, ProverOptions::default())
-        .unwrap()
-        .unwrap();
-    let pb_proof = mine(b"hdr", b"nce", &a_b, &b_b, &pb, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let pa_proof = mine(b"hdr", b"nce", &a_a, &b_a, &pa).unwrap().unwrap();
+    let pb_proof = mine(b"hdr", b"nce", &a_b, &b_b, &pb).unwrap().unwrap();
     assert_ne!(pa_proof, pb_proof);
     let cross = verify(b"hdr", b"nce", &pb, &pa_proof);
     assert!(cross.is_err());
@@ -81,9 +73,7 @@ fn swapping_m_and_n_changes_proof() {
 fn merkle_path_length_is_padded_depth() {
     let params = rect_a();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(b"hdr", b"nce", &a, &b, &params).unwrap().unwrap();
     let padded_depth = params.num_tiles().next_power_of_two().trailing_zeros() as usize;
     assert_eq!(proof.found.m_path.len(), padded_depth);
     for opening in &proof.spot {

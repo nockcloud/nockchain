@@ -1,5 +1,4 @@
 .DS_Store
-**/.DS_Store
 .env
 .data.*
 /hoonc
@@ -14,7 +13,6 @@ assets/*.jam
 keys.export
 replay-checkpoints-51094
 nockchain-api-checkpoints-backup
-**/.DS_Store
 notes-*.csv
 /txs
 /hoonc-octs-type-138.jam
@@ -22,10 +20,7 @@ assets/native/*.jam
 bazel-*
 *.jam
 
-# Reference papers (cite by name only in docs; the PDFs themselves are
-# not in the repo per maintainer directive 2026-05-19). Auditors are
-# expected to obtain the papers via their citations (ePrint IDs, arXiv,
-# venue, etc.).
+# Reference papers and local research PDFs are cited by source, not committed.
 *.pdf
 
 # Python build/cache artifacts (none of these are source; they're
@@ -44,25 +39,18 @@ __pycache__/
 .coverage.*
 htmlcov/
 
-# Python virtual environments — pearl_vllm_cpu/.venv etc.
-# Use uv/pip/poetry to recreate from the project's requirements.
+# Python virtual environments.
 .venv/
 venv/
 env/
 ENV/
 
-# Profiling output
-f1_profile_*.json.gz
-*.prof
-
-# Local model weights / checkpoints (large binaries; obtained out of
-# band per the Pearl + ai-pow-zk setup docs).
+# Local model weights and checkpoints.
 *.safetensors
 *.gguf
 *.pt
 
-# Worktrees managed by Claude Code (transient per-session work).
-.claude/worktrees/
+# Editor swap files.
 *.swp
 pearl/
 pearl

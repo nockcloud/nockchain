@@ -8,7 +8,7 @@
 //!    b. Subscribe to `watch_candidates` — **before** enabling mining
 //!       so the initial candidate isn't lost to a race.
 //!    c. Poke `enable-mining(true)` — kernel's post-poke
-//!       `update-candidate-block` then emits the first `%mine` effect
+//!       `update-candidate-block` then emits the first `%mine-zk` effect
 //!       on the now-active stream.
 //! 3. Inner loop (select):
 //!    - shutdown → cancel pool + best-effort `enable-mining(false)` + exit
@@ -174,9 +174,9 @@ pub async fn run_with_pool(
         };
 
         // ── configure ──
-        // Order matters: subscribe to %mine effects BEFORE enabling mining,
-        // so the initial candidate (which the post-poke
-        // update-candidate-block emits on enable) lands on a live stream.
+        // Order matters: subscribe to %mine-zk effects BEFORE enabling mining,
+        // so the initial candidate emitted by the post-poke
+        // update-candidate-block lands on a live stream.
         if let Err(e) = client
             .set_mining_key(
                 ZkPowMinerWire::SetPubKey.to_wire(),
@@ -346,7 +346,7 @@ mod tests {
     //! ephemeral port (the same fixture pattern as the `WatchEffects`
     //! test in `crates/nockapp-grpc/src/tests.rs`), drive
     //! [`run_with_pool`] against it using a StubWorker-backed pool, push
-    //! synthetic `%mine` effects, and assert the miner pokes
+    //! synthetic `%mine-zk` effects, and assert the miner pokes
     //! `ZkPowMinerWire::Mined` back at the server within a tight timeout.
 
     use std::net::{SocketAddr, TcpListener};
@@ -485,7 +485,7 @@ mod tests {
             let plen = D(pow_len);
             let effect = T(&mut slab, &[head, version, commit, target, plen]);
             slab.set_root(effect);
-            self.effect_tx.send(slab).expect("publish %mine effect");
+            self.effect_tx.send(slab).expect("publish %mine-zk effect");
         }
 
         async fn shutdown(self) {

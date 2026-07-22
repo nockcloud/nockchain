@@ -62,9 +62,8 @@ impl MiningCandidate {
     /// `%mine-zk` nor `%mine-ai`.
     pub fn from_effect_slab(slab: NounSlab) -> Result<Option<Self>, CandidateDecodeError> {
         // SAFETY: `slab.root()` returns a valid Noun owned by the slab
-        // for the lifetime of `slab`. We construct nested slabs via
-        // `copy_into`, which is safe. Post-h-zoon: noun reads must be
-        // explicitly bound to the slab's NounSpace via `in_space`.
+        // for the lifetime of `slab`. Cross-slab noun reads must be
+        // bound to the slab's NounSpace via `in_space`.
         let root = unsafe { *slab.root() };
         let space = slab.noun_space();
         let effect_cell = root
@@ -137,8 +136,8 @@ mod tests {
 
         assert_eq!(candidate.pow_len, 256);
         assert_eq!(candidate.kind, MiningCandidateKind::Zk);
-        // The owned slabs round-trip the values. Post-h-zoon: atom
-        // reads must be bound to a NounSpace via in_space.
+        // The owned slabs round-trip the values; atom reads are bound
+        // to their source NounSpace.
         let version_space = candidate.version.noun_space();
         let v = unsafe { *candidate.version.root() }
             .in_space(&version_space)

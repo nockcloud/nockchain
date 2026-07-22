@@ -73,7 +73,7 @@ application and its drivers.
 When runtime-interface behavior changes in `nockapp`, update this doc in the same change.
 
 Minimum validation:
-- `make -C open docs-check`
+- `make docs-check`
 - `cargo check -p nockapp`
 
 <br>

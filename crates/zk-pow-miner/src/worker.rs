@@ -151,8 +151,8 @@ pub fn random_nonce() -> NounSlab {
 
 /// Build the miner-kernel poke cause: `[version header nonce target pow-len]`.
 /// Matches the `cause` schema in `hoon/apps/dumbnet/miner.hoon:19–23`.
-/// Post-h-zoon: cross-slab noun reads must be bound to the source slab's
-/// `NounSpace` via `copy_into(noun, &space)`.
+/// Cross-slab noun reads must be bound to the source slab's `NounSpace`
+/// via `copy_into(noun, &space)`.
 pub fn build_candidate_poke(candidate: &MiningCandidate, nonce_slab: NounSlab) -> NounSlab {
     use nockvm::noun::NounAllocator;
     let version_space = candidate.version.noun_space();

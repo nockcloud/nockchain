@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [[bin]]
 # Production node-connecting miner. Mirrors `zk-pow-mine` in shape:
-# connects to a `nockchain` node's private gRPC, subscribes to %mine
+# connects to a `nockchain` node's private gRPC, subscribes to %mine-ai
 # effects, mines Pearl-compatible tickets, builds the recursive certificate
 # after a target hit, and submits the canonical %ai-pow command on %mined.
 name = "ai-pow-mine"

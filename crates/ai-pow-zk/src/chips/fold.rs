@@ -4,9 +4,8 @@
 //! ## Property enforced
 //!
 //! The fold is a **pure function of a per-stripe `X_STEP`
-//! sequence** (see `ai-pow::matmul::TileState::from_x_steps` and
-//! `2026-05-15_HIGH2_2_DESIGN.md` §4.0). Row `t` (0-indexed) is the fold of
-//! stripe `t` into slot `t mod 16`:
+//! sequence** produced by `ai-pow::matmul::TileState::from_x_steps`.
+//! Row `t` (0-indexed) folds stripe `t` into slot `t mod 16`:
 //!
 //! ```text
 //!   M_next[slot] = rotl13(M_cur[slot]) XOR X_STEP[t]      (slot = t mod 16)
@@ -20,13 +19,13 @@
 //! slots pass through), so the last trace row holds the final `M`
 //! — exactly what HIGH-2.2 §4.D's keystone reads.
 //!
-//! This is **Option B2**: a direct per-stripe fold. It is *not*
-//! Pearl's rotate-on-load bit-serial RAM machine (no
-//! `CUMSUM_BUFFER`, no `SHIFT3` back-shift compensation) — those
-//! exist in Pearl only to service its concurrent scheduling, and
-//! our SNARKs are deliberately not trace-byte-equivalent to Pearl
-//! (`2026-05-15_HIGH2_2_DESIGN.md` §9.5). The XOR+rotate core reuses the
-//! audited `blake3::round_ops::xor_32_shift_if` gadget.
+//! This is a direct per-stripe fold. It is not Pearl's
+//! rotate-on-load bit-serial RAM machine (no `CUMSUM_BUFFER`, no
+//! `SHIFT3` back-shift compensation) — those exist in Pearl only to
+//! service its concurrent scheduling. Nockchain proofs are not
+//! trace-byte-equivalent to Pearl; only the mineable unit of work is shared.
+//! The XOR+rotate core reuses the audited `blake3::round_ops::xor_32_shift_if`
+//! gadget.
 //!
 //! The parent composite AIR binds the accumulator to `X_STEP` through
 //! StripeXor or the R-b TileReduce keystone and binds the accumulator inputs to

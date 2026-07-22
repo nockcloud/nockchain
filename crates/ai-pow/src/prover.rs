@@ -36,14 +36,6 @@ use crate::tile_hash::{difficulty_target, hash_le_target};
 /// Pearl §4.1 input range: `|A|, |B| <= 64`.
 const INPUT_RANGE_MAX: i8 = 64;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ProverOptions {
-    /// Deprecated no-op retained for API compatibility. Production mining uses
-    /// one verifier-derived jackpot tile per nonce-bound attempt, so there is
-    /// no miner-selected tile set to scan for a "best" hash.
-    pub seek_best: bool,
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MineError {
     #[error("invalid params: {0}")]
@@ -337,10 +329,9 @@ pub fn mine(
     a: &[i8],
     b: &[i8],
     params: &MatmulParams,
-    opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
     let ctx = BlockContext::build(block_commitment, nonce, a, b, params)?;
-    mine_with_context(&ctx, opts)
+    mine_with_context(&ctx)
 }
 
 /// Run the prover repeatedly over a sequence of nonces. Every nonce builds a
@@ -353,7 +344,6 @@ pub fn mine_block<I, N>(
     a: &[i8],
     b: &[i8],
     params: &MatmulParams,
-    opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError>
 where
     I: IntoIterator<Item = N>,
@@ -361,7 +351,7 @@ where
 {
     for nonce in nonces {
         let ctx = BlockContext::build(block_commitment, nonce.as_ref(), a, b, params)?;
-        if let Some(proof) = mine_with_context(&ctx, opts)? {
+        if let Some(proof) = mine_with_context(&ctx)? {
             return Ok(Some(proof));
         }
     }
@@ -390,23 +380,17 @@ pub fn mine_with_context_at_target(
     block_commitment: &[u8],
     nonce: &[u8],
     target: &[u8; 32],
-    opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
     ensure_context_attempt(ctx, block_commitment, nonce)?;
-    Ok(mine_inner(ctx, target, opts)?.map(|(p, _)| p))
+    Ok(mine_inner(ctx, target)?.map(|(p, _)| p))
 }
 
-fn mine_with_context(
-    ctx: &BlockContext<'_>,
-    opts: ProverOptions,
-) -> Result<Option<MatmulProof>, MineError> {
+fn mine_with_context(ctx: &BlockContext<'_>) -> Result<Option<MatmulProof>, MineError> {
     let target = difficulty_target(&ctx.params);
-    let result = mine_inner(ctx, &target, opts)?;
-
-    // Pearl-analog ZK wrapping (preserved from the original
-    // mine_with_context). The bridge re-derives target from params
-    // per MED-3, so we only run it on the params-derived-target
-    // path; `mine_with_context_at_target` deliberately skips it.
+    let result = mine_inner(ctx, &target)?;
+    // The bridge derives its target from params, so run it only on the
+    // params-derived target path. `mine_with_context_at_target` deliberately
+    // skips the side-effect because caller-supplied targets can differ.
     #[cfg(feature = "zk")]
     if let Some((_, found_idx)) = &result {
         // The selected-tile ZK side-effect is only full-matmul admissible when
@@ -430,7 +414,6 @@ fn mine_with_context(
 fn mine_inner(
     ctx: &BlockContext<'_>,
     target: &[u8; 32],
-    opts: ProverOptions,
 ) -> Result<Option<(MatmulProof, u32)>, MineError> {
     let params = &ctx.params;
     let pow_key = pow_key_for_nonce(&ctx.s_a, &ctx.nonce);
@@ -446,7 +429,6 @@ fn mine_inner(
     let comm_m = merkle_root(&leaves)?;
     let chal = challenge_seed(&ctx.attempt_state, &comm_m, &ctx.tag);
 
-    let _ = opts;
     let found_idx =
         attempt_tile_index(&ctx.attempt_state, &ctx.tag, &ctx.s_a, num_tiles as u64) as u32;
     let h = &leaves[found_idx as usize];

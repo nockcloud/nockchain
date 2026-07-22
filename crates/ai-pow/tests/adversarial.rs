@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)] // integration test: unwrap is acceptable
 use ai_pow::params::{MatmulParams, ParamError, SPOT_CHECKS_MAX};
 use ai_pow::proof::{MatmulProof, TileOpening};
-use ai_pow::prover::{mine, ProverOptions};
+use ai_pow::prover::mine;
 use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::{verify, VerifyError};
 
@@ -13,9 +13,7 @@ fn fresh_proof() -> (MatmulParams, &'static [u8], &'static [u8], MatmulProof) {
     let block = b"block-header-bytes" as &[u8];
     let nonce = b"nonce-1" as &[u8];
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(block, nonce, &a, &b, &params, ProverOptions::default())
-        .unwrap()
-        .unwrap();
+    let proof = mine(block, nonce, &a, &b, &params).unwrap().unwrap();
     (params, block, nonce, proof)
 }
 
@@ -139,7 +137,7 @@ fn reject_found_above_target() {
     let block = b"block";
     let nonce = b"nonce";
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let Some(proof) = mine(block, nonce, &a, &b, &params, ProverOptions::default()).unwrap() else {
+    let Some(proof) = mine(block, nonce, &a, &b, &params).unwrap() else {
         return;
     };
     let Some(alt) = proof

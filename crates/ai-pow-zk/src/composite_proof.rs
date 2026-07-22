@@ -195,10 +195,9 @@ impl std::error::Error for PowVerifyError {}
 /// chain-pinned params** (`difficulty_target(params)`) and never a
 /// counterparty-supplied value. CRIT-1 (fixed) guarantees the other
 /// precondition — `HASH_JACKPOT` is a genuinely bound PI.
-/// Production callers MUST go through the MED-3-hardened
+/// Production callers MUST go through
 /// `ai_pow::zk_bridge::prove_and_verify_for_block`, which recomputes
-/// the target internally so it cannot be forged. See
-/// `2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
+/// the target internally so it cannot be forged.
 #[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_verify_pow(
     config: &AiPowStarkConfig,
@@ -330,9 +329,9 @@ pub fn composite_verify_pow_pinned(
 //  canonical store (§4.C gap). These prove/verify the
 //  `CompositeFullAirWithLookupsPinned` AIR via `p3-batch-stark`,
 //  which enforces the CRIT-1 pin AND the `noised_packed`
-//  (+ range / i8u8 / cv-routing) LogUp simultaneously. Spike
-//  measured ~1.23x the uni-stark pinned prover cost
-//  (2026-05-15_HIGH2_2_DESIGN.md §4.C.10), vs naive Route C's ~10x.
+//  (+ range / i8u8 / cv-routing) LogUp simultaneously. The batch path
+//  keeps the prover close to the uni-stark pinned cost instead of widening
+//  the preprocessed trace.
 //
 //  Same CRIT-1 trust model: the verifier rebuilds the canonical
 //  `program` from the trusted per-block `ctx` (never from the
@@ -1990,9 +1989,8 @@ mod tests {
     // the batch-stark pinned+LogUp path (`*_pinned_logup`). These
     // prove the production Route-A binding keeps CRIT-1 soundness
     // and the HIGH-2 keystone *while additionally enforcing the
-    // noised_packed/range LogUp*. (The noised_packed *matmul-input*
-    // binding is non-vacuous only once §4.A places real matmul
-    // rows — 2026-05-15_HIGH2_2_DESIGN.md §4.C.10; not overclaimed here.)
+    // noised_packed/range LogUp*. The noised_packed matmul-input
+    // binding is non-vacuous only when the statement places matmul rows.
 
     /// Honest pinned+LogUp round-trip verifies; the C2 difficulty
     /// check is real (0 target rejects the non-zero keyed digest,

@@ -670,8 +670,8 @@ mod tests {
     }
 
     /// Walk an `AsertParams` sub-cell (6-atom right-fold) and check each
-    /// field matches the expected `AsertParams` value. Post-h-zoon: all
-    /// noun reads must be bound to a `NounSpace` via `in_space`.
+    /// field matches the expected `AsertParams` value. Noun reads are bound
+    /// to the source `NounSpace`.
     fn assert_asert_subcell(noun: Noun, space: &nockvm::noun::NounSpace, expected: &AsertParams) {
         // slot 1 of 6: phase
         let c1 = noun

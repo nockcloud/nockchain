@@ -423,14 +423,12 @@ pub const CV_OUT_FREQ: usize = JACKPOT_SLOT_SEL_START + JACKPOT_SLOT_SEL_LEN;
 // =====================================================================
 //  HIGH-2.2 §4.A/§4.D — FoldChip composite block (Option B2)
 //
-//  Appended *after* all Pearl-mirrored columns (the standing
-//  invariant is that our SNARK is deliberately NOT trace-byte-
-//  equivalent to Pearl — only the mineable unit of work is;
-//  2026-05-15_HIGH2_2_DESIGN.md §9.5). Appending here shifts no existing
-//  offset (every column above is fixed); only TOTAL_TRACE_WIDTH
-//  grows. The FoldChip is a pure function of the per-stripe
-//  X_STEP sequence (§4.0), so this block carries exactly its
-//  standalone columns at composite offsets.
+//  Appended *after* all Pearl-mirrored columns. Nockchain proofs are
+//  deliberately not trace-byte-equivalent to Pearl; only the mineable
+//  unit of work is shared. Appending here shifts no existing offset
+//  because every column above is fixed; only TOTAL_TRACE_WIDTH grows.
+//  The FoldChip is a pure function of the per-stripe X_STEP sequence,
+//  so this block carries exactly its standalone columns at composite offsets.
 // =====================================================================
 
 /// 1 = active fold row, 0 = passthrough/padding.

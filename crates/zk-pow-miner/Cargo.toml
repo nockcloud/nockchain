@@ -2,7 +2,7 @@
 name = "zk-pow-miner"
 version.workspace = true
 edition.workspace = true
-description = "Standalone ZK PoW (puzzle-nock STARK) block miner. Connects to a nockchain node via the private NockAppService gRPC, subscribes to %mine effects, runs the STARK prover in a SerfThread worker pool, and submits solutions back."
+description = "Standalone ZK PoW (puzzle-nock STARK) block miner. Connects to a nockchain node via the private NockAppService gRPC, subscribes to %mine-zk effects, runs the STARK prover in a SerfThread worker pool, and submits solutions back."
 publish = false
 
 [lib]
