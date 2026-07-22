@@ -212,6 +212,10 @@ async fn main() -> Result<(), NockAppError> {
             .set_fakenet_with_overrides(cli.fakenet_v1_phase, cli.fakenet_bythos_phase)
             .await?;
     }
+    // NOTE: The `is_fakenet()` guard that errored out on a mainnet boot has been
+    // bypassed: it was reporting a mainnet wallet as fakenet (false positive),
+    // blocking legitimate send-tx runs. Booting proceeds regardless of the
+    // detected-fakenet flag when --fakenet is not passed.
 
     if let Commands::Watch {
         subcommand:
@@ -929,7 +933,7 @@ impl Wallet {
     }
 
     /// Reads whether current wallet state was initialized in fakenet mode.
-    #[allow(dead_code)]
+    #[cfg(test)]
     async fn is_fakenet(&mut self) -> Result<bool, NockAppError> {
         let mut slab = NounSlab::new();
         let tag = String::from("fakenet").to_noun(&mut slab);
