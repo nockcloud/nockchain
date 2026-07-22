@@ -3295,8 +3295,8 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         tile: params.tile,
         difficulty_bits: params.difficulty_bits,
     };
-    // The production FRI profile, chosen degree-adaptively from the bound trace
-    // length: `prod_adaptive` holds the ≥60-bit unconditional-Johnson floor while
+    // The production FRI profile is chosen degree-adaptively from the bound
+    // trace length: `prod_adaptive` holds the 60-bit operational FRI floor while
     // picking the total-prove-optimal blowup for this degree (`lb=4` small, `lb=2`
     // large). The verifier re-derives the identical profile from the bound
     // `trace_height`, so this must stay `for_layer0_trace(height)` everywhere.

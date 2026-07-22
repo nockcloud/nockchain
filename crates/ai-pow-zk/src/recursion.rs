@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::circuit::{
-    Challenge, FriSoundnessProfile, Tip5Compress, Tip5Sponge, PROD_JOHNSON_FLOOR_BITS,
+    Challenge, FriSoundnessProfile, Tip5Compress, Tip5Sponge, PROD_FRI_OPERATIONAL_FLOOR_BITS,
 };
 use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 
@@ -381,9 +381,9 @@ pub const COMPACT_BATCH_L2_ALU_LANES: usize = 8;
 pub const COMPACT_BATCH_L2_HORNER_PACK_K: usize = 5;
 pub const COMPACT_BATCH_L2_RECOMPOSE_LANES: usize = 2;
 
-pub const COMPACT_BATCH_L1_JOHNSON_BITS: usize =
+pub const COMPACT_BATCH_L1_OPERATIONAL_BITS: usize =
     COMPACT_BATCH_L1_LOG_BLOWUP * COMPACT_BATCH_L1_NUM_QUERIES;
-pub const COMPACT_BATCH_L2_JOHNSON_BITS: usize =
+pub const COMPACT_BATCH_L2_OPERATIONAL_BITS: usize =
     COMPACT_BATCH_L2_LOG_BLOWUP * COMPACT_BATCH_L2_NUM_QUERIES;
 pub const COMPACT_BATCH_RECURSIVE_LAYER_COUNT: usize = 3;
 
@@ -413,10 +413,10 @@ enum CompactRecursionProfileError {
         layer: &'static str,
         value: usize,
     },
-    BadL1JohnsonBits {
+    BadL1OperationalBits {
         bits: usize,
     },
-    BadL2JohnsonBits {
+    BadL2OperationalBits {
         bits: usize,
     },
     BadRecursiveLayerCount {
@@ -513,12 +513,12 @@ impl CompactRecursionProfile {
             });
         }
         let l1_bits = self.l1_log_blowup * self.l1_num_queries;
-        if l1_bits < 60 {
-            return Err(CompactRecursionProfileError::BadL1JohnsonBits { bits: l1_bits });
+        if l1_bits < PROD_FRI_OPERATIONAL_FLOOR_BITS as usize {
+            return Err(CompactRecursionProfileError::BadL1OperationalBits { bits: l1_bits });
         }
         let l2_bits = self.l2_log_blowup * self.l2_num_queries;
-        if l2_bits < 60 {
-            return Err(CompactRecursionProfileError::BadL2JohnsonBits { bits: l2_bits });
+        if l2_bits < PROD_FRI_OPERATIONAL_FLOOR_BITS as usize {
+            return Err(CompactRecursionProfileError::BadL2OperationalBits { bits: l2_bits });
         }
         if self.recursive_layer_count != 3 {
             return Err(CompactRecursionProfileError::BadRecursiveLayerCount {
@@ -526,10 +526,10 @@ impl CompactRecursionProfile {
             });
         }
         self.l1_soundness_profile()
-            .validate(PROD_JOHNSON_FLOOR_BITS)
+            .validate(PROD_FRI_OPERATIONAL_FLOOR_BITS)
             .map_err(|error| CompactRecursionProfileError::Soundness { layer: "l1", error })?;
         self.l2_soundness_profile()
-            .validate(PROD_JOHNSON_FLOOR_BITS)
+            .validate(PROD_FRI_OPERATIONAL_FLOOR_BITS)
             .map_err(|error| CompactRecursionProfileError::Soundness { layer: "l2", error })?;
         Ok(())
     }
@@ -2918,7 +2918,7 @@ mod tests {
         bad.l1_num_queries = 19;
         assert_eq!(
             bad.validate(),
-            Err(CompactRecursionProfileError::BadL1JohnsonBits {
+            Err(CompactRecursionProfileError::BadL1OperationalBits {
                 bits: bad.l1_log_blowup * bad.l1_num_queries
             })
         );
@@ -3165,7 +3165,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_batch_fri_profiles_account_for_sixty_johnson_bits_with_mmcs() {
+    fn compact_batch_fri_profiles_account_for_sixty_operational_bits_with_mmcs() {
         let l1_params = compact_batch_l1_fri_verifier_params();
         assert_eq!(l1_params.log_blowup, COMPACT_BATCH_L1_LOG_BLOWUP);
         assert_eq!(
@@ -3173,7 +3173,7 @@ mod tests {
             COMPACT_BATCH_L1_LOG_FINAL_POLY_LEN
         );
         assert_eq!(l1_params.num_queries, COMPACT_BATCH_L1_NUM_QUERIES);
-        assert_eq!(COMPACT_BATCH_L1_JOHNSON_BITS, 60);
+        assert_eq!(COMPACT_BATCH_L1_OPERATIONAL_BITS, 60);
         assert_eq!(l1_params.commit_pow_bits, 0);
         assert_eq!(l1_params.query_pow_bits, 0);
         assert!(
@@ -3194,8 +3194,11 @@ mod tests {
             l2_shape.log_final_poly_len,
             COMPACT_BATCH_L2_LOG_FINAL_POLY_LEN
         );
-        assert_eq!(COMPACT_BATCH_L2_JOHNSON_BITS, 60);
-        assert_eq!(l2_shape.johnson_bits(), COMPACT_BATCH_L2_JOHNSON_BITS);
+        assert_eq!(COMPACT_BATCH_L2_OPERATIONAL_BITS, 60);
+        assert_eq!(
+            l2_shape.operational_fri_bits(),
+            COMPACT_BATCH_L2_OPERATIONAL_BITS
+        );
         assert_eq!(l2_shape.commit_pow_bits, 0);
         assert_eq!(l2_shape.query_pow_bits, 0);
         let recursive_fri_union_loss_bits = COMPACT_BATCH_RECURSIVE_LAYER_COUNT
@@ -3203,7 +3206,7 @@ mod tests {
             .ilog2() as usize;
         assert_eq!(recursive_fri_union_loss_bits, 2);
         assert_eq!(
-            COMPACT_BATCH_L1_JOHNSON_BITS - recursive_fri_union_loss_bits,
+            COMPACT_BATCH_L1_OPERATIONAL_BITS - recursive_fri_union_loss_bits,
             58
         );
     }
@@ -3213,14 +3216,14 @@ mod tests {
     fn compact_batch_recursive_certificate_round_trip_for_test_pearl() {
         use std::time::Instant;
 
-        assert_eq!(COMPACT_BATCH_L1_JOHNSON_BITS, 60);
-        assert_eq!(COMPACT_BATCH_L2_JOHNSON_BITS, 60);
+        assert_eq!(COMPACT_BATCH_L1_OPERATIONAL_BITS, 60);
+        assert_eq!(COMPACT_BATCH_L2_OPERATIONAL_BITS, 60);
         let recursive_fri_union_loss_bits = COMPACT_BATCH_RECURSIVE_LAYER_COUNT
             .next_power_of_two()
             .ilog2() as usize;
         assert_eq!(recursive_fri_union_loss_bits, 2);
         assert_eq!(
-            COMPACT_BATCH_L1_JOHNSON_BITS - recursive_fri_union_loss_bits,
+            COMPACT_BATCH_L1_OPERATIONAL_BITS - recursive_fri_union_loss_bits,
             58,
             "three 60-bit FRI checks union-bound to more than 58 bits"
         );
