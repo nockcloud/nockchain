@@ -217,6 +217,26 @@ fn decode_rejects_dense_core() {
     );
 }
 
+#[test]
+fn pearl_moe_exploit_wire_is_not_nockchain_statement_data() {
+    let core = moe_core(2, 1);
+    let moe = moe_params(2, 0, 0);
+    let pearl_wire = core.to_wire_bytes_moe(&moe).unwrap();
+
+    assert!(
+        pearl_wire.len() > PEARL_PUBLIC_PROOF_PARAMS_SIZE,
+        "Pearl V2 MoE public_data is larger than the dense 164-byte statement"
+    );
+    assert_eq!(
+        PearlPublicProofParams::from_public_data(header(), &pearl_wire),
+        Err(PearlCompatError::UnsupportedMoeConfig { e: 2, top_k: 1 })
+    );
+    assert_eq!(
+        PearlPublicProofParams::from_public_data_allowing_moe(header(), &pearl_wire),
+        Err(PearlCompatError::BadPublicParamsLen(pearl_wire.len()))
+    );
+}
+
 /// B4 — MoE difficulty pricing is identical to dense: Pearl
 /// `extract_difficulty_bound` prices by `h·w·dot_product_length`, none of which
 /// depend on the MoE config, so the MoE trailer must not perturb the target.

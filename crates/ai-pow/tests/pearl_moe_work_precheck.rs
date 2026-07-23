@@ -218,6 +218,24 @@ fn moe_work_precheck_rejects_forged_routing() {
     );
 }
 
+#[test]
+fn moe_work_precheck_rejects_pearl_wire_without_native_routing_data() {
+    let f = build_fixture();
+    assert_eq!(
+        verify_pearl_moe_compatible_work(
+            &f.public_params,
+            &f.moe,
+            &[],
+            &LOOSE_TARGET,
+            MAX_PATTERN_LEN,
+        ),
+        Err(PearlCompatError::MoeRoutingDataLenMismatch {
+            expected: (M * TOP_K) as u64,
+            actual: 0
+        }),
+    );
+}
+
 /// A dense (`e == 0`) statement must NOT be accepted by the MoE work path — the
 /// MoE config lookup fails closed.
 #[test]
