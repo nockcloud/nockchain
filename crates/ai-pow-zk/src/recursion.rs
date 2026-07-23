@@ -2671,8 +2671,16 @@ mod tests {
         let store_chunks = CompositeTrace::enumerate_noised_chunks_positioned(
             &a_prime, &b_prime, t, r, num_stripes,
         );
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
         for (i, chunk) in store_chunks.iter().enumerate() {
             let id_base = if chunk.side_a { a_id_base } else { b_id_base };
             let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)

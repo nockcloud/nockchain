@@ -1087,8 +1087,16 @@ mod tests {
             &a_prime, &b_prime, t, r, num_stripes,
         );
         let store_start = 8 + rows_used;
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
         for (i, chunk) in store_chunks.iter().enumerate() {
             let id_base = if chunk.side_a { a_id_base } else { b_id_base };
             let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)
@@ -1144,8 +1152,16 @@ mod tests {
             c.bytes[0] = c.bytes[0].wrapping_add(1);
         }
         let store_start = 8 + rows_used;
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
         for (i, chunk) in store_chunks.iter().enumerate() {
             let id_base = if chunk.side_a { a_id_base } else { b_id_base };
             let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)
@@ -1160,6 +1176,101 @@ mod tests {
             composite_verify_pinned_logup_sx(&cfg, &program, &proof, &pis, false).is_err(),
             "a store producer ≠ the R-b sweep's consumed matmul input MUST \
              unbalance the noised_packed bus and reject",
+        );
+    }
+
+    /// Cross-side committed-value substitution is rejected.
+    ///
+    /// A tile-height-derived `b_id_base` lets a scattered A covering-range
+    /// lane collide with a B-side key: a cheating prover can sweep COMMITTED
+    /// B bytes at the colliding A positions and the `noised_packed` bus
+    /// still balances (the fingerprint value matches the B producer),
+    /// proving a sweep the committed matrices do not justify — an XOR-delta
+    /// jackpot-grinding amplifier.
+    ///
+    /// With span-derived bases the A and B key spaces are disjoint, so the
+    /// smuggled query `(a_id, val_B)` has no producer entry and the bus
+    /// cannot balance. Both traces below are honestly computed end-to-end
+    /// from their inputs (every keystone and pack-link holds); the ONLY
+    /// defect in the smuggled trace is that its sweep reads B's committed
+    /// bytes at A positions while the producer store publishes the committed
+    /// matrices. The lane pair (A lane 8, B lane 0) collides under the
+    /// tile-height base.
+    #[test]
+    fn noised_packed_cross_side_substitution_rejects() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x9C00 + i as u32);
+        let (t, r, num_stripes) = (8usize, 4usize, 96usize);
+        let k = num_stripes * r;
+        let a_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (((i.wrapping_mul(7) ^ (i >> 3)) & 0x7F) - 64) as i8)
+            .collect();
+        let b_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (((i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) & 0x7F) - 64) as i8)
+            .collect();
+        // Scattered A covering-range lanes (Pearl-pattern-like), contiguous B.
+        let a_lanes: Vec<usize> = vec![0, 1, 8, 9, 64, 65, 72, 73];
+        let b_lanes: Vec<usize> = (0..t).collect();
+        // The producer store publishes the COMMITTED matrices (honest
+        // arrays), keyed at the covering-range lanes the sweep queries.
+        let store_chunks = {
+            let mut cs = CompositeTrace::enumerate_noised_chunks_positioned(
+                &a_prime, &b_prime, t, r, num_stripes,
+            );
+            for c in cs.iter_mut() {
+                let lanes: &Vec<usize> = if c.side_a { &a_lanes } else { &b_lanes };
+                for entry in c.src.iter_mut() {
+                    if let Some((lane, l)) = *entry {
+                        *entry = Some((lanes[lane as usize] as u32, l));
+                    }
+                }
+            }
+            cs
+        };
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
+        let build = |a_sweep: &[i8]| {
+            let mut trace = CompositeTrace::baseline(1 << 14);
+            let h = trace.height();
+            let (rows_used, m) = trace.place_useful_work_chain_rb_indexed(
+                8, a_sweep, &b_prime, t, t, r, num_stripes, &a_lanes, &b_lanes,
+            );
+            let store_start = 8 + rows_used;
+            for (i, chunk) in store_chunks.iter().enumerate() {
+                let id_base = if chunk.side_a { a_id_base } else { b_id_base };
+                let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)
+                    .try_into()
+                    .expect("positioned noised chunk id must fit in MAT_ID");
+                trace.place_noised_store_row(store_start + i, &chunk.bytes, mat_id);
+            }
+            let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+            let pis = CompositePublicInputs::derive_from_trace(&trace);
+            let (proof, program) = composite_prove_pinned_logup_sx(&cfg, trace, &pis, false);
+            (program, proof, pis)
+        };
+        // Honest scattered-lane sweep verifies: the fix does not false-reject
+        // legitimate scattered (Pearl-merge) schedules.
+        let (program, proof, pis) = build(&a_prime);
+        composite_verify_pinned_logup_sx(&cfg, &program, &proof, &pis, false)
+            .expect("honest scattered-lane sweep must verify");
+        // Smuggle: the sweep reads committed B-col-0 bytes at A-row lane 8
+        // (tile-local row 2) — every downstream value (matmul, fold,
+        // jackpot) honestly recomputed, exactly as a grinding miner would.
+        let mut a_smuggled = a_prime.clone();
+        a_smuggled[2 * k..3 * k].copy_from_slice(&b_prime[0..k]);
+        let (program, proof, pis) = build(&a_smuggled);
+        assert!(
+            composite_verify_pinned_logup_sx(&cfg, &program, &proof, &pis, false).is_err(),
+            "cross-side committed-value substitution must not balance the \
+             noised_packed bus",
         );
     }
 
@@ -1266,8 +1377,16 @@ mod tests {
             &a_prime, &b_prime, t, r, num_stripes,
         );
         let store_start = sweep_start + rows_used;
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
         for (i, chunk) in store_chunks.iter().enumerate() {
             let id_base = if chunk.side_a { a_id_base } else { b_id_base };
             let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)
@@ -1529,8 +1648,16 @@ mod tests {
             &a_prime, &b_prime, t, r, num_stripes,
         );
         let store_start = sweep_start + rows_used;
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((t * k).div_ceil(8)) as u64;
+        let max_lane = |side_a: bool| {
+            store_chunks
+                .iter()
+                .filter(|c| c.side_a == side_a)
+                .filter_map(|c| c.src.iter().flatten().map(|(lane, _)| *lane as usize).max())
+                .max()
+                .unwrap_or(0)
+        };
+        let (a_id_base, b_id_base) =
+            crate::composite_trace::noised_id_bases(max_lane(true), max_lane(false), k);
         for (i, chunk) in store_chunks.iter().enumerate() {
             let id_base = if chunk.side_a { a_id_base } else { b_id_base };
             let mat_id = crate::composite_trace::noised_chunk_id(id_base, k, &chunk.src)

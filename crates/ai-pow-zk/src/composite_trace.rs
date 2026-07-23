@@ -123,6 +123,51 @@ pub fn noised_chunk_id(id_base: u64, k: usize, src: &[Option<(u32, u32)>; 8]) ->
     }
 }
 
+/// Side-disjoint `noised_packed` id bases.
+///
+/// The A-side key for covering-range lane `lane` and `k`-column `l` is
+/// `a_id_base + (lane·k + l)/8`, so every A-side key lies strictly below
+/// `a_id_base + (max_a_lane+1)·k/8`. `b_id_base` must be derived from the
+/// full A covering-range span (`max_a_lane + 1`), never from the tile
+/// height: a scattered (or non-origin, sub-1024-`k`) schedule has lanes
+/// beyond `h_tile`, and a tile-height base lets A keys collide with B
+/// keys — the fingerprint's packed value then only binds a read to
+/// *some* committed store entry, so committed-B bytes could be
+/// substituted at colliding A positions.
+///
+/// Fallible form of [`noised_id_bases`]: rejects spans that would push any
+/// producer or consumer id outside the `pack_ab_id` limb budget
+/// (`2^(2·BITS_PER_LIMB)`), instead of panicking at pack time. The verifier
+/// (canonical program build) and the prover bridge call this before any id
+/// derivation, so an unprovably-wide schedule is a clean deterministic
+/// rejection on both paths. Unreachable for in-envelope mineable shapes
+/// (span·k/8 ≪ 2^26).
+pub fn try_noised_id_bases(
+    max_a_lane: usize,
+    max_b_lane: usize,
+    k: usize,
+) -> Result<(u64, u64), String> {
+    let a_id_base = NOISED_CHUNK_ID_BASE;
+    let b_id_base = a_id_base + (((max_a_lane + 1) * k).div_ceil(8)) as u64;
+    let max_b_id = b_id_base + (((max_b_lane + 1) * k).div_ceil(8)) as u64;
+    if max_b_id >= (1u64 << (2 * crate::composite_layout::BITS_PER_LIMB)) {
+        return Err(format!(
+            "noised_packed id span exceeds the {}-bit pack_ab_id budget \
+             (max_a_lane={max_a_lane}, max_b_lane={max_b_lane}, k={k})",
+            2 * crate::composite_layout::BITS_PER_LIMB
+        ));
+    }
+    Ok((a_id_base, b_id_base))
+}
+
+/// Infallible form for prover-side trace generation; the schedule was
+/// validated by [`try_noised_id_bases`] upstream (bridge / canonical build),
+/// so this expect is unreachable defense-in-depth.
+pub fn noised_id_bases(max_a_lane: usize, max_b_lane: usize, k: usize) -> (u64, u64) {
+    try_noised_id_bases(max_a_lane, max_b_lane, k)
+        .expect("noised_packed id budget pre-validated by schedule guards")
+}
+
 /// A composite trace ready for proving by
 /// [`crate::composite_full_air::CompositeFullAir`].
 #[derive(Clone, Debug)]
@@ -1865,8 +1910,11 @@ impl CompositeTrace {
         assert_eq!(b_prime_cols.len(), w_tile * k, "b_prime_cols must be w*k");
         let n_sbi = h_tile / TILE_H;
         let n_sbj = w_tile / TILE_H;
-        let a_id_base = NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((h_tile * k).div_ceil(8)) as u64;
+        let (a_id_base, b_id_base) = noised_id_bases(
+            *a_lanes.iter().max().expect("nonempty a_lanes"),
+            *b_lanes.iter().max().expect("nonempty b_lanes"),
+            k,
+        );
         let trace_h = self.height();
         assert!(
             row_start + n_sbi * n_sbj * num_stripes * chunks < trace_h,
@@ -2089,8 +2137,11 @@ impl CompositeTrace {
         assert!(n_sb * 4 <= 256, "h·w = {} exceeds MAX_CELLS=256", n_sb * 4);
         let trace_h = self.height();
         // Positioned noised-chunk ID bases (for the LogUp bus).
-        let a_id_base = NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((h_tile * k).div_ceil(8)) as u64;
+        let (a_id_base, b_id_base) = noised_id_bases(
+            *a_lanes.iter().max().expect("nonempty a_lanes"),
+            *b_lanes.iter().max().expect("nonempty b_lanes"),
+            k,
+        );
 
         let set_bits = |row: &mut [Val], at: usize, v: u32| {
             for i in 0..32 {

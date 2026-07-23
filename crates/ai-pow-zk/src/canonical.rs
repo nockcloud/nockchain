@@ -598,6 +598,24 @@ impl StripIndexSchedule {
     }
 }
 
+/// Covering-range id span (`max lane + 1`) for one side: the sweep lane is
+/// `index − chunk_base`, so the span is `last − chunk_base + 1` (indices are
+/// validated strictly increasing). Errors instead of underflowing when the
+/// chunk base exceeds the last index (a `k > 1024` non-origin schedule — the
+/// lane arithmetic has no representation for it).
+pub fn covering_id_span(name: &str, indices: &[u32], chunk_base: usize) -> Result<usize, String> {
+    let last = *indices
+        .last()
+        .expect("validated strip schedule is nonempty") as usize;
+    last.checked_sub(chunk_base).map(|d| d + 1).ok_or_else(|| {
+        format!(
+            "{name} strip schedule covering range starts above its last index \
+                 (last={last}, chunk_base={chunk_base}); k > 1024 non-origin \
+                 schedules are not representable"
+        )
+    })
+}
+
 fn validate_strip_indices(name: &str, indices: &[u32], dimension: u32) -> Result<(), String> {
     if indices.is_empty() {
         return Err(format!("{name} strip schedule must be nonempty"));
@@ -807,7 +825,7 @@ pub fn canonical_program_for_strip_schedule(
     } else {
         schedule_layout_for_strip_schedule(params, strip_schedule, trace_len)
     };
-    let sp = StripPlan::build_for_strip_schedule(params, strip_schedule);
+    let sp = StripPlan::build_for_strip_schedule(params, strip_schedule)?;
     let program: Vec<RowDescriptor> = (0..trace_len)
         .map(|r| row_descriptor(r, l.class_of(r), &l, &sp, params, bp))
         .collect();
@@ -978,10 +996,11 @@ struct StripPlan {
 }
 
 impl StripPlan {
-    fn build_for_strip_schedule(params: &ZkParams, strip_schedule: &StripIndexSchedule) -> Self {
-        let ((_ca0, _ca1, a_nc), (_cb0, _cb1, b_nc)) = strip_schedule
-            .chunk_ranges(params)
-            .expect("StripPlan requires valid strip chunk ranges");
+    fn build_for_strip_schedule(
+        params: &ZkParams,
+        strip_schedule: &StripIndexSchedule,
+    ) -> Result<Self, String> {
+        let ((_ca0, _ca1, a_nc), (_cb0, _cb1, b_nc)) = strip_schedule.chunk_ranges(params)?;
         let k = params.k as usize;
         // B5b: selective opening — the schedule authenticates only the chunks the
         // opened rows/cols actually touch (a SET), not the covering range. For a
@@ -994,11 +1013,16 @@ impl StripPlan {
             crate::blake3_tree::indexed_strips_chunk_set(&strip_schedule.b_indices, k, b_nc * 1024);
         let ca0 = a_chunks[0];
         let cb0 = b_chunks[0];
-        let h_tile = strip_schedule.a_indices.len();
         let w_tile = strip_schedule.b_indices.len();
-        let a_id_base = crate::composite_trace::NOISED_CHUNK_ID_BASE;
-        let b_id_base = a_id_base + ((h_tile * k).div_ceil(8)) as u64;
-        StripPlan {
+        // Bases from the full covering-range lane span, not h_tile —
+        // side-disjoint for scattered openings; identical to the tile-height
+        // derivation for contiguous tiles (span == h_tile).
+        let (a_id_base, b_id_base) = crate::composite_trace::try_noised_id_bases(
+            covering_id_span("A", &strip_schedule.a_indices, ca0)? - 1,
+            covering_id_span("B", &strip_schedule.b_indices, cb0)? - 1,
+            k,
+        )?;
+        Ok(StripPlan {
             ca0,
             cb0,
             w_tile,
@@ -1008,7 +1032,7 @@ impl StripPlan {
             blocks_b: strip_blocks_set(&b_chunks, b_nc),
             a_indices: strip_schedule.a_indices.clone(),
             b_indices: strip_schedule.b_indices.clone(),
-        }
+        })
     }
 }
 
@@ -1720,6 +1744,85 @@ mod tests {
             StripIndexSchedule::from_tile(&p, p.m / p.tile, 0).is_err(),
             "out-of-grid tile must be rejected"
         );
+    }
+
+    /// The canonical `StripPlan` id bases are side-disjoint for a
+    /// scattered schedule and identical to the tile-height derivation for
+    /// a contiguous tile.
+    #[test]
+    fn strip_plan_id_bases_side_disjoint_scattered_legacy_parity() {
+        let p = ZkParams {
+            m: 512,
+            k: 1024,
+            n: 512,
+            noise_rank: 64,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        // Scattered: span = 74 > h_tile = 8 ⇒ b_id_base covers the whole A
+        // covering range (legacy base 8 + 8·128 = 1032 did not).
+        let sched = StripIndexSchedule::from_indices(
+            &p,
+            vec![0, 1, 8, 9, 64, 65, 72, 73],
+            (0..8).collect(),
+        )
+        .expect("valid scattered schedule");
+        let sp = StripPlan::build_for_strip_schedule(&p, &sched).expect("plan builds");
+        assert_eq!(sp.a_id_base, crate::composite_trace::NOISED_CHUNK_ID_BASE);
+        assert_eq!(sp.b_id_base, 8 + 74 * 128);
+        for &i in &sched.a_indices {
+            let lane = (i as usize) - sp.ca0;
+            for l in (0..p.k as usize).step_by(8) {
+                let mut src = [None; 8];
+                src[0] = Some((lane as u32, l as u32));
+                let key = crate::composite_trace::noised_chunk_id(sp.a_id_base, p.k as usize, &src);
+                assert!(key < sp.b_id_base, "A key {key} must stay below b_id_base");
+            }
+        }
+        // Contiguous tile: span == h_tile ⇒ legacy base byte-for-byte.
+        let sched_t = StripIndexSchedule::from_tile(&p, 2, 3).expect("tile schedule");
+        let sp_t = StripPlan::build_for_strip_schedule(&p, &sched_t).expect("plan builds");
+        assert_eq!(
+            sp_t.b_id_base,
+            8 + 8 * 128,
+            "contiguous tiles keep the legacy base"
+        );
+    }
+
+    /// The canonical program build rejects schedules whose id span
+    /// overflows the pack_ab_id budget, and k>1024 non-origin schedules
+    /// (unrepresentable lanes), as clean errors rather than panics.
+    #[test]
+    fn canonical_program_rejects_unprovable_id_spans() {
+        let bp = bp0();
+        // Budget overflow: span_a = 2^24 at k = 2^16 ⇒ max id ≫ 2^26.
+        let huge = ZkParams {
+            m: 1 << 24,
+            k: 1 << 16,
+            n: 1 << 24,
+            noise_rank: 32,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let sched = StripIndexSchedule::from_indices(&huge, vec![0, (1 << 24) - 1], vec![0, 1])
+            .expect("indices are in-dimension");
+        let err = canonical_program_for_strip_schedule(&huge, &sched, &bp, 1 << 16)
+            .expect_err("budget-overflowing schedule must be rejected");
+        assert!(err.contains("pack_ab_id"), "unexpected error: {err}");
+
+        // k > 1024 non-origin: the lane arithmetic has no representation.
+        let wide = ZkParams {
+            m: 64,
+            k: 2048,
+            n: 64,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let sched = StripIndexSchedule::from_tile(&wide, 1, 1).expect("tile in grid");
+        let err = canonical_program_for_strip_schedule(&wide, &sched, &bp, 1 << 15)
+            .expect_err("k>1024 non-origin schedule must be rejected cleanly");
+        assert!(err.contains("not representable"), "unexpected error: {err}");
     }
 
     #[test]

@@ -3018,8 +3018,24 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
     // the leaf-row noise strips AND retiring the separate store.
     let coloc = params.noise_rank.is_multiple_of(16);
     let noise = crate::matmul::BlockNoise::expand(&zctx.s_a, &zctx.s_b, params);
-    let a_id_base = ai_pow_zk::composite_trace::NOISED_CHUNK_ID_BASE;
-    let b_id_base = a_id_base + ((strip_schedule.a_indices.len() * kk).div_ceil(8)) as u64;
+    // B chunk set hoisted so the id bases can use both covering spans.
+    let b_indices = &strip_schedule.b_indices;
+    let (b_chunks, b_nc) = indexed_strips_chunk_set(b_indices, kk, b_bytes.len());
+    let cb0 = b_chunks[0];
+    // Bases from the full covering-range lane spans (lane =
+    // index − chunk base), never the tile height — side-disjoint for
+    // scattered openings; identical to the tile-height derivation for
+    // contiguous tiles (span == h_tile).
+    let (a_id_base, b_id_base) = ai_pow_zk::composite_trace::try_noised_id_bases(
+        ai_pow_zk::canonical::covering_id_span("A", a_indices, ca0)
+            .map_err(BridgeError::ZkParamsInvalid)?
+            - 1,
+        ai_pow_zk::canonical::covering_id_span("B", b_indices, cb0)
+            .map_err(BridgeError::ZkParamsInvalid)?
+            - 1,
+        kk,
+    )
+    .map_err(BridgeError::ZkParamsInvalid)?;
     // Noise bytes parallel to the SELECTED strip bytes: each byte at its ACTUAL
     // matrix position `c*1024 + off` (0 on chunk-padding p >= |A|).
     let a_noise_strip = a_noise_chunk_bytes(&noise, params, &a_chunks);
@@ -3035,11 +3051,8 @@ fn prove_ai_pow_scheduled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
         if coloc { Some(a_id_base) } else { None },
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
-    let b_indices = &strip_schedule.b_indices;
-    let (b_chunks, b_nc) = indexed_strips_chunk_set(b_indices, kk, b_bytes.len());
     let (_ob, b_sibs) = open_strip_set(b_bytes, &zctx.kappa, &b_chunks);
     let b_strip_bytes = padded_chunk_bytes(b_bytes, &b_chunks);
-    let cb0 = b_chunks[0];
     // B is col-major flattened [col0(k)|col1(k)|…]: for byte p the
     // matrix col = p/k and k-index = p%k.
     let b_noise_strip = b_noise_chunk_bytes(&noise, params, &b_chunks);
