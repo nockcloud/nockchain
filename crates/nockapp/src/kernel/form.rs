@@ -2029,7 +2029,14 @@ impl Serf {
                     cold,
                     trace.into(),
                     test_jets,
-                    JetDispatchMode::Exact,
+                    // NockCloud compiles its pool-mining wrapper through an
+                    // overlay source root. The resulting kernel is
+                    // semantically identical to dumbnet, but its injected
+                    // source hints do not have noun identity with the
+                    // registered batteries. Hint-blind matching preserves
+                    // exact warm hits and enables the %sham fallback instead
+                    // of interpreting proof-verification arms in raw Hoon.
+                    JetDispatchMode::HintBlind,
                 )
             })?;
         let cancel_token = context.cancel_token();
