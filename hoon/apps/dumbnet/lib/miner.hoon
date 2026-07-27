@@ -56,6 +56,35 @@
     (txs-size-by-set:tx-acc:t candidate-acc.m)
   max-block-size:t
 ::
+::  Use the empty-page overhead floor to reject only transactions that cannot
+::  possibly fit alongside the transactions already in the candidate.  This
+::  deliberately underestimates the final header/coinbase size, making false
+::  positives impossible while avoiding full cryptographic validation once
+::  the transaction payload alone has exhausted the block budget.
+++  candidate-has-room-for-raw
+  ~/  %candidate-has-room-for-raw
+  |=  raw=raw-tx:t
+  ^-  ?
+  %+  lte
+    %+  add
+      (compute-size-without-txs:page:t *page:t)
+    %+  add
+      size.candidate-acc.m
+    ~(size get:raw-tx:t raw)
+  max-block-size:t
+::
+::  A transaction whose input is no longer present in the candidate
+::  accumulator is guaranteed to fail +process:tx-acc.  Probe the small input
+::  set first so conflicting retained transactions do not repeat signature and
+::  witness validation every time the candidate is rebuilt.
+++  inputs-in-candidate-balance
+  ~/  %inputs-in-candidate-balance
+  |=  raw=raw-tx:t
+  ^-  ?
+  %-  ~(all z-in ~(input-names get:raw-tx:t raw))
+  |=  =nname:t
+  (~(has h-by balance.candidate-acc.m) nname)
+::
 ::  grab all raw-txs that could possibly be included in block.
 ::  note that this map could include txs that are not spendable
 ::  from the current heaviest balance. we rely on the logic inside
@@ -157,6 +186,33 @@
   ::
   ::  if the transaction is already in the candidate block, do nothing
   ?:  (~(has z-in ~(tx-ids get:page:t candidate-block.m)) tx-id)
+    m
+  ::  Full validation is wasted once the payload already selected for this
+  ::  candidate plus the raw transaction cannot fit in any legal block.
+  ?.  (candidate-has-room-for-raw raw)
+    =/  log-message
+        %+  rap  3
+        :~  'heard-new-tx: '
+            'Transaction '
+            (to-b58:hash:t tx-id)
+            ' cannot fit in candidate block; skipping validation.'
+        ==
+    ~>  %slog.[3 log-message]
+    m
+  ::  Candidate transactions are folded serially.  A prior transaction in the
+  ::  fold may already have consumed one of this transaction's inputs even
+  ::  though both inputs existed in the heaviest-chain balance used by
+  ::  +candidate-txs.  Full processing must reject this transaction, so avoid
+  ::  re-running its potentially expensive cryptographic validation.
+  ?.  (inputs-in-candidate-balance raw)
+    =/  log-message
+        %+  rap  3
+        :~  'heard-new-tx: '
+            'Transaction '
+            (to-b58:hash:t tx-id)
+            ' cannot be added to candidate block: input absent from candidate balance.'
+        ==
+    ~>  %slog.[3 log-message]
     m
   :: ::  check to see if block is valid with tx - this checks whether the inputs
   :: ::  exist, whether the new size will exceed block size, and whether timelocks
