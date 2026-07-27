@@ -101,20 +101,15 @@
     i.txs
   $(txs t.txs, index (dec index))
 ::
-::  Use the empty-page overhead floor to reject only transactions that cannot
-::  possibly fit alongside the transactions already in the candidate.  This
-::  deliberately underestimates the final header/coinbase size, making false
-::  positives impossible while avoiding full cryptographic validation once
-::  the transaction payload alone has exhausted the block budget.
+::  Use transaction payload size alone as a strict lower bound on final block
+::  size.  Omitting all header/coinbase overhead makes false rejection
+::  impossible while still avoiding full cryptographic validation once the
+::  selected payload has already exhausted the entire block budget.
 ++  candidate-has-room-for-size
   ~/  %candidate-has-room-for-size
   |=  raw-bits=@
   ^-  ?
-  %+  lte
-    %+  add
-      (compute-size-without-txs:page:t *page:t)
-    (add size.candidate-acc.m raw-bits)
-  max-block-size:t
+  (lte (add size.candidate-acc.m raw-bits) max-block-size:t)
 ::
 ++  candidate-has-room-for-raw
   ~/  %candidate-has-room-for-raw

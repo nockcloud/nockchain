@@ -1209,16 +1209,16 @@
           =(min unchanged)
       ==
 ::
-::  Size admission uses an empty-page lower bound.  If a raw transaction
-::  exceeds even that remaining budget, +heard-new-tx must return before full
-::  transaction processing and leave the mining state untouched.
+::  Size admission uses transaction payload alone as a strict lower bound.  If
+::  a raw transaction exceeds even that remaining budget, +heard-new-tx must
+::  return before full processing and leave the mining state untouched.
 ++  test-miner-prefilters-raw-that-cannot-fit
   =/  con=consensus-state  initial-consensus-state:h
   =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
   =/  raw=raw-tx:t  (make-default-coinbase-raw-tx:v0:h p:default-keys-2:h)
   ?>  ?=(^ -.raw)
   =/  impossible-max=size:t
-    `size:t`(dec (add (compute-size-without-txs:page:t *page:t) ~(size get:raw-tx:t raw)))
+    `size:t`(dec ~(size get:raw-tx:t raw))
   =.  constants  constants(max-block-size impossible-max)
   =/  min=mining-state  initial-mining-state:h
   =.  min  (~(heard-new-block dmin min constants) con *@da)
