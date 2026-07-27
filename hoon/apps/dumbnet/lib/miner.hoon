@@ -56,22 +56,71 @@
     (txs-size-by-set:tx-acc:t candidate-acc.m)
   max-block-size:t
 ::
+::  Candidate refill is deliberately limited to one consensus-admissible
+::  transaction per refill attempt.  Transaction validation is a non-preemptible
+::  Hoon call, so one transaction is the smallest honest unit of work that can
+::  be bounded without censoring a large but valid transaction.  Raw size is
+::  bounded by the consensus block ceiling; this is not a wall-clock guarantee.
+::
+::  The libp2p driver emits chain timer pokes every 20 seconds
+::  (crates/nockchain/src/config.rs::CHAIN_INTERVAL).  Divide by the cadence
+::  before taking the slot modulo so each delivered timer advances the fair
+::  selection by one under the normal cadence.  The Rust producer coalesces
+::  ticks while a prior timer poke is still in flight, so slow validation cannot
+::  queue a train of timer work behind the current transaction.
+++  candidate-refill-chain-timer-seconds  20
+::
+++  candidate-refill-tick
+  ~/  %candidate-refill-tick
+  |=  now=@da
+  ^-  @
+  (div (time-in-secs:page:t now) candidate-refill-chain-timer-seconds)
+::
+::  Select exactly one candidate deterministically from this timer's fair
+::  rotation.  h-map traversal is deterministic; advancing the time slot once
+::  per refill attempt prevents an invalid/unmineable first transaction from
+::  monopolizing every refill attempt without adding persistent kernel state.
+::  Building +candidate-txs and materializing its deterministic traversal still
+::  scans the retained candidate set once per due refill.  This patch bounds
+::  cryptographic transaction processing, not that residual linear metadata
+::  cost; an indexed scheduler would require persistent state and migration.
+++  candidate-refill-slot
+  ~/  %candidate-refill-slot
+  |=  [now=@da count=@]
+  ^-  @
+  ?:  =(0 count)  0
+  (mod (candidate-refill-tick now) count)
+::
+++  pick-refill-tx
+  ~/  %pick-refill-tx
+  |=  [txs=(list [tx-id=tx-id:t raw=raw-tx:t]) index=@]
+  ^-  [tx-id=tx-id:t raw=raw-tx:t]
+  ?~  txs
+    ~|(%pick-refill-tx-empty !!)
+  ?:  =(0 index)
+    i.txs
+  $(txs t.txs, index (dec index))
+::
 ::  Use the empty-page overhead floor to reject only transactions that cannot
 ::  possibly fit alongside the transactions already in the candidate.  This
 ::  deliberately underestimates the final header/coinbase size, making false
 ::  positives impossible while avoiding full cryptographic validation once
 ::  the transaction payload alone has exhausted the block budget.
-++  candidate-has-room-for-raw
-  ~/  %candidate-has-room-for-raw
-  |=  raw=raw-tx:t
+++  candidate-has-room-for-size
+  ~/  %candidate-has-room-for-size
+  |=  raw-bits=@
   ^-  ?
   %+  lte
     %+  add
       (compute-size-without-txs:page:t *page:t)
-    %+  add
-      size.candidate-acc.m
-    ~(size get:raw-tx:t raw)
+    (add size.candidate-acc.m raw-bits)
   max-block-size:t
+::
+++  candidate-has-room-for-raw
+  ~/  %candidate-has-room-for-raw
+  |=  raw=raw-tx:t
+  ^-  ?
+  (candidate-has-room-for-size ~(size get:raw-tx:t raw))
 ::
 ::  A transaction whose input is no longer present in the candidate
 ::  accumulator is guaranteed to fail +process:tx-acc.  Probe the small input
@@ -125,10 +174,11 @@
     all
   --
 ::
-::  +update-candidate-block: updates candidate block if interval is hit
+::  +update-candidate-block: boundedly refresh a candidate on a timer poke
 ::
-::  updates timestamp and adds txs to candidate block. this should be run
-::  every time we get a poke.
+::  Timestamp refresh remains interval-based (the realnet/default constant is
+::  ~m5 / 300 seconds), while transaction refill attempts happen once per
+::  delivered timer tick.  The caller invokes this arm only for %timer commands.
 ::
 ++  update-candidate-block
   ~/  %update-candidate-block
@@ -140,32 +190,54 @@
       ==
     ::  not mining or no candidate block is set so no need to update
     [%.n m]
-  ?:  %+  gte  ~(timestamp get:page:t candidate-block.m)
-      (time-in-secs:page:t (sub now update-candidate-interval:t))
-    ::  has not reached interval (default ~m2), so leave timestamp alone
-    [%.n m]
-  =.  candidate-block.m
+  =/  timestamp-due=?
+    ?:  %+  gte  ~(timestamp get:page:t candidate-block.m)
+        (time-in-secs:page:t (sub now update-candidate-interval:t))
+      %.n
+    %.y
+  =?  candidate-block.m  timestamp-due
     ?^  -.candidate-block.m
       candidate-block.m(timestamp (time-in-secs:page:t now))
     candidate-block.m(timestamp (time-in-secs:page:t now))
-  =/  log-message
-    %^  cat  3
-      'update-candidate-block: Candidate block timestamp updated: '
-    (scot %$ ~(timestamp get:page:t candidate-block.m))
-  ~>  %slog.[0 log-message]
-  :-  %.y
-  (add-txs-to-candidate c)
+  =?  m  timestamp-due
+    =/  log-message
+      %^  cat  3
+        'update-candidate-block: Candidate block timestamp updated: '
+      (scot %$ ~(timestamp get:page:t candidate-block.m))
+    ~>  %slog.[0 log-message]
+    m
+  =/  [tx-changed=? new-m=mining-state:dk]
+    (refill-candidate c now)
+  [?|(timestamp-due tx-changed) new-m]
 ::
-++  add-txs-to-candidate
-  ~/  %add-txs-to-candidate
-  |=  c=consensus-state:dk
-  ^-  mining-state:dk
-  ::  if the mining pubkey is not set, do nothing
-  ?:  ?|(=(%.n mining.m) no-keys-set)  m
-  %-  ~(rep h-by (candidate-txs c))
-  |=  [[=tx-id:t raw=raw-tx:t] min=_m]
-  =.  m  min
-  (heard-new-tx raw)
+++  refill-candidate
+  ~/  %refill-candidate
+  |=  [c=consensus-state:dk now=@da]
+  ^-  [? mining-state:dk]
+  ?:  ?|  =(%.n mining.m)
+          =(*page:t candidate-block.m)
+          no-keys-set
+      ==
+    [%.n m]
+  =/  txs=(list [tx-id=tx-id:t raw=raw-tx:t])
+    ~(tap h-by (candidate-txs c))
+  ?~  txs  [%.n m]
+  =/  slot=@  (candidate-refill-slot now (lent txs))
+  =/  [tx-id=tx-id:t raw=raw-tx:t]  (pick-refill-tx txs slot)
+  =/  raw-bits=@  ~(size get:raw-tx:t raw)
+  ::  These cheap preflights preserve the one-attempt cryptographic budget and
+  ::  avoid processing a transaction that is already guaranteed not to fit or
+  ::  whose input was consumed by an earlier timer's selected transaction.
+  ?.  ?&  (candidate-has-room-for-size raw-bits)
+          (inputs-in-candidate-balance raw)
+      ==
+    [%.n m]
+  =/  old-tx-ids=(z-set tx-id:t)
+    ~(tx-ids get:page:t candidate-block.m)
+  =/  new-m=mining-state:dk  (heard-new-tx-preflighted raw)
+  =/  new-tx-ids=(z-set tx-id:t)
+    ~(tx-ids get:page:t candidate-block.new-m)
+  [!=(old-tx-ids new-tx-ids) new-m]
 ::
 ::
 ::  +heard-new-tx: potentially changes candidate block in reaction to a raw-tx
@@ -189,7 +261,8 @@
     m
   ::  Full validation is wasted once the payload already selected for this
   ::  candidate plus the raw transaction cannot fit in any legal block.
-  ?.  (candidate-has-room-for-raw raw)
+  =/  raw-bits=@  ~(size get:raw-tx:t raw)
+  ?.  (candidate-has-room-for-size raw-bits)
     =/  log-message
         %+  rap  3
         :~  'heard-new-tx: '
@@ -214,6 +287,16 @@
         ==
     ~>  %slog.[3 log-message]
     m
+  (heard-new-tx-preflighted raw)
+::
+::  Internal transaction admission after deterministic cheap preflights.
+::  +heard-new-tx remains the safe public entry point; the timer scheduler uses
+::  this arm so the raw transaction is jam-sized only once per refill attempt.
+++  heard-new-tx-preflighted
+  ~/  %heard-new-tx-preflighted
+  |=  raw=raw-tx:t
+  ^-  mining-state:dk
+  =/  =tx-id:t  ~(id get:raw-tx:t raw)
   :: ::  check to see if block is valid with tx - this checks whether the inputs
   :: ::  exist, whether the new size will exceed block size, and whether timelocks
   :: ::  are valid
@@ -374,6 +457,8 @@
       (~(get h-by balance.c) u.heaviest-block.c)
     ~(height get:page:t candidate-block.m)
   ::
-  ::  roll over the candidate txs and try to include them in the new candidate block
-  (add-txs-to-candidate c)
+  ::  Publish the fresh empty candidate immediately.  Retained transactions are
+  ::  refilled later, one deterministic attempt per timer poke, so accepting a
+  ::  new heaviest block never synchronously folds the entire mempool.
+  m
 --

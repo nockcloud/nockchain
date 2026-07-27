@@ -1016,7 +1016,13 @@
           ?>  ?=(%fact -.cause)
           (handle-fact wir eny our now p.cause)
         ==
-      ::  possibly update candidate block for mining
+      ::  Candidate transaction refill is deliberately timer-only.  A block,
+      ::  transaction, or peer-recovery poke must never inherit synchronous
+      ::  mempool packing work after its own handler has completed.
+      ?.  ?=([%command %timer *] cause)
+        effs^k
+      ::  Boundedly update the candidate and restart the external miner only
+      ::  when its timestamp or transaction set actually changed.
       =^  candidate-changed  m.k  (update-candidate-block:min c.k now)
       :_  k
       ?.  candidate-changed  effs
