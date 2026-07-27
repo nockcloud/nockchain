@@ -1521,6 +1521,24 @@ where
         .unwrap_or_else(|_| panic!("{label} timed out\n{}", transcript.render()))
 }
 
+#[test]
+fn chain_timer_gate_coalesces_busy_ticks_and_reopens_after_completion() {
+    let mutex = Arc::new(Mutex::new(()));
+
+    let in_flight =
+        try_acquire_timer_poke(&mutex).expect("the first timer tick should acquire the gate");
+    assert!(
+        try_acquire_timer_poke(&mutex).is_none(),
+        "a tick arriving while the timer poke is in flight must be coalesced"
+    );
+
+    drop(in_flight);
+    assert!(
+        try_acquire_timer_poke(&mutex).is_some(),
+        "the next interval must be admitted after the prior poke completes"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn req_res_driver_gen2_like_high_priority_backlog_does_not_starve_followup_peek_or_timer() {
     use nockapp::drivers::timer::TimerWire;
