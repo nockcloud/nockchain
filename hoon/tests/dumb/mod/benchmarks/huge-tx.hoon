@@ -229,7 +229,7 @@
     (make-builder-seed marker-root +(i) parent-root ~ empty-data)
   =/  parent=hash:t-v1  (hash:seed:v1:t-v1 marker)
   =/  next=seeds:v1:t-v1
-    %+  ~(put z-in acc)
+    %-  ~(put z-in acc)
     (make-builder-seed root (add 11 i) parent ~ empty-data)
   $(i +(i), acc next)
 ::
@@ -307,14 +307,14 @@
   =.  data-c  (~(put z-by data-c) %left 33)
   =/  seeds-data=seeds:v1:t-v1  *seeds:v1:t-v1
   =.  seeds-data
-    (~(put z-in seeds-data)
-      (make-builder-seed root-c 19 root-a ~ data-a))
+    %-  ~(put z-in seeds-data)
+    (make-builder-seed root-c 19 root-a ~ data-a)
   =.  seeds-data
-    (~(put z-in seeds-data)
-      (make-builder-seed root-c 23 root-b ~ data-b))
+    %-  ~(put z-in seeds-data)
+    (make-builder-seed root-c 23 root-b ~ data-b)
   =.  seeds-data
-    (~(put z-in seeds-data)
-      (make-builder-seed root-c 29 root-c ~ data-c))
+    %-  ~(put z-in seeds-data)
+    (make-builder-seed root-c 29 root-c ~ data-c)
   =/  spends-data=spends:v1:t-v1
     (~(put z-by *spends:v1:t-v1) name-c (make-builder-spend seeds-data))
   =/  raw-data=raw-tx:v1:t-v1  (make-builder-raw spends-data)
@@ -327,13 +327,13 @@
     (~(put z-in *seeds:v1:t-v1) seed-duplicate)
   =/  spends-duplicate=spends:v1:t-v1  *spends:v1:t-v1
   =.  spends-duplicate
-    (~(put z-by spends-duplicate)
-      name-a
-      (make-builder-spend seeds-duplicate))
+    %+  ~(put z-by spends-duplicate)
+    name-a
+    (make-builder-spend seeds-duplicate)
   =.  spends-duplicate
-    (~(put z-by spends-duplicate)
-      name-b
-      (make-builder-spend seeds-duplicate))
+    %+  ~(put z-by spends-duplicate)
+    name-b
+    (make-builder-spend seeds-duplicate)
   =/  raw-duplicate=raw-tx:v1:t-v1
     (make-builder-raw spends-duplicate)
   =/  page=page-number:t-v1  4.242
