@@ -185,6 +185,54 @@
   ^-  raw-tx:v1:t-v1
   (new:raw-tx:v1:t-v1 sps)
 ::
+++  make-builder-many-spends
+  |=  $:  count=@
+          output-root=hash:t-v1
+          name-root=hash:t-v1
+          marker-root=hash:t-v1
+      ==
+  ^-  spends:v1:t-v1
+  =/  empty-data=(z-map @tas *)  *(z-map @tas *)
+  =/  i=@  0
+  =/  acc=spends:v1:t-v1  *spends:v1:t-v1
+  |-
+  ?:  =(i count)  acc
+  =/  marker=seed:v1:t-v1
+    (make-builder-seed marker-root +(i) name-root ~ empty-data)
+  =/  parent=hash:t-v1  (hash:seed:v1:t-v1 marker)
+  =/  sed=seed:v1:t-v1
+    (make-builder-seed output-root 1 parent ~ empty-data)
+  =/  seds=seeds:v1:t-v1
+    (~(put z-in *seeds:v1:t-v1) sed)
+  =/  nam=nname:t-v1
+    (new-v1:nname:t-v1 parent [name-root %.n])
+  =/  next=spends:v1:t-v1
+    (~(put z-by acc) nam (make-builder-spend seds))
+  $(i +(i), acc next)
+::
+++  make-builder-many-seeds
+  |=  $:  count=@
+          roots=(list hash:t-v1)
+          marker-root=hash:t-v1
+          parent-root=hash:t-v1
+      ==
+  ^-  seeds:v1:t-v1
+  =/  empty-data=(z-map @tas *)  *(z-map @tas *)
+  =/  root-count=@  (lent roots)
+  ?>  !=(0 root-count)
+  =/  i=@  0
+  =/  acc=seeds:v1:t-v1  *seeds:v1:t-v1
+  |-
+  ?:  =(i count)  acc
+  =/  root=hash:t-v1  (snag (mod i root-count) roots)
+  =/  marker=seed:v1:t-v1
+    (make-builder-seed marker-root +(i) parent-root ~ empty-data)
+  =/  parent=hash:t-v1  (hash:seed:v1:t-v1 marker)
+  =/  next=seeds:v1:t-v1
+    %+  ~(put z-in acc)
+    (make-builder-seed root (add 11 i) parent ~ empty-data)
+  $(i +(i), acc next)
+::
 ++  grouped-build-v1-outputs
   |=  [raw=raw-tx:v1:t-v1 page-number=page-number:t-v1]
   ^-  outputs:v1:t-v1
@@ -223,32 +271,14 @@
   ::  Case 2: the production incident shape, 674 distinct spends whose seeds
   ::  all feed one output lock root.
   =/  spends-many=spends:v1:t-v1
-    %+  roll  (gulf 0 673)
-    |=  [i=@ acc=spends:v1:t-v1]
-    =/  marker=seed:v1:t-v1
-      (make-builder-seed *hash:t-v1 i root-c ~ empty-data)
-    =/  parent=hash:t-v1  (hash:seed:v1:t-v1 marker)
-    =/  sed=seed:v1:t-v1
-      (make-builder-seed root-a 1 parent ~ empty-data)
-    =/  seds=seeds:v1:t-v1
-      (~(put z-in *seeds:v1:t-v1) sed)
-    =/  nam=nname:t-v1
-      (new-v1:nname:t-v1 parent [root-b %.n])
-    (~(put z-by acc) nam (make-builder-spend seds))
+    (make-builder-many-spends 674 root-a root-b root-c)
   ?>  =(674 ~(wyt z-by spends-many))
   =/  raw-many=raw-tx:v1:t-v1  (make-builder-raw spends-many)
   ::
   ::  Case 3: 48 distinct seeds interleaved across three output lock roots.
   =/  roots=(list hash:t-v1)  ~[root-a root-b root-c]
   =/  seeds-roots=seeds:v1:t-v1
-    %+  roll  (gulf 0 47)
-    |=  [i=@ acc=seeds:v1:t-v1]
-    =/  root=hash:t-v1  (snag (mod i 3) roots)
-    =/  marker=seed:v1:t-v1
-      (make-builder-seed root-a +(i) root-b ~ empty-data)
-    =/  parent=hash:t-v1  (hash:seed:v1:t-v1 marker)
-    %+  ~(put z-in acc)
-    (make-builder-seed root (add 11 i) parent ~ empty-data)
+    (make-builder-many-seeds 48 roots root-a root-b)
   ?>  =(48 ~(wyt z-in seeds-roots))
   =/  spends-roots=spends:v1:t-v1
     (~(put z-by *spends:v1:t-v1) name-a (make-builder-spend seeds-roots))
