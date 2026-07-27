@@ -1233,10 +1233,11 @@
     |^
     ^-  (reason ^form)
     =/  tx1=tx:v1  (new:tx:v1 raw1 height.form)
-    ?.  (validate:tx:v1 tx1)  [%.n %v1-tx-invalid]
-    ::  validate all spends against their parent notes
+    ?.  (validate-constructed:tx:v1 tx1)  [%.n %v1-tx-invalid]
+    ::  Raw validation above proved every signature. Validate all spends
+    ::  against their parent notes without repeating that curve work.
     =/  validate-result
-      %-  validate-with-context:spends
+      %-  validate-with-context-after-raw-validation:spends
       [balance.form spends.raw1 height.form max-size.data bythos-phase]
     ?.  ?=(%.y -.validate-result)  validate-result
     ::  check fee covers word count
@@ -1255,8 +1256,8 @@
     ::
     :-  %.y
     %_  form
-      size  (add size.form ~(size get:raw-tx raw1))
-      txs   (~(put h-by txs.form) (compute-id:raw-tx raw1) tx1)
+      size  (add size.form total-size.tx1)
+      txs   (~(put h-by txs.form) id.raw1 tx1)
     ==
     ::
     ++  add-outputs

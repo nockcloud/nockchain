@@ -1012,6 +1012,29 @@
             max-size=@
             bythos-phase=page-number
         ==
+    (validate-with-context-mode balance sps page-num max-size bythos-phase %.n)
+  ::
+  ::  The caller has already run +validate:spends over this exact form, so
+  ::  every signature is cryptographically valid. Retain every contextual
+  ::  check, including signature count/key authorization/hash binding, while
+  ::  omitting only the repeated curve verification.
+  ++  validate-with-context-after-raw-validation
+    |=  $:  balance=(h-map nname nnote)
+            sps=form
+            page-num=page-number
+            max-size=@
+            bythos-phase=page-number
+        ==
+    (validate-with-context-mode balance sps page-num max-size bythos-phase %.y)
+  ::
+  ++  validate-with-context-mode
+    |=  $:  balance=(h-map nname nnote)
+            sps=form
+            page-num=page-number
+            max-size=@
+            bythos-phase=page-number
+            signatures-already-valid=?
+        ==
     ^-  (reason ~)
     ?:  (note-data-exceeds-max sps max-size)
       [%.n %v1-note-data-exceeds-max-size]
@@ -1026,7 +1049,10 @@
         %0
       ::  v0 note must back a %0 spend
       ?:  ?=(@ -.note)  [%.n %v1-spend-version-mismatch]
-      =/  verified=?  (verify:spend-0 +.sp note)
+      =/  verified=?
+        ?:  signatures-already-valid
+          (verify-without-signatures:spend-0 +.sp note)
+        (verify:spend-0 +.sp note)
       ?.  verified
         [%.n %v1-spend-0-verify-failed]
       ?.  (check-gifts-and-fee:spend sp note)
@@ -1044,8 +1070,13 @@
             witness.+.sp
             bythos-phase
         ==
-      ?.  %+  check:check-context  ctx
+      =/  lock-valid=?
+        ?:  signatures-already-valid
+          %+  check-after-raw-validation:check-context  ctx
           (lock-hash:nnote-1 note)
+        %+  check:check-context  ctx
+        (lock-hash:nnote-1 note)
+      ?.  lock-valid
         [%.n %v1-spend-1-lock-failed]
       ?.  (check-gifts-and-fee:spend sp note)
         [%.n %v1-spend-1-gifts-failed]
@@ -1853,6 +1884,18 @@
     |=  [=form ctx=check-context]
     ^-  ?
     ?&
+      (check-without-signatures form ctx)
+    ::  signatures valid
+      %-  batch-verify:affine:belt-schnorr:cheetah
+      (signatures:pkh-signature pkh.witness.ctx sig-hash.ctx)
+    ==
+  ::
+  ::  Signature crypto has already succeeded for this exact raw transaction.
+  ::  Keep the lock's threshold, allowed-key, and pubkey-hash checks.
+  ++  check-without-signatures
+    |=  [=form ctx=check-context]
+    ^-  ?
+    ?&
     ::  correct number of signatures
       =(m.form ~(wyt z-by pkh.witness.ctx))
     ::  permissible public key hashes
@@ -1863,9 +1906,6 @@
       ?&  a
           =(h (hash:schnorr-pubkey pk))
       ==
-    ::  signatures valid
-      %-  batch-verify:affine:belt-schnorr:cheetah
-      (signatures:pkh-signature pkh.witness.ctx sig-hash.ctx)
     ==
   ::
   --
@@ -2019,6 +2059,16 @@
   ::
   ++  check
     |=  [=form lock=hash]
+    (check-mode form lock %.n)
+  ::
+  ::  The exact witness signatures were validated by +validate:spends before
+  ::  contextual lock evaluation. Skip only their repeated curve operations.
+  ++  check-after-raw-validation
+    |=  [=form lock=hash]
+    (check-mode form lock %.y)
+  ::
+  ++  check-mode
+    |=  [=form lock=hash signatures-already-valid=?]
     ^-  ?
     ::  Protocol-fund notes (014-aletheia) committed an unsatisfiable lock:
     ::  +make-name:coinbase wrapped +fund-address (itself the lock-root of a
@@ -2028,7 +2078,7 @@
     ::  firstname); recover spendability by routing it to the true multisig
     ::  check. See /scripts/generate-fund-note-name.hoon.
     ?:  =(lock fund-note-firstname)
-      (check-multisig-lock fund-address form)
+      (check-multisig-lock-mode fund-address form signatures-already-valid)
     =/  bythos-ok=?
       ?:  ?=([%full * * *] lmp.witness.form)
         (gte now.form bythos-phase.form)
@@ -2051,7 +2101,9 @@
       ?-  -.p
         %tim  (check:tim +.p form)
         %hax  (check:hax +.p form)
-        %pkh  (check:pkh +.p form)
+        %pkh  ?:  signatures-already-valid
+                 (check-without-signatures:pkh +.p form)
+               (check:pkh +.p form)
         %brn  %|
       ==
     ==
@@ -2069,6 +2121,10 @@
   ::  production passes +fund-address.
   ++  check-multisig-lock
     |=  [target=hash =form]
+    (check-multisig-lock-mode target form %.n)
+  ::
+  ++  check-multisig-lock-mode
+    |=  [target=hash =form signatures-already-valid=?]
     ^-  ?
     =/  sc=spend-condition
       ?:  ?=([%full * * *] lmp.witness.form)
@@ -2084,7 +2140,9 @@
       |=  p=lock-primitive
       ^-  ?
       ?-  -.p
-        %pkh  (check:pkh +.p form)
+        %pkh  ?:  signatures-already-valid
+                 (check-without-signatures:pkh +.p form)
+               (check:pkh +.p form)
         %tim  (check:tim +.p form)
         %hax  (check:hax +.p form)
         %brn  %|
@@ -2117,6 +2175,16 @@
     ?&  (validate:raw-tx raw-tx.form)
         (validate:outputs outputs.form)
         =(total-size.form ~(size get form))
+    ==
+  ::
+  ::  +new set total-size from this exact raw transaction. Callers that have
+  ::  just constructed the tx still validate the untrusted raw payload and all
+  ::  derived outputs, but need not jam-size the raw transaction a second time.
+  ++  validate-constructed
+    |=  =form
+    ^-  ?
+    ?&  (validate:raw-tx raw-tx.form)
+        (validate:outputs outputs.form)
     ==
   ::
   ++  new

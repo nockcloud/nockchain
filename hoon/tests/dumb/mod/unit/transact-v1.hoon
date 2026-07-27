@@ -501,6 +501,91 @@
     !>  [%.n %.y]
   !>  [old-in-balance new-in-balance]
 ::
+++  test-v1-context-after-raw-validation-equivalence
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  par=page:t  con  (add-n-pages:h (dec v1-phase:t) con default-retain:h)
+  =/  page0=page:t  (make-empty-page:h par)
+  =/  new-digest  (compute-digest:page:t page0)
+  =.  page0
+    ?^  -.page0
+      page0(digest new-digest)
+    page0(digest new-digest)
+  =/  r0=(reason tx-acc:t)  (~(validate-page-with-txs dcon con constants) page0)
+  ?:  ?=(%.n -.r0)  (expect !>(%.n))
+  =.  con  (~(accept-page dcon con constants) page0 +.r0 *@da)
+  =.  con  (~(update-heaviest dcon con constants) page0)
+  =/  balance=(h-map nname:t nnote:t)
+    (need (~(get h-by balance.con) ~(digest get:page:t page0)))
+  =/  coin=nnote:t  (get-coinbase-from-balance:v1:h page0 balance)
+  =/  nam=nname:t  ~(name get:nnote:t coin)
+  =/  pk1=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-1:h))
+  =/  pk2=schnorr-pubkey:t  (head ~(tap z-in pubkeys.p:default-keys-2:h))
+  =/  [lock-root=hash:t sc=spend-condition:t *]
+    (make-coinbase-lock:v1:h 1 ~[pk1])
+  =/  fee=coins:t  10.000
+  =/  sed=seed:v1:t
+    (make-seed:v1:h lock-root (sub assets.coin fee) (hash:nnote:t coin))
+  =/  seds=seeds:v1:t  (~(put z-in *seeds:v1:t) sed)
+  =/  unsigned=spend-1:v1:t
+    %*  .  *spend-1:v1:t
+      witness  *witness:v1:t
+      seeds    seds
+      fee      fee
+    ==
+  =/  sig-h=hash:t  (sig-hash:spend-1:v1:t unsigned)
+  =/  valid-witness=witness:t
+    (make-pkh-witness:v1:h lock-root sc sig-h ~[[s:default-keys-1:h pk1]])
+  =/  wrong-key-witness=witness:t
+    (make-pkh-witness:v1:h lock-root sc sig-h ~[[s:default-keys-2:h pk2]])
+  =/  bad-signature-witness=witness:t
+    (make-pkh-witness:v1:h lock-root sc sig-h ~[[s:default-keys-2:h pk1]])
+  =/  valid-spends=spends:v1:t
+    (~(put z-by *spends:v1:t) nam [%1 unsigned(witness valid-witness)])
+  =/  wrong-key-spends=spends:v1:t
+    (~(put z-by *spends:v1:t) nam [%1 unsigned(witness wrong-key-witness)])
+  =/  bad-signature-spends=spends:v1:t
+    (~(put z-by *spends:v1:t) nam [%1 unsigned(witness bad-signature-witness)])
+  =/  valid-raw=raw-tx:v1:t  (new:raw-tx:v1:t valid-spends)
+  =/  wrong-key-raw=raw-tx:v1:t  (new:raw-tx:v1:t wrong-key-spends)
+  =/  bad-signature-raw=raw-tx:v1:t  (new:raw-tx:v1:t bad-signature-spends)
+  ?>  (validate:raw-tx:v1:t valid-raw)
+  ::  A valid signature from an unauthorized key passes raw crypto and must
+  ::  still fail contextual key authorization.
+  ?>  (validate:raw-tx:v1:t wrong-key-raw)
+  ?<  (validate:raw-tx:v1:t bad-signature-raw)
+  =/  page-num=page-number:t  +(~(height get:page:t page0))
+  =/  full-valid=(reason ~)
+    %-  validate-with-context:spends:v1:t
+    [balance valid-spends page-num max-size.data.constants bythos-phase.constants]
+  =/  fast-valid=(reason ~)
+    %-  validate-with-context-after-raw-validation:spends:v1:t
+    [balance valid-spends page-num max-size.data.constants bythos-phase.constants]
+  =/  full-wrong-key=(reason ~)
+    %-  validate-with-context:spends:v1:t
+    [balance wrong-key-spends page-num max-size.data.constants bythos-phase.constants]
+  =/  fast-wrong-key=(reason ~)
+    %-  validate-with-context-after-raw-validation:spends:v1:t
+    [balance wrong-key-spends page-num max-size.data.constants bythos-phase.constants]
+  =/  missing-balance=(h-map nname:t nnote:t)  (~(del h-by balance) nam)
+  =/  full-missing=(reason ~)
+    %-  validate-with-context:spends:v1:t
+    [missing-balance valid-spends page-num max-size.data.constants bythos-phase.constants]
+  =/  fast-missing=(reason ~)
+    %-  validate-with-context-after-raw-validation:spends:v1:t
+    [missing-balance valid-spends page-num max-size.data.constants bythos-phase.constants]
+  ?>  ?=(%.y -.full-valid)
+  ?>  =([%.n %v1-spend-1-lock-failed] full-wrong-key)
+  ?>  =([%.n %v1-input-missing] full-missing)
+  =/  valid-tx=tx:v1:t  (new:tx:v1:t valid-raw page-num)
+  =/  bad-signature-tx=tx:v1:t  (new:tx:v1:t bad-signature-raw page-num)
+  ?>  (validate:tx:v1:t valid-tx)
+  ?>  (validate-constructed:tx:v1:t valid-tx)
+  ?<  (validate:tx:v1:t bad-signature-tx)
+  ?<  (validate-constructed:tx:v1:t bad-signature-tx)
+  %+  expect-eq
+    !>  [full-valid full-wrong-key full-missing]
+  !>  [fast-valid fast-wrong-key fast-missing]
+::
 ::  ++test-v1-lock-pkh-m-of-n-valid: test valid m-of-n multisig spending
 ::
 ::    this test validates that a 2-of-3 multisig pay-to-pubkey-hash lock
