@@ -561,6 +561,70 @@
           =(*(z-set tx-id:t) ~(tx-ids get:page:t candidate-block.after))
           =(candidate-acc.no-key candidate-acc.after)
       ==
+::
+::  A retained transaction may survive in raw-txs/excluded-txs after one of
+::  its inputs has disappeared from the heaviest balance.  Candidate rebuilds
+::  must discard it before +heard-new-tx invokes full transaction validation.
+++  test-miner-candidate-txs-prefilters-missing-inputs
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =/  raw=raw-tx:t  make-rogue-tx:v0:h
+  =/  tid=tx-id:t  ~(id get:raw-tx:t raw)
+  =.  raw-txs.con  (~(put h-by raw-txs.con) tid [raw 0])
+  =.  excluded-txs.con  (~(put h-in excluded-txs.con) tid)
+  =/  min=mining-state  initial-mining-state:h
+  =.  min  (~(heard-new-block dmin min constants) con *@da)
+  =/  eligible=(h-map tx-id:t raw-tx:t)
+    (~(candidate-txs dmin min constants) con)
+  %+  expect-eq
+    !>([%.y %.n %.n])
+  !>  :*  (~(has h-by raw-txs.con) tid)
+          (~(inputs-in-heaviest-balance dcon con constants) raw)
+          (~(has h-by eligible) tid)
+      ==
+::
+::  Two transactions can both pass the heaviest-balance prefilter while
+::  conflicting with each other.  Once the first has entered the candidate,
+::  the second must fail the cheap candidate-balance probe before its witness
+::  and signatures are validated again.
+++  test-miner-prefilters-candidate-double-spend
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =/  min=mining-state  initial-mining-state:h
+  =.  min  (~(heard-new-block dmin min constants) con *@da)
+  =/  raw1=raw-tx:t  (make-default-coinbase-raw-tx:v0:h p:default-keys-2:h)
+  =/  raw2=raw-tx:t  (make-default-coinbase-raw-tx:v0:h p:default-keys-3:h)
+  ?>  ?=(^ -.raw1)
+  ?>  ?=(^ -.raw2)
+  =/  before=?  (~(inputs-in-candidate-balance dmin min constants) raw2)
+  =.  min  (~(heard-new-tx dmin min constants) raw1)
+  =/  after=?  (~(inputs-in-candidate-balance dmin min constants) raw2)
+  =/  unchanged=mining-state  (~(heard-new-tx dmin min constants) raw2)
+  %+  expect-eq
+    !>([%.y %.n %.y])
+  !>  :*  before
+          after
+          =(min unchanged)
+      ==
+::
+::  Size admission uses an empty-page lower bound.  If a raw transaction
+::  exceeds even that remaining budget, +heard-new-tx must return before full
+::  transaction processing and leave the mining state untouched.
+++  test-miner-prefilters-raw-that-cannot-fit
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =/  raw=raw-tx:t  (make-default-coinbase-raw-tx:v0:h p:default-keys-2:h)
+  ?>  ?=(^ -.raw)
+  =/  impossible-max=size:t
+    `size:t`(dec (add (compute-size-without-txs:page:t *page:t) ~(size get:raw-tx:t raw)))
+  =.  constants  constants(max-block-size impossible-max)
+  =/  min=mining-state  initial-mining-state:h
+  =.  min  (~(heard-new-block dmin min constants) con *@da)
+  =/  has-room=?  (~(candidate-has-room-for-raw dmin min constants) raw)
+  =/  after=mining-state  (~(heard-new-tx dmin min constants) raw)
+  %+  expect-eq
+    !>([%.n %.y])
+  !>  [has-room =(min after)]
 ::  +|  %random-walk
 ::
 ::    +stateful-consensus-walk picks an op from
