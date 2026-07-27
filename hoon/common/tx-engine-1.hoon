@@ -2135,61 +2135,54 @@
       ^-  outputs
       =/  spends-list=(list [nname spend])
         ~(tap z-by spends.raw-tx)
-      =|  children=(z-map hash output)
+      =|  groups=(z-map hash [=seeds note-data=(z-map @tas *) assets=coins])
       |-  ^-  outputs
       ?~  spends-list
+        =/  children=(list output)
+          %+  turn  ~(tap z-by groups)
+          |=  [key=hash group=[=seeds note-data=(z-map @tas *) assets=coins]]
+          ::  Normalize and hash each completed seed group exactly once.  The
+          ::  previous incremental builder repeated this work for every seed
+          ::  already accumulated under the same lock-root.
+          =/  normalized-seeds=seeds
+            %-  ~(gas z-in *seeds)
+            %+  turn  ~(tap z-in seeds.group)
+            |=(sed=seed sed(output-source ~))
+          =/  src-hash=hash  (hash:seeds normalized-seeds)
+          =/  src=source  [src-hash %.n]
+          =/  note1=nnote-1
+            %*  .  *nnote-1
+              version      %1
+              origin-page  page-number
+              name         (new-v1:nname [key src])
+              note-data    note-data.group
+              assets       assets.group
+            ==
+          [note1 seeds.group]
         %-  ~(gas z-in *(z-set output))
-        ~(val z-by children)
+        children
       =/  sp=spend  +.i.spends-list
       =/  sed-list=(list seed)
         ?-  -.sp
           %0  ~(tap z-in seeds.+.sp)
           %1  ~(tap z-in seeds.+.sp)
         ==
-      =.  children
+      =.  groups
         %+  roll  sed-list
-        |=  [sed=seed acc=_children]
+        |=  [sed=seed acc=_groups]
         =/  key=hash  lock-root.sed
-        =/  mchild=(unit output)  (~(get z-by acc) key)
-        ?^  mchild
-          =*  child  u.mchild
-          =/  new-seeds=seeds  (~(put z-in seeds.child) sed)
-          =/  new-assets=coins  (add assets.note.child gift.sed)
-          ::  normalize: strip output-source before hashing to ensure consistent
-          ::  tree structure
-          =/  normalized-seeds=seeds
-            %-  ~(gas z-in *seeds)
-            %+  turn  ~(tap z-in new-seeds)
-            |=(s=seed s(output-source ~))
-          =/  src-hash=hash  (hash:seeds normalized-seeds)
-          =/  src=source  [src-hash %.n]
-          ~|  "build-outputs: v0 note detected"
-          ?>  ?=(@ -.note.child)
-          =/  updated-child=output
-            :_  new-seeds
-            %=  note.child
-              assets  new-assets
-              name    (new-v1:nname [lock-root.sed src])
-              note-data  (~(uni z-by note-data.note.child) note-data.sed)
-            ==
-          (~(put z-by acc) key updated-child)
+        =/  mgroup=(unit [=seeds note-data=(z-map @tas *) assets=coins])
+          (~(get z-by acc) key)
+        ?^  mgroup
+          =/  group=[=seeds note-data=(z-map @tas *) assets=coins]
+            u.mgroup
+          =/  new-seeds=seeds  (~(put z-in seeds.group) sed)
+          =/  new-note-data=(z-map @tas *)
+            (~(uni z-by note-data.group) note-data.sed)
+          =/  new-assets=coins  (add assets.group gift.sed)
+          (~(put z-by acc) key [new-seeds new-note-data new-assets])
         =/  single=seeds  (~(put z-in *seeds) sed)
-        ::  normalize: strip output-source before hashing to ensure consistent
-        ::  tree structure
-        =/  normalized-single=seeds
-          (~(put z-in *seeds) sed(output-source ~))
-        =/  sh=hash  (hash:seeds normalized-single)
-        =/  src=source  [sh %.n]
-        =/  note1=nnote-1
-          %*  .  *nnote-1
-            version      %1
-            origin-page  page-number
-            name         (new-v1:nname [lock-root.sed src])
-            note-data    note-data.sed
-            assets       gift.sed
-          ==
-        =/  out=output  [note1 single]
-        (~(put z-by acc) key out)
+        (~(put z-by acc) key [single note-data.sed gift.sed])
       $(spends-list t.spends-list)
     --
   ::
