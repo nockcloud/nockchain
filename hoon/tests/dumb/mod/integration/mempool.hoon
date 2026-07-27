@@ -256,6 +256,15 @@
 ::  weighs. the accept tests below fail if this ever stops sufficing.
 ++  sufficient-fee  ^-(coins:t 256)
 ::
+++  count-mine-zk-effects
+  |=  effs=(list effect:h)
+  ^-  @
+  %+  roll  effs
+  |=  [e=effect:h total=@]
+  ?:  ?=(%mine-zk -.e)
+    +(total)
+  total
+::
 ++  setup-v1-spendable-tx
   ^-  [_nockchain:h raw-tx:t]
   (setup-v1-tx-with-fee sufficient-fee)
@@ -353,6 +362,48 @@
           (~(has z-in:zoon (filter-heard-tx-effects:h timer-effs)) raw)
           (~(has z-in:zoon (filter-heard-tx-effects:h block-effs)) raw)
           (~(has-raw-tx k-by:h nockchain) tx-id)
+      ==
+::
+::  Candidate packing belongs only to timer pokes.  A transaction receipt leaves
+::  the active commitment untouched, accepting a new heaviest block immediately
+::  publishes an empty child candidate, and the following timer admits at most
+::  one retained transaction and publishes the changed commitment.
+++  test-v1-miner-refills-only-on-timer
+  =/  now=@da  ~2026.7.26..00.00.00
+  =+  [nockchain raw]=setup-v1-spendable-tx
+  =/  v0-key=@t
+    (to-b58:schnorr-pubkey:t default-a-pt-1:h)
+  =/  v1-key=@t
+    (to-b58:hash:t (hash:schnorr-pubkey:t default-a-pt-1:h))
+  =^  key-effs=(list effect:h)  nockchain
+    (pok-at:h now [%command %set-mining-key v0-key v1-key] nockchain)
+  =^  enable-effs=(list effect:h)  nockchain
+    (pok-at:h now [%command %enable-mining %.y] nockchain)
+  =/  before=mining-state:h  ~(min k-by:h nockchain)
+  ?>  =(*(z-set:zoon tx-id:t) ~(tx-ids get:page:t candidate-block.before))
+  =^  tx-effs=(list effect:h)  nockchain
+    (pok-at:h (add now ~s1) [%fact %0 %heard-tx raw] nockchain)
+  =/  after-tx=mining-state:h  ~(min k-by:h nockchain)
+  =/  tip=page:t  ~(tip-page k-by:h nockchain)
+  =/  next=page:t  (make-empty-page:h tip)
+  =^  block-effs=(list effect:h)  nockchain
+    (pok-at:h (add now ~s2) [%fact %0 %heard-block next] nockchain)
+  =/  after-block=mining-state:h  ~(min k-by:h nockchain)
+  =^  timer-effs=(list effect:h)  nockchain
+    (pok-at:h (add now ~s20) [%command %timer ~] nockchain)
+  =/  after-timer=mining-state:h  ~(min k-by:h nockchain)
+  =/  after-con=consensus-state:h  ~(con k-by:h nockchain)
+  =/  tid=tx-id:t  ~(id get:raw-tx:t raw)
+  %+  expect-eq
+    !>([1 0 1 1 %.y %.y %.y %.y])
+  !>  :*  (count-mine-zk-effects enable-effs)
+          (count-mine-zk-effects tx-effs)
+          (count-mine-zk-effects block-effs)
+          (count-mine-zk-effects timer-effs)
+          =(candidate-block.before candidate-block.after-tx)
+          =(*(z-set:zoon tx-id:t) ~(tx-ids get:page:t candidate-block.after-block))
+          =((need heaviest-block.after-con) ~(parent get:page:t candidate-block.after-block))
+          (~(has z-in:zoon ~(tx-ids get:page:t candidate-block.after-timer)) tid)
       ==
 ::
 ::::  A tx admitted to the mempool must be one some block can carry.

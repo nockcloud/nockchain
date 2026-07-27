@@ -821,6 +821,15 @@
   (poke:nockchain *@ (build-ovum cau))
   [;;((list effect) effs) nockchain]
 ::
+++  pok-at
+  |=  [now=@da cau=cause nockchain=_nockchain]
+  =^  effs=(list *)  nockchain
+  ::  Keep the same desk-hash coercion as +pok while allowing tests of
+  ::  wall-clock-derived scheduling to supply an exact deterministic time.
+  =<  [- +(desk-hash.outer [~ *@uvI])]
+  (poke:nockchain now (build-ovum cau))
+  [;;((list effect) effs) nockchain]
+::
 ::  +pok-on-wire: +pok, but stamping a caller-chosen wire on the ovum, so a
 ::  test can exercise the kernel's wire-dependent behaviour (which driver a
 ::  poke came from) rather than always speaking on the default %sys wire.
@@ -890,6 +899,8 @@
   |_  nockchain=_nockchain
   ::
   ++  con  ;;(consensus-state c.internal.outer.nockchain)
+  ::
+  ++  min  ;;(mining-state m.internal.outer.nockchain)
   ::
   ::  the derived state, whose .heaviest-chain is the canonical
   ::  page-number -> block-id index used to tell an orphaned block from one on

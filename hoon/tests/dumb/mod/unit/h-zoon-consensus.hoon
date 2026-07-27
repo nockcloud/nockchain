@@ -538,7 +538,7 @@
           ?=(^ summary)
       ==
 ::
-++  test-miner-add-txs-to-candidate-no-keys-is-noop
+++  test-miner-refill-candidate-no-keys-is-noop
   =/  con=consensus-state  initial-consensus-state:h
   =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
   =/  seeded=mining-state  initial-mining-state:h
@@ -554,10 +554,12 @@
   ?>  ?&  ?=(^ -.candidate-block.no-key)
           (~(has h-in excluded-txs.con) ~(id get:raw-tx:t raw))
       ==
-  =/  after=mining-state  (~(add-txs-to-candidate dmin no-key constants) con)
+  =/  [changed=? after=mining-state]
+    (~(refill-candidate dmin no-key constants) con *@da)
   %+  expect-eq
-    !>([%.y %.y %.y])
-  !>  :*  =(no-key after)
+    !>([%.n %.y %.y %.y])
+  !>  :*  changed
+          =(no-key after)
           =(*(z-set tx-id:t) ~(tx-ids get:page:t candidate-block.after))
           =(candidate-acc.no-key candidate-acc.after)
       ==
@@ -625,6 +627,111 @@
   %+  expect-eq
     !>([%.n %.y])
   !>  [has-room =(min after)]
+::
+::  Hearing a new heaviest block must publish a usable empty candidate without
+::  synchronously replaying retained transactions.
+++  test-miner-new-tip-publishes-empty-candidate
+  =/  now=@da  ~2026.7.26..00.00.00
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  pag=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =/  raw=raw-tx:t
+    (make-raw-tx-from-coinbase:v0:h p:default-keys-2:h pag)
+  =/  tid=tx-id:t  ~(id get:raw-tx:t raw)
+  =^  ready=(list block-id:t)  con
+    (~(add-raw-tx dcon con constants) raw)
+  ?>  =(~ ready)
+  =/  min=mining-state  initial-mining-state:h
+  =.  min  (~(heard-new-block dmin min constants) con now)
+  %+  expect-eq
+    !>([%.y %.y %.y])
+  !>  :*  (~(has h-in excluded-txs.con) tid)
+          =(*(z-set tx-id:t) ~(tx-ids get:page:t candidate-block.min))
+          =((need heaviest-block.con) ~(parent get:page:t candidate-block.min))
+      ==
+::
+::  The scheduler advances one slot per Rust chain-timer period.  This pins the
+::  division-before-modulo rule at the 20-second cross-language cadence.
+++  test-miner-refill-slot-advances-at-chain-cadence
+  =/  now=@da  ~2026.7.26..00.00.07
+  =/  count=@  7
+  =/  slot0=@
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) now count)
+  =/  slot1=@
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) (add now ~s20) count)
+  =/  slot2=@
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) (add now ~s40) count)
+  %+  expect-eq
+    !>([(mod +(slot0) count) (mod +(slot1) count)])
+  !>  [slot1 slot2]
+::
+::  Three retained transactions exercise both a shrinking success set and a
+::  repeatedly failing survivor: raw1/raw2 double-spend one coinbase while raw3
+::  spends another.  Across six 20-second slots, exactly two transactions enter
+::  the candidate, every poke adds at most one, the independent transaction
+::  cannot starve behind the conflict, and the final candidate still passes the
+::  unchanged consensus transaction validator.
+++  test-miner-refill-is-bounded-fair-and-validates
+  =/  base-now=@da  *@da
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  pag1=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =^  pag2=page:t  con  (add-n-pages:h 1 con default-retain:h)
+  =/  raw1=raw-tx:t
+    (make-raw-tx-from-coinbase:v0:h p:default-keys-2:h pag1)
+  =/  raw2=raw-tx:t
+    (make-raw-tx-from-coinbase:v0:h p:default-keys-3:h pag1)
+  =/  raw3=raw-tx:t
+    (make-raw-tx-from-coinbase:v0:h p:default-keys-2:h pag2)
+  =^  ready=(list block-id:t)  con
+    (~(add-raw-tx dcon con constants) raw1)
+  ?>  =(~ ready)
+  =^  ready=(list block-id:t)  con
+    (~(add-raw-tx dcon con constants) raw2)
+  ?>  =(~ ready)
+  =^  ready=(list block-id:t)  con
+    (~(add-raw-tx dcon con constants) raw3)
+  ?>  =(~ ready)
+  =/  start=mining-state  initial-mining-state:h
+  =.  start  (~(heard-new-block dmin start constants) con base-now)
+  ?>  =(*(z-set tx-id:t) ~(tx-ids get:page:t candidate-block.start))
+  =/  [final=mining-state changes=@ failures=@ max-delta=@]
+    =/  i=@  0
+    =/  min=mining-state  start
+    =/  changes=@  0
+    =/  failures=@  0
+    =/  max-delta=@  0
+    |-
+    ?:  =(i 6)  [min changes failures max-delta]
+    =/  before=@  ~(wyt z-in ~(tx-ids get:page:t candidate-block.min))
+    =/  now=@da
+      (add base-now (mul ~s20 +(i)))
+    =/  [changed=? next=mining-state]
+      (~(refill-candidate dmin min constants) con now)
+    =/  after=@  ~(wyt z-in ~(tx-ids get:page:t candidate-block.next))
+    =/  delta=@  (sub after before)
+    ?>  (lte delta 1)
+    $(i +(i), min next, changes ?:(changed +(changes) changes), failures ?:(changed failures +(failures)), max-delta (max max-delta delta))
+  =/  ids=(z-set tx-id:t)
+    ~(tx-ids get:page:t candidate-block.final)
+  =/  has1=?  (~(has z-in ids) ~(id get:raw-tx:t raw1))
+  =/  has2=?  (~(has z-in ids) ~(id get:raw-tx:t raw2))
+  =/  has3=?  (~(has z-in ids) ~(id get:raw-tx:t raw3))
+  =/  candidate=page:t  candidate-block.final
+  =/  digest=block-id:t  (compute-digest:page:t candidate)
+  =.  candidate
+    ?^  -.candidate
+      candidate(digest digest)
+    candidate(digest digest)
+  =/  validation=(reason tx-acc:t)
+    (~(validate-page-with-txs dcon con constants) candidate)
+  %+  expect-eq
+    !>([2 2 4 1 %.y %.y])
+  !>  :*  ~(wyt z-in ids)
+          changes
+          failures
+          max-delta
+          ?&(has3 !=(has1 has2))
+          ?=(%.y -.validation)
+      ==
 ::  +|  %random-walk
 ::
 ::    +stateful-consensus-walk picks an op from
