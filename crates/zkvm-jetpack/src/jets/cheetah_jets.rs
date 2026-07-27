@@ -3,8 +3,9 @@ use nockvm::interpreter::Context;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Atom, Noun, T};
+use nockvm::noun::{Atom, Noun, D, T};
 use noun_serde::{NounDecode, NounEncode};
+use rayon::prelude::*;
 
 use crate::form::belt::*;
 use crate::form::crypto::cheetah::*;
@@ -52,6 +53,7 @@ pub fn verify_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     Ok(res.to_noun(&mut context.stack))
 }
 
+#[derive(Clone)]
 pub(crate) struct ValidateArgs {
     pub pubkey: CheetahPoint,
     pub m: [Belt; 5],
@@ -84,32 +86,39 @@ pub fn batch_verify_affine_jet(context: &mut Context, subject: Noun) -> Result<N
     //  Any element this jet cannot decode as the expected types Punts, so the
     //  runtime re-runs the authoritative Hoon rather than diverging on a
     //  malformed input the Hoon would still process.
-    let args = list
-        .in_space(&space)
-        .list_iter()
-        .map(|arg| {
-            let pubkey =
-                CheetahPoint::from_noun(&arg.slot(2)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            let m =
-                <[Belt; 5]>::from_noun(&arg.slot(6)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            let chal = arg
-                .slot(14)?
-                .as_atom()
-                .map_err(|_| JetErr::Punt)?
-                .as_ubig(&mut context.stack);
-            let sig = arg
-                .slot(15)?
-                .as_atom()
-                .map_err(|_| JetErr::Punt)?
-                .as_ubig(&mut context.stack);
-            Ok(ValidateArgs {
-                pubkey,
-                m,
-                chal,
-                sig,
-            })
-        })
-        .collect::<Result<Vec<ValidateArgs>, JetErr>>()?;
+    let mut cursor = list.in_space(&space);
+    let mut args = Vec::new();
+    while !unsafe { cursor.noun().raw_equals(&D(0)) } {
+        // Malformed structure must Punt rather than fail eagerly. The
+        // authoritative Hoon may have returned %.n on an earlier element
+        // without ever touching this one.
+        let cell = cursor.as_cell().map_err(|_| JetErr::Punt)?;
+        let arg = cell.head();
+        cursor = cell.tail();
+        let pubkey =
+            CheetahPoint::from_noun(&arg.slot(2).map_err(|_| JetErr::Punt)?.noun(), &space)
+                .map_err(|_| JetErr::Punt)?;
+        let m = <[Belt; 5]>::from_noun(&arg.slot(6).map_err(|_| JetErr::Punt)?.noun(), &space)
+            .map_err(|_| JetErr::Punt)?;
+        let chal = arg
+            .slot(14)
+            .map_err(|_| JetErr::Punt)?
+            .as_atom()
+            .map_err(|_| JetErr::Punt)?
+            .as_ubig(&mut context.stack);
+        let sig = arg
+            .slot(15)
+            .map_err(|_| JetErr::Punt)?
+            .as_atom()
+            .map_err(|_| JetErr::Punt)?
+            .as_ubig(&mut context.stack);
+        args.push(ValidateArgs {
+            pubkey,
+            m,
+            chal,
+            sig,
+        });
+    }
 
     levy_verify_affine(&args, &mut context.stack)
 }
@@ -120,13 +129,46 @@ pub fn batch_verify_affine_jet(context: &mut Context, subject: Noun) -> Result<N
 /// `f6-div` by zero, where the Hoon `verify` crashes) propagates as a
 /// deterministic `JetErr` via `?` — reached only when every earlier element
 /// verified, exactly as `levy` reaches that element before any `%.n`.
-fn levy_verify_affine(args: &[ValidateArgs], stack: &mut NockStack) -> Result<Noun, JetErr> {
-    for arg in args {
-        if !verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)? {
-            return Ok(false.to_noun(stack));
+const PARALLEL_VERIFY_MIN_BATCH: usize = 8;
+const PARALLEL_VERIFY_CHUNK_SIZE: usize = 16;
+
+/// Evaluate an ordered `levy` in bounded parallel chunks.
+///
+/// Results within each chunk are collected and consumed in canonical order,
+/// preserving authoritative first-false/first-error behavior without replaying
+/// work. No later chunk starts after a failure, bounding speculative work to at
+/// most `PARALLEL_VERIFY_CHUNK_SIZE - 1` later elements.
+fn parallel_levy<T, E, F>(items: &[T], verify: F) -> Result<bool, E>
+where
+    T: Sync,
+    E: Send,
+    F: Fn(&T) -> Result<bool, E> + Sync,
+{
+    for chunk in items.chunks(PARALLEL_VERIFY_CHUNK_SIZE) {
+        if chunk.len() < PARALLEL_VERIFY_MIN_BATCH {
+            for item in chunk {
+                if !verify(item)? {
+                    return Ok(false);
+                }
+            }
+            continue;
+        }
+
+        let results = chunk.par_iter().map(&verify).collect::<Vec<_>>();
+        for result in results {
+            if !result? {
+                return Ok(false);
+            }
         }
     }
-    Ok(true.to_noun(stack))
+    Ok(true)
+}
+
+fn levy_verify_affine(args: &[ValidateArgs], stack: &mut NockStack) -> Result<Noun, JetErr> {
+    let valid = parallel_levy(args, |arg| {
+        verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)
+    })?;
+    Ok(valid.to_noun(stack))
 }
 
 #[inline(always)]
@@ -177,26 +219,32 @@ pub fn belt_schnorr_batch_verify_jet(context: &mut Context, subject: Noun) -> Re
     //  jet does not model (e.g. a non-field limb `>= prime`, which the Hoon arm
     //  still processes via `rap 5`); Punt so the runtime re-runs the authoritative
     //  Hoon instead of diverging.
-    let args = list
-        .in_space(&space)
-        .list_iter()
-        .map(|arg| {
-            let pubkey =
-                CheetahPoint::from_noun(&arg.slot(2)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            let m =
-                <[Belt; 5]>::from_noun(&arg.slot(6)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            let chal_t8 =
-                <[Belt; 8]>::from_noun(&arg.slot(14)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            let sig_t8 =
-                <[Belt; 8]>::from_noun(&arg.slot(15)?.noun(), &space).map_err(|_| JetErr::Punt)?;
-            Ok(ValidateArgs {
-                pubkey,
-                m,
-                chal: belt_schnorr_t8_to_ubig(&chal_t8),
-                sig: belt_schnorr_t8_to_ubig(&sig_t8),
-            })
-        })
-        .collect::<Result<Vec<ValidateArgs>, JetErr>>()?;
+    let mut cursor = list.in_space(&space);
+    let mut args = Vec::new();
+    while !unsafe { cursor.noun().raw_equals(&D(0)) } {
+        // Punt malformed structure to Hoon. This is observable when an earlier
+        // invalid signature would short-circuit before the malformed element.
+        let cell = cursor.as_cell().map_err(|_| JetErr::Punt)?;
+        let arg = cell.head();
+        cursor = cell.tail();
+        let pubkey =
+            CheetahPoint::from_noun(&arg.slot(2).map_err(|_| JetErr::Punt)?.noun(), &space)
+                .map_err(|_| JetErr::Punt)?;
+        let m = <[Belt; 5]>::from_noun(&arg.slot(6).map_err(|_| JetErr::Punt)?.noun(), &space)
+            .map_err(|_| JetErr::Punt)?;
+        let chal_t8 =
+            <[Belt; 8]>::from_noun(&arg.slot(14).map_err(|_| JetErr::Punt)?.noun(), &space)
+                .map_err(|_| JetErr::Punt)?;
+        let sig_t8 =
+            <[Belt; 8]>::from_noun(&arg.slot(15).map_err(|_| JetErr::Punt)?.noun(), &space)
+                .map_err(|_| JetErr::Punt)?;
+        args.push(ValidateArgs {
+            pubkey,
+            m,
+            chal: belt_schnorr_t8_to_ubig(&chal_t8),
+            sig: belt_schnorr_t8_to_ubig(&sig_t8),
+        });
+    }
 
     levy_verify_affine(&args, &mut context.stack)
 }
@@ -325,8 +373,11 @@ pub fn sign_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, Jet
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
     use ibig::UBig;
-    use nockvm::jets::util::test::{assert_jet, init_context, A};
+    use nockvm::jets::util::test::{assert_jet, assert_jet_err, init_context, A};
     use nockvm::noun::{Atom, D, NO, T, YES};
     use noun_serde::NounEncode;
 
@@ -757,51 +808,179 @@ mod tests {
         limbs
     }
 
+    fn dense_valid_args() -> ValidateArgs {
+        ValidateArgs {
+            chal: UBig::from_str_radix(
+                "6f3cd43cd8709f4368aed04cd84292ab1c380cb645aaa7d010669d70375cbe88", 16,
+            )
+            .expect("valid challenge"),
+            sig: UBig::from_str_radix(
+                "5197ab182e307a350b5cf3606d6e99a6f35b0d382c8330dde6e51fb6ef8ebb8c", 16,
+            )
+            .expect("valid signature"),
+            pubkey: CheetahPoint {
+                x: F6lt([
+                    Belt(2754611494552410273),
+                    Belt(8599518745794843693),
+                    Belt(10526511002404673680),
+                    Belt(4830863958577994148),
+                    Belt(375185138577093320),
+                    Belt(12938930721685970739),
+                ]),
+                y: F6lt([
+                    Belt(3062714866612034253),
+                    Belt(15671931273416742386),
+                    Belt(4071440668668521568),
+                    Belt(7738250649524482367),
+                    Belt(5259065445844042557),
+                    Belt(8456011930642078370),
+                ]),
+                inf: false,
+            },
+            m: [Belt(8), Belt(9), Belt(10), Belt(11), Belt(12)],
+        }
+    }
+
+    #[test]
+    fn test_parallel_levy_matches_ordered_reference() {
+        #[derive(Clone, Copy)]
+        enum Outcome {
+            Valid,
+            Invalid,
+            Error(&'static str),
+        }
+        fn verify(outcome: &Outcome) -> Result<bool, &'static str> {
+            match outcome {
+                Outcome::Valid => Ok(true),
+                Outcome::Invalid => Ok(false),
+                Outcome::Error(error) => Err(error),
+            }
+        }
+        fn sequential(items: &[Outcome]) -> Result<bool, &'static str> {
+            for item in items {
+                if !verify(item)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+
+        let cases = [
+            vec![],
+            vec![Outcome::Valid; 674],
+            {
+                let mut values = vec![Outcome::Valid; 16];
+                values[0] = Outcome::Invalid;
+                values
+            },
+            {
+                let mut values = vec![Outcome::Valid; 16];
+                values[8] = Outcome::Invalid;
+                values
+            },
+            {
+                let mut values = vec![Outcome::Valid; 16];
+                values[15] = Outcome::Invalid;
+                values
+            },
+            vec![Outcome::Invalid, Outcome::Error("unreachable")],
+            vec![Outcome::Valid, Outcome::Error("first-error"), Outcome::Invalid],
+            vec![Outcome::Valid, Outcome::Invalid, Outcome::Error("unreachable")],
+        ];
+
+        for case in cases {
+            assert_eq!(parallel_levy(&case, verify), sequential(&case));
+        }
+    }
+
+    #[test]
+    fn test_parallel_levy_bounds_speculative_work() {
+        let items = (0..674).collect::<Vec<_>>();
+
+        let invalid_first_evaluations = AtomicUsize::new(0);
+        assert_eq!(
+            parallel_levy(&items, |index| {
+                invalid_first_evaluations.fetch_add(1, Ordering::Relaxed);
+                Ok::<bool, &'static str>(*index != 0)
+            }),
+            Ok(false)
+        );
+        assert_eq!(
+            invalid_first_evaluations.load(Ordering::Relaxed),
+            PARALLEL_VERIFY_CHUNK_SIZE
+        );
+
+        let invalid_middle_evaluations = AtomicUsize::new(0);
+        assert_eq!(
+            parallel_levy(&items, |index| {
+                invalid_middle_evaluations.fetch_add(1, Ordering::Relaxed);
+                Ok::<bool, &'static str>(*index != 20)
+            }),
+            Ok(false)
+        );
+        assert_eq!(
+            invalid_middle_evaluations.load(Ordering::Relaxed),
+            PARALLEL_VERIFY_CHUNK_SIZE * 2
+        );
+
+        let false_before_error_evaluations = AtomicUsize::new(0);
+        assert_eq!(
+            parallel_levy(&items[..16], |index| {
+                false_before_error_evaluations.fetch_add(1, Ordering::Relaxed);
+                match *index {
+                    3 => Ok(false),
+                    5 => Err("later-error"),
+                    _ => Ok(true),
+                }
+            }),
+            Ok(false)
+        );
+        assert_eq!(
+            false_before_error_evaluations.load(Ordering::Relaxed),
+            PARALLEL_VERIFY_CHUNK_SIZE
+        );
+
+        let error_before_false_evaluations = AtomicUsize::new(0);
+        assert_eq!(
+            parallel_levy(&items[..16], |index| {
+                error_before_false_evaluations.fetch_add(1, Ordering::Relaxed);
+                match *index {
+                    3 => Err("first-error"),
+                    5 => Ok(false),
+                    _ => Ok(true),
+                }
+            }),
+            Err("first-error")
+        );
+        assert_eq!(
+            error_before_false_evaluations.load(Ordering::Relaxed),
+            PARALLEL_VERIFY_CHUNK_SIZE
+        );
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_belt_schnorr_batch_verify_jet() -> Result<(), Box<dyn std::error::Error>> {
         let mut context = init_context();
-        let chal = UBig::from_str_radix(
-            "6f3cd43cd8709f4368aed04cd84292ab1c380cb645aaa7d010669d70375cbe88", 16,
-        )?;
-        let sig = UBig::from_str_radix(
-            "5197ab182e307a350b5cf3606d6e99a6f35b0d382c8330dde6e51fb6ef8ebb8c", 16,
-        )?;
-        let pubkey = CheetahPoint {
-            x: F6lt([
-                Belt(2754611494552410273),
-                Belt(8599518745794843693),
-                Belt(10526511002404673680),
-                Belt(4830863958577994148),
-                Belt(375185138577093320),
-                Belt(12938930721685970739),
-            ]),
-            y: F6lt([
-                Belt(3062714866612034253),
-                Belt(15671931273416742386),
-                Belt(4071440668668521568),
-                Belt(7738250649524482367),
-                Belt(5259065445844042557),
-                Belt(8456011930642078370),
-            ]),
-            inf: false,
-        };
-        let m = [Belt(8), Belt(9), Belt(10), Belt(11), Belt(12)];
+        let args = dense_valid_args();
 
-        let chal_t8 = ubig_to_t8(&chal);
-        let sig_t8 = ubig_to_t8(&sig);
+        let chal_t8 = ubig_to_t8(&args.chal);
+        let sig_t8 = ubig_to_t8(&args.sig);
         // this vector has no zero 32-bit limb, so the faithful reconstruction
         // round-trips back to the original scalar.
-        assert_eq!(belt_schnorr_t8_to_ubig(&chal_t8), chal);
-        assert_eq!(belt_schnorr_t8_to_ubig(&sig_t8), sig);
+        assert_eq!(belt_schnorr_t8_to_ubig(&chal_t8), args.chal);
+        assert_eq!(belt_schnorr_t8_to_ubig(&sig_t8), args.sig);
 
-        let pk_n = pubkey.to_noun(&mut context.stack);
-        let m_n = m.to_noun(&mut context.stack);
+        let pk_n = args.pubkey.to_noun(&mut context.stack);
+        let m_n = args.m.to_noun(&mut context.stack);
         let chal_n = chal_t8.to_noun(&mut context.stack);
         let sig_n = sig_t8.to_noun(&mut context.stack);
         let elem = T(&mut context.stack, &[pk_n, m_n, chal_n, sig_n]);
-        // a batch of two copies of a valid signature verifies.
-        let sample = T(&mut context.stack, &[elem, elem, D(0)]);
+        // A batch large enough to take the parallel fast path verifies.
+        let sample = T(
+            &mut context.stack,
+            &[elem, elem, elem, elem, elem, elem, elem, elem, D(0)],
+        );
         assert_jet(&mut context, belt_schnorr_batch_verify_jet, sample, YES);
 
         // empty batch -> levy of empty is %.y
@@ -813,8 +992,89 @@ mod tests {
         bad_chal_t8[0] = Belt(bad_chal_t8[0].0 ^ 1);
         let bad_chal_n = bad_chal_t8.to_noun(&mut context.stack);
         let bad_elem = T(&mut context.stack, &[pk_n, m_n, bad_chal_n, sig_n]);
-        let bad_sample = T(&mut context.stack, &[elem, bad_elem, D(0)]);
-        assert_jet(&mut context, belt_schnorr_batch_verify_jet, bad_sample, NO);
+        for bad_sample in [
+            T(
+                &mut context.stack,
+                &[bad_elem, elem, elem, elem, elem, elem, elem, elem, D(0)],
+            ),
+            T(
+                &mut context.stack,
+                &[elem, elem, elem, elem, bad_elem, elem, elem, elem, D(0)],
+            ),
+            T(
+                &mut context.stack,
+                &[elem, elem, elem, elem, elem, elem, elem, bad_elem, D(0)],
+            ),
+        ] {
+            assert_jet(&mut context, belt_schnorr_batch_verify_jet, bad_sample, NO);
+        }
+
+        // Malformed elements Punt so the runtime can execute authoritative
+        // Hoon. This remains true even when an earlier element would be false;
+        // Hoon fallback restores the exact short-circuit/error result.
+        let malformed = T(&mut context.stack, &[elem, D(42), D(0)]);
+        assert_jet_err(
+            &mut context,
+            belt_schnorr_batch_verify_jet,
+            malformed,
+            JetErr::Punt,
+        );
+        let invalid_then_malformed = T(&mut context.stack, &[bad_elem, D(42), D(0)]);
+        assert_jet_err(
+            &mut context,
+            belt_schnorr_batch_verify_jet,
+            invalid_then_malformed,
+            JetErr::Punt,
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "manual 674-signature throughput benchmark"]
+    fn bench_belt_schnorr_batch_verify_674() -> Result<(), Box<dyn std::error::Error>> {
+        let args = vec![dense_valid_args(); 674];
+
+        let sequential_started = Instant::now();
+        for arg in &args {
+            assert!(verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)?);
+        }
+        let sequential = sequential_started.elapsed();
+
+        let parallel_started = Instant::now();
+        assert!(parallel_levy(&args, |arg| {
+            verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)
+        })?);
+        let parallel = parallel_started.elapsed();
+
+        let mut invalid_args = args.clone();
+        invalid_args[0].chal = UBig::from(0u32);
+        let sequential_invalid_started = Instant::now();
+        let mut sequential_invalid_evaluations = 0;
+        let mut sequential_invalid = true;
+        for arg in &invalid_args {
+            sequential_invalid_evaluations += 1;
+            if !verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)? {
+                sequential_invalid = false;
+                break;
+            }
+        }
+        let sequential_invalid_elapsed = sequential_invalid_started.elapsed();
+        assert!(!sequential_invalid);
+
+        let parallel_invalid_evaluations = AtomicUsize::new(0);
+        let parallel_invalid_started = Instant::now();
+        let parallel_invalid = parallel_levy(&invalid_args, |arg| {
+            parallel_invalid_evaluations.fetch_add(1, Ordering::Relaxed);
+            verify_affine(&arg.pubkey, &arg.m, &arg.chal, &arg.sig)
+        })?;
+        let parallel_invalid_elapsed = parallel_invalid_started.elapsed();
+        assert!(!parallel_invalid);
+
+        eprintln!(
+            "belt-schnorr 674 signatures: valid sequential={sequential:?} parallel={parallel:?} speedup={:.3}x; invalid-first sequential={sequential_invalid_elapsed:?} evaluations={sequential_invalid_evaluations} parallel={parallel_invalid_elapsed:?} evaluations={}",
+            sequential.as_secs_f64() / parallel.as_secs_f64(),
+            parallel_invalid_evaluations.load(Ordering::Relaxed)
+        );
         Ok(())
     }
 

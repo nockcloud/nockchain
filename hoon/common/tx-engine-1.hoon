@@ -1062,15 +1062,27 @@
     |=  [=nname =spend]
     (validate-without-signatures:^spend spend)
   ::
+  ::  Flatten signatures in exactly the order used by the old nested
+  ::  verification: canonical spend-map order, then canonical signature-map
+  ::  order within each spend.  This lets the native belt-schnorr batch jet
+  ::  amortize dispatch and parallelize one whole transaction without changing
+  ::  the authoritative Hoon short-circuit order.
+  ++  signatures
+    |=  =form
+    ^-  (list [schnorr-pubkey ^hash schnorr-signature])
+    %-  zing
+    %+  turn  ~(tap z-by form)
+    |=  [=nname =spend]
+    ?-  -.spend
+      %0  (signatures:spend-0 +.spend)
+      %1  (signatures:spend-1 +.spend)
+    ==
+  ::
   ++  verify-signatures
     |=  =form
     ^-  ?
-    %+  levy  ~(tap z-by form)
-    |=  [=nname =spend]
-    ?-  -.spend
-      %0  (verify-signatures:spend-0 +.spend)
-      %1  (verify-signatures:spend-1 +.spend)
-    ==
+    %-  batch-verify:affine:belt-schnorr:cheetah
+    (signatures form)
   ::
   ++  roll-fees
     |=  =form
