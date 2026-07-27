@@ -677,13 +677,18 @@ pub fn make_libp2p_driver(
                     .await?;
                     continue;
                 }
-                let timer_fut = async {
-                    let _ = nockchain_timer.tick().await;
-                    nockchain_timer_mutex.clone().lock_owned().await
-                };
                 tokio::select! {
-                    guard = timer_fut => {
-                        join_set.spawn("timer".to_string(), send_timer_poke(guard, traffic_cop.clone(), metrics.clone()))
+                    _ = nockchain_timer.tick() => {
+                        if let Some(guard) = try_acquire_timer_poke(&nockchain_timer_mutex) {
+                            join_set.spawn(
+                                "timer".to_string(),
+                                send_timer_poke(guard, traffic_cop.clone(), metrics.clone()),
+                            );
+                        } else {
+                            debug!(
+                                "Coalescing chain timer tick while the previous timer poke is in flight"
+                            );
+                        }
                     }
                     _ = connectivity_interval.tick() => {
                         let peer_count = log_peer_status(
@@ -1052,6 +1057,17 @@ pub fn make_libp2p_driver(
 //     let peer_ip = peer_id.to_base58();
 // }
 //
+/// Admit at most one chain-timer poke at a time.
+///
+/// Waiting for this mutex would turn every producer tick into deferred Serf
+/// work. A slow, non-preemptible kernel transition could then be followed
+/// immediately by another system-priority timer poke. Treat a busy mutex as a
+/// coalesced tick instead; the next interval will try again after the current
+/// poke completes.
+fn try_acquire_timer_poke(mutex: &Arc<Mutex<()>>) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    Arc::clone(mutex).try_lock_owned().ok()
+}
+
 async fn send_timer_poke(
     guard: tokio::sync::OwnedMutexGuard<()>,
     traffic_cop: traffic_cop::TrafficCop,
