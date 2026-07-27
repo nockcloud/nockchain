@@ -268,7 +268,7 @@
     (~(put z-by *spends:v1:t-v1) name-a (make-builder-spend seeds-one))
   =/  raw-one=raw-tx:v1:t-v1  (make-builder-raw spends-one)
   ::
-  ::  Case 2: the production incident shape, 674 distinct spends whose seeds
+  ::  Case 2: a large consolidation shape, 674 distinct spends whose seeds
   ::  all feed one output lock root.
   =/  spends-many=spends:v1:t-v1
     (make-builder-many-spends 674 root-a root-b root-c)
