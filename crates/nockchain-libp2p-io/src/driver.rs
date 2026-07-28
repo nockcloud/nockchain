@@ -600,6 +600,11 @@ pub fn make_libp2p_driver(
             let mut nockchain_timer = tokio::time::interval(chain_interval);
             nockchain_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
             let nockchain_timer_mutex = Arc::new(Mutex::new(()));
+            // This is a logical count of DELIVERED timer pokes, not wall-clock
+            // intervals. Busy ticks are deliberately coalesced below, so deriving
+            // candidate scheduling from elapsed time can skip a fixed subset of a
+            // retained queue forever. Increment only after acquiring the gate.
+            let mut next_nockchain_timer_tick = 0u64;
             let (traffic_handle, effect_handle) = handle.dup();
             let traffic_cop = traffic_cop::TrafficCop::new_with_peek_timeout(
                 traffic_handle, &mut join_set, low_priority_peek_timeout,
@@ -679,10 +684,20 @@ pub fn make_libp2p_driver(
                 }
                 tokio::select! {
                     _ = nockchain_timer.tick() => {
-                        if let Some(guard) = try_acquire_timer_poke(&nockchain_timer_mutex) {
+                        if let Some((guard, tick)) =
+                            try_start_timer_poke(
+                                &nockchain_timer_mutex,
+                                &mut next_nockchain_timer_tick,
+                            )
+                        {
                             join_set.spawn(
                                 "timer".to_string(),
-                                send_timer_poke(guard, traffic_cop.clone(), metrics.clone()),
+                                send_timer_poke(
+                                    guard,
+                                    tick,
+                                    traffic_cop.clone(),
+                                    metrics.clone(),
+                                ),
                             );
                         } else {
                             debug!(
@@ -1064,17 +1079,27 @@ pub fn make_libp2p_driver(
 /// immediately by another system-priority timer poke. Treat a busy mutex as a
 /// coalesced tick instead; the next interval will try again after the current
 /// poke completes.
-fn try_acquire_timer_poke(mutex: &Arc<Mutex<()>>) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-    Arc::clone(mutex).try_lock_owned().ok()
+fn try_start_timer_poke(
+    mutex: &Arc<Mutex<()>>,
+    next_tick: &mut u64,
+) -> Option<(tokio::sync::OwnedMutexGuard<()>, u64)> {
+    let guard = Arc::clone(mutex).try_lock_owned().ok()?;
+    let tick = *next_tick;
+    *next_tick = next_tick.wrapping_add(1);
+    Some((guard, tick))
 }
 
 async fn send_timer_poke(
     guard: tokio::sync::OwnedMutexGuard<()>,
+    tick: u64,
     traffic_cop: traffic_cop::TrafficCop,
     metrics: Arc<NockchainP2PMetrics>,
 ) -> Result<(), NockAppError> {
     let mut slab = NounSlab::new();
-    let timer_noun = T(&mut slab, &[D(tas!(b"command")), D(tas!(b"timer")), D(0)]);
+    let timer_noun = T(
+        &mut slab,
+        &[D(tas!(b"command")), D(tas!(b"timer")), D(tick)],
+    );
     slab.set_root(timer_noun);
     let wire = nockapp::drivers::timer::TimerWire::Tick.to_wire();
     let enable_fut = Box::pin(async { true });

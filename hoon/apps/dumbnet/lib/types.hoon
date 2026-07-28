@@ -583,7 +583,10 @@
       [%set-mining-key v0=@t v1=@t]  ::  set $lock for coinbase in mined blocks
       [%set-mining-key-advanced v0=(list [share=@ m=@ keys=(list @t)]) v1=(list [share=@ phk=@t])]  :: multisig and/or split coinbases
       [%enable-mining p=?]  ::  switch for generating candidate blocks for mining
-      [%timer p=~] :: ask for heaviest block, needed txs, and miner tx refresh
+      ::  Logical sequence of DELIVERED timer pokes. The Rust producer advances
+      ::  this only after acquiring its one-in-flight gate, so coalesced wall
+      ::  clock ticks cannot skip a fixed subset of retained transactions.
+      [%timer tick=@] :: ask for heaviest block, needed txs, and miner tx refresh
       [%born p=~]  ::  initial event the king sends on boot
       [%genesis p=[=btc-hash:dt block-height=@ message=cord]]  ::  emit genesis block with this template
       :: set expected btc height and msg hash of genesis block

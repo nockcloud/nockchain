@@ -804,7 +804,8 @@
         effs^k
       ::  Boundedly update the candidate and restart the external miner only
       ::  when its timestamp or transaction set actually changed.
-      =^  candidate-changed  m.k  (update-candidate-block:min c.k now)
+      =^  candidate-changed  m.k
+        (update-candidate-block:min c.k now tick.p.cause)
       :_  k
       ?.  candidate-changed  effs
       :_  effs

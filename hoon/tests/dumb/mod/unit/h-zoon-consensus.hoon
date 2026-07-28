@@ -555,7 +555,7 @@
           (~(has h-in excluded-txs.con) ~(id get:raw-tx:t raw))
       ==
   =/  [changed=? after=mining-state]
-    (~(refill-candidate dmin no-key constants) con *@da)
+    (~(refill-candidate dmin no-key constants) con 0)
   %+  expect-eq
     !>([%.n %.y %.y %.y])
   !>  :*  changed
@@ -649,24 +649,24 @@
           =((need heaviest-block.con) ~(parent get:page:t candidate-block.min))
       ==
 ::
-::  The scheduler advances one slot per Rust chain-timer period.  This pins the
-::  division-before-modulo rule at the 20-second cross-language cadence.
-++  test-miner-refill-slot-advances-at-chain-cadence
-  =/  now=@da  ~2026.7.26..00.00.07
+::  The scheduler advances once per DELIVERED Rust timer poke. Wall-clock ticks
+::  may be coalesced while validation is busy, but the producer sends a
+::  contiguous logical sequence so no queue subset is skipped.
+++  test-miner-refill-slot-advances-with-delivered-pokes
   =/  count=@  7
   =/  slot0=@
-    (~(candidate-refill-slot dmin initial-mining-state:h constants) now count)
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) 41 count)
   =/  slot1=@
-    (~(candidate-refill-slot dmin initial-mining-state:h constants) (add now ~s20) count)
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) 42 count)
   =/  slot2=@
-    (~(candidate-refill-slot dmin initial-mining-state:h constants) (add now ~s40) count)
+    (~(candidate-refill-slot dmin initial-mining-state:h constants) 43 count)
   %+  expect-eq
     !>([(mod +(slot0) count) (mod +(slot1) count)])
   !>  [slot1 slot2]
 ::
 ::  Three retained transactions exercise both a shrinking success set and a
 ::  repeatedly failing survivor: raw1/raw2 double-spend one coinbase while raw3
-::  spends another.  Across six 20-second slots, exactly two transactions enter
+::  spends another. Across six delivered timer pokes, exactly two transactions enter
 ::  the candidate, every poke adds at most one, the independent transaction
 ::  cannot starve behind the conflict, and the final candidate still passes the
 ::  unchanged consensus transaction validator.
@@ -702,10 +702,8 @@
     |-
     ?:  =(i 6)  [min changes failures max-delta]
     =/  before=@  ~(wyt z-in ~(tx-ids get:page:t candidate-block.min))
-    =/  now=@da
-      (add base-now (mul ~s20 +(i)))
     =/  [changed=? next=mining-state]
-      (~(refill-candidate dmin min constants) con now)
+      (~(refill-candidate dmin min constants) con i)
     =/  after=@  ~(wyt z-in ~(tx-ids get:page:t candidate-block.next))
     =/  delta=@  (sub after before)
     ?>  (lte delta 1)
@@ -731,6 +729,39 @@
           max-delta
           ?&(has3 !=(has1 has2))
           ?=(%.y -.validation)
+      ==
+::
+::  Per-customer templates must be derived by changing only the v1 coinbase.
+::  The canonical transaction body/accumulator remain byte-identical, and
+::  restoring the operator shares recreates the exact house candidate.
+++  test-miner-restamp-preserves-canonical-body
+  =/  con=consensus-state  initial-consensus-state:h
+  =^  last=page:t  con
+    (add-n-pages:h v1-phase.t con default-retain:h)
+  =/  house=mining-state  initial-mining-state:h
+  =.  house  (~(heard-new-block dmin house constants) con *@da)
+  ?>  ?=(@ -.candidate-block.house)
+  =/  customer-shares=(z-map hash:t @)
+    =/  pk-hash=hash:t  (hash:schnorr-pubkey:t default-a-pt-2:h)
+    (~(put z-by *(z-map hash:t @)) pk-hash 1)
+  =/  customer=mining-state
+    (~(restamp-candidate dmin house constants) customer-shares)
+  =/  restored=mining-state
+    (~(restamp-candidate dmin customer constants) shares.house)
+  =/  customer-page=page:t  candidate-block.customer
+  =.  customer-page
+    ?:  ?=(^ -.customer-page)
+      customer-page(digest (compute-digest:page:t customer-page))
+    customer-page(digest (compute-digest:page:t customer-page))
+  =/  customer-valid=(reason tx-acc:t)
+    (~(validate-page-with-txs dcon con constants) customer-page)
+  %+  expect-eq
+    !>([%.y %.y %.y %.y %.y])
+  !>  :*  !=(candidate-block.house candidate-block.customer)
+          =(~(tx-ids get:page:t candidate-block.house) ~(tx-ids get:page:t candidate-block.customer))
+          =(candidate-acc.house candidate-acc.customer)
+          =(candidate-block.house candidate-block.restored)
+          ?=(%.y -.customer-valid)
       ==
 ::  +|  %random-walk
 ::
