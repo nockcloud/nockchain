@@ -1524,18 +1524,26 @@ where
 #[test]
 fn chain_timer_gate_coalesces_busy_ticks_and_reopens_after_completion() {
     let mutex = Arc::new(Mutex::new(()));
+    let mut next_tick = 0;
 
-    let in_flight =
-        try_acquire_timer_poke(&mutex).expect("the first timer tick should acquire the gate");
+    let (in_flight, first_tick) = try_start_timer_poke(&mutex, &mut next_tick)
+        .expect("the first timer tick should acquire the gate");
+    assert_eq!(first_tick, 0);
     assert!(
-        try_acquire_timer_poke(&mutex).is_none(),
+        try_start_timer_poke(&mutex, &mut next_tick).is_none(),
         "a tick arriving while the timer poke is in flight must be coalesced"
+    );
+    assert_eq!(
+        next_tick, 1,
+        "a coalesced producer tick must not advance the delivered-poke sequence"
     );
 
     drop(in_flight);
-    assert!(
-        try_acquire_timer_poke(&mutex).is_some(),
-        "the next interval must be admitted after the prior poke completes"
+    let (_next, second_tick) = try_start_timer_poke(&mutex, &mut next_tick)
+        .expect("the next interval must be admitted after the prior poke completes");
+    assert_eq!(
+        second_tick, 1,
+        "delivered timer pokes must remain contiguous after coalescing"
     );
 }
 

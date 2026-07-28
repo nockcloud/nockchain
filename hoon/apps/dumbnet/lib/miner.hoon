@@ -62,34 +62,21 @@
 ::  be bounded without censoring a large but valid transaction.  Raw size is
 ::  bounded by the consensus block ceiling; this is not a wall-clock guarantee.
 ::
-::  The libp2p driver emits chain timer pokes every 20 seconds
-::  (crates/nockchain/src/config.rs::CHAIN_INTERVAL).  Divide by the cadence
-::  before taking the slot modulo so each delivered timer advances the fair
-::  selection by one under the normal cadence.  The Rust producer coalesces
-::  ticks while a prior timer poke is still in flight, so slow validation cannot
-::  queue a train of timer work behind the current transaction.
-++  candidate-refill-chain-timer-seconds  20
-::
-++  candidate-refill-tick
-  ~/  %candidate-refill-tick
-  |=  now=@da
-  ^-  @
-  (div (time-in-secs:page:t now) candidate-refill-chain-timer-seconds)
-::
 ::  Select exactly one candidate deterministically from this timer's fair
-::  rotation.  h-map traversal is deterministic; advancing the time slot once
-::  per refill attempt prevents an invalid/unmineable first transaction from
-::  monopolizing every refill attempt without adding persistent kernel state.
+::  rotation.  h-map traversal is deterministic; the Rust timer producer passes
+::  a contiguous logical sequence of DELIVERED pokes, advancing only after its
+::  one-in-flight gate is acquired.  Thus a slow validation may coalesce wall
+::  clock ticks without skipping a fixed subset of this queue.
 ::  Building +candidate-txs and materializing its deterministic traversal still
 ::  scans the retained candidate set once per due refill.  This patch bounds
 ::  cryptographic transaction processing, not that residual linear metadata
 ::  cost; an indexed scheduler would require persistent state and migration.
 ++  candidate-refill-slot
   ~/  %candidate-refill-slot
-  |=  [now=@da count=@]
+  |=  [tick=@ count=@]
   ^-  @
   ?:  =(0 count)  0
-  (mod (candidate-refill-tick now) count)
+  (mod tick count)
 ::
 ++  pick-refill-tx
   ~/  %pick-refill-tx
@@ -177,7 +164,7 @@
 ::
 ++  update-candidate-block
   ~/  %update-candidate-block
-  |=  [c=consensus-state:dk now=@da]
+  |=  [c=consensus-state:dk now=@da refill-tick=@]
   ^-  [? mining-state:dk]
   ?:  ?|  =(%.n mining.m)
           =(*page:t candidate-block.m)
@@ -202,12 +189,12 @@
     ~>  %slog.[0 log-message]
     m
   =/  [tx-changed=? new-m=mining-state:dk]
-    (refill-candidate c now)
+    (refill-candidate c refill-tick)
   [?|(timestamp-due tx-changed) new-m]
 ::
 ++  refill-candidate
   ~/  %refill-candidate
-  |=  [c=consensus-state:dk now=@da]
+  |=  [c=consensus-state:dk refill-tick=@]
   ^-  [? mining-state:dk]
   ?:  ?|  =(%.n mining.m)
           =(*page:t candidate-block.m)
@@ -217,7 +204,7 @@
   =/  txs=(list [tx-id=tx-id:t raw=raw-tx:t])
     ~(tap h-by (candidate-txs c))
   ?~  txs  [%.n m]
-  =/  slot=@  (candidate-refill-slot now (lent txs))
+  =/  slot=@  (candidate-refill-slot refill-tick (lent txs))
   =/  [tx-id=tx-id:t raw=raw-tx:t]  (pick-refill-tx txs slot)
   =/  raw-bits=@  ~(size get:raw-tx:t raw)
   ::  These cheap preflights preserve the one-attempt cryptographic budget and
@@ -379,6 +366,33 @@
     ~>  %slog.[3 log-message-exceeds-max-size]
     old-mining-state
   ~>  %slog.[3 log-message-added-tx]
+  m
+::
+::  Rebuild only the v1 coinbase of the current candidate. The selected
+::  transaction ids and their already-validated accumulator are preserved
+::  exactly, so a pool can derive N customer templates from one canonical body
+::  without replaying a large transaction N times.
+++  restamp-candidate
+  ~/  %restamp-candidate
+  |=  new-shares=(z-map hash:t @)
+  ^-  mining-state:dk
+  ?:  ?|  =(*page:t candidate-block.m)
+          =(0 ~(wyt z-by new-shares))
+      ==
+    m
+  =.  candidate-block.m
+    ::  The pool restamp wire carries v1 lock hashes. Pre-v1 candidates
+    ::  cannot represent them and retain their existing v0 coinbase.
+    ?^  -.candidate-block.m
+      candidate-block.m
+    =/  emission=coins:t
+      (emission-calc:coinbase:t height.candidate-block.m)
+    ?:  (pre-asert-activation:t height.candidate-block.m)
+      candidate-block.m(coinbase (new:v1:coinbase-split:t (add emission fees.candidate-acc.m) new-shares))
+    candidate-block.m(coinbase (new-with-fund-share:v1:coinbase-split:t emission fees.candidate-acc.m new-shares))
+  ::  A customer split can be larger than the house split. Reject the control
+  ::  poke atomically instead of advertising a candidate consensus will reject.
+  ?>  candidate-block-below-max-size
   m
 ::
 ::  +heard-new-block: refreshes the candidate block to be mined in reaction to a new block

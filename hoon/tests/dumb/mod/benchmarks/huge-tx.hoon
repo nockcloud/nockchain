@@ -1,6 +1,7 @@
 /=  helpers  /tests/dumb/helpers
 /=  txe  /common/tx-engine
 /=  zoon  /common/zoon
+/=  dmin  /apps/dumbnet/lib/miner
 /=  *  /common/test
 /=  *  /common/h-zoon
 |%
@@ -8,6 +9,14 @@
 ++  t  ~(. txe bc-pending-integration-tests:helpers)
 ++  h-v1  ~(. helpers bc-v1-phase:helpers)
 ++  t-v1  ~(. txe bc-v1-phase:helpers)
+++  bc-legacy-egress
+  %*  .  bc-no-timelock:helpers
+    ::  Produce hundreds of v0 coinbases, then activate v1 so one current
+    ::  transaction can consolidate those legacy notes through %0 spends.
+    v1-phase  700
+  ==
+++  h-egress  ~(. helpers bc-legacy-egress)
+++  t-egress  ~(. txe bc-legacy-egress)
 ++  bench-huge-tx
   =+  [nockchain genesis]=init-nockchain:h
   ::
@@ -88,6 +97,78 @@
   =/  result=(reason:t-v1 tx-acc:t-v1)
     (process:tx-acc:t-v1 acc raw)
   ?>  ?=(%.y -.result)
+  ~
+::
+::  Incident-shaped legacy-wallet benchmark: one current v1 transaction
+::  consolidates 674 independent pre-activation v0 coinbase notes through %0
+::  spends. This covers the egress path that motivated the liveness repair,
+::  including legacy Schnorr verification and grouped v1 output construction.
+++  bench-huge-v0-egress
+  =/  con=consensus-state:h-egress  initial-consensus-state:h-egress
+  =^  last=page:t-egress  con
+    (add-n-pages:h-egress 700 con ~)
+  ?>  =(700 ~(height get:page:t-egress last))
+  =/  pages=(list page:t-egress)
+    %+  turn  ~(val h-by blocks.con)
+    |=  pag=local-page:t-egress
+    (to-page:local-page:t-egress pag)
+  =/  pages
+    %+  scag  674
+    %+  skim  pages
+    |=  pag=page:t-egress
+    ?&  ?=(^ -.pag)
+        !=(0 ~(height get:page:t-egress pag))
+        (lth ~(height get:page:t-egress pag) v1-phase:t-egress)
+    ==
+  ?>  =(674 (lent pages))
+  =/  heavy=block-id:t-egress  (need heaviest-block.con)
+  =/  balance=(h-map nname:t-egress nnote:t-egress)
+    (need (~(get h-by balance.con) heavy))
+  =/  pks=(list schnorr-pubkey:t-egress)
+    ~(tap z-in pubkeys.p:default-keys-1:h-egress)
+  =/  m=@  (lent pks)
+  =/  [root=hash:t-egress * *]
+    (make-pkh-lock:v1:h-egress m pks)
+  =/  fee=coins:t-egress  256
+  =/  spends=spends:v1:t-egress
+    %+  roll  pages
+    |=  [pag=page:t-egress acc=spends:v1:t-egress]
+    =/  coin=coinbase:t-egress
+      (new:v0:coinbase:t-egress pag p:default-keys-1:h-egress)
+    ?>  ?=(^ -.coin)
+    ?>  (~(has h-by balance) ~(name get:nnote:t-egress coin))
+    =/  sed=seed:v1:t-egress
+      (make-seed:v1:h-egress root (sub assets.coin fee) (hash:nnote:t-egress coin))
+    =/  seds=seeds:v1:t-egress
+      (~(put z-in *seeds:v1:t-egress) sed)
+    =/  sp0=spend-0:v1:t-egress
+      (new:spend-0:v1:t-egress seds fee)
+    =.  sp0
+      (sign:spend-0:v1:t-egress sp0 s:default-keys-1:h-egress)
+    (~(put z-by acc) ~(name get:nnote:t-egress coin) [%0 sp0])
+  =/  raw=raw-tx:v1:t-egress  (new:raw-tx:v1:t-egress spends)
+  ~&  [%huge-v0-egress-spends ~(wyt z-by spends) %size ~(size get:raw-tx:t-egress raw)]
+  ::  Admit the transaction into the real mining candidate, then prove every
+  ::  customer restamp and the final house restore preserve that large body.
+  =/  raw-id=tx-id:t-egress  ~(id get:raw-tx:t-egress raw)
+  =/  house=mining-state:h-egress  initial-mining-state:h-egress
+  =.  house
+    (~(heard-new-block dmin house bc-legacy-egress) con *@da)
+  =.  house
+    (~(heard-new-tx dmin house bc-legacy-egress) raw)
+  ?>  (~(has z-in ~(tx-ids get:page:t-egress candidate-block.house)) raw-id)
+  =/  customer-shares=(z-map hash:t-egress @)
+    =/  pk-hash=hash:t-egress
+      (hash:schnorr-pubkey:t-egress default-a-pt-2:h-egress)
+    (~(put z-by *(z-map hash:t-egress @)) pk-hash 1)
+  =/  customer=mining-state:h-egress
+    (~(restamp-candidate dmin house bc-legacy-egress) customer-shares)
+  =/  restored=mining-state:h-egress
+    (~(restamp-candidate dmin customer bc-legacy-egress) shares.house)
+  ?>  !=(candidate-block.house candidate-block.customer)
+  ?>  =(~(tx-ids get:page:t-egress candidate-block.house) ~(tx-ids get:page:t-egress candidate-block.customer))
+  ?>  =(candidate-acc.house candidate-acc.customer)
+  ?>  =(candidate-block.house candidate-block.restored)
   ~
 ::
 ::  Frozen reference implementation from before the grouped builder.  This is
