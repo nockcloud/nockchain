@@ -16,6 +16,7 @@ hatch = { path = "../hatch" }
 bytes = { workspace = true }
 honc-cold-138 = { path = "../honc-cold-138" }
 hoonc = { path = "../hoonc" }
+libc = { workspace = true }
 nockapp = { path = "../nockapp" }
 nockvm = { path = "../nockvm/rust/nockvm", features = ["sham_hints"] }
 num-bigint = { version = "0.4.6", features = ["serde"] }

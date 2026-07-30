@@ -914,6 +914,46 @@ fn hoon_ast_identity_is_scoped_to_the_borrowed_root_lifetime() {
 }
 
 #[test]
+fn hoon_ast_dependency_risk_propagates_from_nested_constant_folds() {
+    let safe = Hoon::Pair(Box::new(Hoon::Axis(2u64.into())), Box::new(Hoon::ZapZap));
+    let risky_child = Hoon::KetSig(Box::new(Hoon::Axis(3u64.into())));
+    let root = Hoon::Pair(Box::new(safe.clone()), Box::new(risky_child));
+    let root_ptr = &root as *const Hoon as usize;
+    let risky_child_ptr = match &root {
+        Hoon::Pair(_, child) => child.as_ref() as *const Hoon as usize,
+        _ => unreachable!(),
+    };
+    let safe_root_ptr = &safe as *const Hoon as usize;
+
+    let (_, risky_nodes) =
+        Sig64::hoon_signatures_spot_sensitive(&root).expect("risky AST signature");
+    assert!(
+        risky_nodes
+            .iter()
+            .find(|node| node.ptr == risky_child_ptr)
+            .expect("risky child node")
+            .dependency_risk
+    );
+    assert!(
+        risky_nodes
+            .iter()
+            .find(|node| node.ptr == root_ptr)
+            .expect("risky root node")
+            .dependency_risk,
+        "dependency risk must propagate to the arm root"
+    );
+
+    let (_, safe_nodes) = Sig64::hoon_signatures_spot_sensitive(&safe).expect("safe AST signature");
+    assert!(
+        !safe_nodes
+            .iter()
+            .find(|node| node.ptr == safe_root_ptr)
+            .expect("safe root node")
+            .dependency_risk
+    );
+}
+
+#[test]
 fn hoon_ast_arena_clears_on_unwind_before_the_root_can_drop() {
     let root = Hoon::Pair(Box::new(Hoon::Axis(2u64.into())), Box::new(Hoon::ZapZap));
     let mut slab = NounSlab::new();

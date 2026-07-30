@@ -4576,6 +4576,7 @@ dependencies = [
  "hatch",
  "honc-cold-138",
  "hoonc",
+ "libc",
  "nockapp",
  "nockvm",
  "num-bigint",

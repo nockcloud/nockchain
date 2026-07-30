@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc as SharedRc;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -49,6 +51,19 @@ pub mod test;
 pub mod types;
 mod wet;
 pub use types::*;
+
+#[cfg(target_os = "linux")]
+static ARM_FORK_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable Linux process-isolated arm workers.
+///
+/// The caller must guarantee that the process has exactly one live thread
+/// before compilation starts. The `honk` CLI establishes that condition before
+/// calling this; library users stay on the deterministic serial path.
+#[cfg(target_os = "linux")]
+pub fn enable_arm_fork_mode() {
+    ARM_FORK_MODE_ENABLED.store(true, Ordering::Release);
+}
 
 #[derive(Clone, Copy)]
 struct HoldRepoFanLegIdEntry {
@@ -156,6 +171,7 @@ struct HoonId(u32);
 struct HoonArenaEntry {
     source: Option<NonNull<Hoon>>,
     signature: Option<u64>,
+    dependency_risk: bool,
     hot_children: Option<[HoonId; 2]>,
     noun: Option<Noun>,
     // `Some(None)` is a cached negative result: canonical `open` returned the
@@ -172,6 +188,7 @@ struct HoonArena {
 struct HoonArenaBuildNode {
     ptr: usize,
     signature: u64,
+    dependency_risk: bool,
     hot_children: Option<[usize; 2]>,
 }
 
@@ -194,6 +211,7 @@ impl HoonArena {
             self.entries.push(HoonArenaEntry {
                 source: NonNull::new(node.ptr as *mut Hoon),
                 signature: Some(node.signature),
+                dependency_risk: node.dependency_risk,
                 hot_children: None,
                 noun: None,
                 opened: None,
@@ -290,6 +308,9 @@ struct ArmBuildTask {
     hoon_noun: Noun,
     hoon: Arc<Hoon>,
     goal: NRc<NTy>,
+    signature: u64,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    dependency_risk: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -332,9 +353,28 @@ pub struct Ut<'a> {
     // compilations so each completion can report both inclusive and exclusive
     // work without perturbing normal builds.
     arm_profile_enabled: bool,
-    arm_profile_child_nanos: Vec<u128>,
+    arm_timing_child_nanos: Vec<u128>,
+    arm_last_exclusive_us: u64,
     arm_profile_next_group_id: u64,
     arm_profile_active_tasks: Vec<(u64, usize)>,
+    // Parallel arms use forked, copy-on-write compiler snapshots on Linux.
+    // That quarantine is intentional: `Ut` contains slab pointers, Rc-backed
+    // native types, resolver state, and semantic caches that cannot be shared
+    // safely or deterministically between Rust threads.
+    arm_parallel_jobs: usize,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    arm_parallel_min_cost_us: u64,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    arm_parallel_speculate_arms: usize,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    arm_parallel_speculate_limit: usize,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    arm_parallel_active: bool,
+    // Canonical Hoon signature -> maximum measured exclusive mint cost.
+    // Core pointer identity was too narrow to train before a group completed;
+    // the body signature recurs across deepened type contexts while exclusive
+    // timing deliberately excludes context-dependent lazy dependencies.
+    arm_parallel_cost_us: FastHashMap<u64, u64>,
     pub lazy_resolver_next_id: u64,
     pub lazy_resolvers: HashMap<u64, LazyResolverContext>,
     // RT-05 canonical lazy-core identity: maps a recursive core's structural key
@@ -461,6 +501,8 @@ pub struct Sig64 {
     // Besides avoiding quadratic subtree rescans, this records the digest for
     // every native AST node reached through Spec/Tome/etc. in one traversal.
     hoon_signatures: FastHashMap<usize, u64>,
+    hoon_dependency_risk: FastHashMap<usize, bool>,
+    current_dependency_risk: bool,
     // Completed nodes are emitted in post-order. Only the two canonical binary
     // forms that recurse directly by ID carry child edges; every other form
     // enters through the arena boundary without paying generic edge costs.
@@ -478,6 +520,8 @@ impl Sig64 {
             state: Self::OFFSET,
             include_dbug_spot,
             hoon_signatures: Default::default(),
+            hoon_dependency_risk: Default::default(),
+            current_dependency_risk: false,
             hoon_nodes: Vec::new(),
         }
     }
@@ -1371,6 +1415,8 @@ impl Sig64 {
     fn write_hoon(&mut self, hoon: &Hoon) -> Option<()> {
         let ptr = hoon as *const Hoon as usize;
         if let Some(signature) = self.hoon_signatures.get(&ptr).copied() {
+            self.current_dependency_risk |=
+                self.hoon_dependency_risk.get(&ptr).copied().unwrap_or(true);
             self.write_byte(0xff);
             self.write_u64(signature);
             return Some(());
@@ -1381,6 +1427,7 @@ impl Sig64 {
         // a root computes each descendant exactly once rather than hashing the
         // same suffix again at every recursive mint/play/mull boundary.
         let parent_state = std::mem::replace(&mut self.state, Self::OFFSET);
+        let parent_dependency_risk = std::mem::replace(&mut self.current_dependency_risk, false);
         match hoon {
             Hoon::Pair(a, b) => {
                 self.write_byte(0x01);
@@ -1736,6 +1783,7 @@ impl Sig64 {
             }
             Hoon::KetSig(p) => {
                 self.write_byte(0x3b);
+                self.current_dependency_risk = true;
                 self.write_hoon(p)?;
             }
             Hoon::KetTis(skin, p) => {
@@ -2073,6 +2121,7 @@ impl Sig64 {
             }
         }
         let signature = self.state;
+        let dependency_risk = self.current_dependency_risk;
         let hot_children = match hoon {
             Hoon::Pair(head, tail) | Hoon::TisGar(head, tail) => {
                 Some([head.as_ref() as *const Hoon as usize, tail.as_ref() as *const Hoon as usize])
@@ -2080,12 +2129,15 @@ impl Sig64 {
             _ => None,
         };
         self.hoon_signatures.insert(ptr, signature);
+        self.hoon_dependency_risk.insert(ptr, dependency_risk);
         self.hoon_nodes.push(HoonArenaBuildNode {
             ptr,
             signature,
+            dependency_risk,
             hot_children,
         });
         self.state = parent_state;
+        self.current_dependency_risk = parent_dependency_risk || dependency_risk;
         self.write_byte(0xff);
         self.write_u64(signature);
         Some(())
@@ -2094,6 +2146,31 @@ impl Sig64 {
 
 impl<'a> Ut<'a> {
     pub fn new(slab: &'a mut NounSlab) -> Self {
+        #[cfg(target_os = "linux")]
+        let arm_parallel_enabled = ARM_FORK_MODE_ENABLED.load(Ordering::Acquire);
+        #[cfg(not(target_os = "linux"))]
+        let arm_parallel_enabled = false;
+        let arm_parallel_jobs = if arm_parallel_enabled {
+            std::env::var("HONK_ARM_JOBS")
+                .ok()
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(1)
+                .max(1)
+        } else {
+            1
+        };
+        let arm_parallel_min_cost_us = std::env::var("HONK_ARM_PARALLEL_MIN_COST_US")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(100_000);
+        let arm_parallel_speculate_arms = std::env::var("HONK_ARM_PARALLEL_SPECULATE_ARMS")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        let arm_parallel_speculate_limit = std::env::var("HONK_ARM_PARALLEL_SPECULATE_LIMIT")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(8);
         // Native-types flip: the wing-nav / skin / mull / nest families make the
         // per-compile intern table + the live_to_noun / live_leaf_to_noun memos
         // (keyed by Rc/noun pointer, bound to THIS compile's slab) the primary
@@ -2114,9 +2191,16 @@ impl<'a> Ut<'a> {
             arm_placeholder_play_in_progress: HashSet::new(),
             arm_epoch: 0,
             arm_profile_enabled: std::env::var_os("HONK_ARM_PROFILE").is_some(),
-            arm_profile_child_nanos: Vec::new(),
+            arm_timing_child_nanos: Vec::new(),
+            arm_last_exclusive_us: 0,
             arm_profile_next_group_id: 1,
             arm_profile_active_tasks: Vec::new(),
+            arm_parallel_jobs,
+            arm_parallel_min_cost_us,
+            arm_parallel_speculate_arms,
+            arm_parallel_speculate_limit,
+            arm_parallel_active: false,
+            arm_parallel_cost_us: Default::default(),
             lazy_resolver_next_id: 1,
             lazy_resolvers: HashMap::new(),
             lazy_resolver_canonical_ids: HashMap::new(),
@@ -8282,10 +8366,16 @@ impl<'a> Ut<'a> {
             }
         }
 
-        let profile_start = self.arm_profile_enabled.then(Instant::now);
-        let profile_depth = self.arm_profile_child_nanos.len();
-        if profile_start.is_some() {
-            self.arm_profile_child_nanos.push(0);
+        // Exclusive arm cost drives the dependency-aware scheduler when it is
+        // enabled. Keep the shipping one-job path free of per-arm clocks.
+        // Nested resolver mints contribute to the parent's child total, so an
+        // arm that merely waits on a 50-second dependency is never mistaken
+        // for 50 seconds of parallel work.
+        let timing_start =
+            (self.arm_profile_enabled || self.arm_parallel_jobs > 1).then(Instant::now);
+        let profile_depth = self.arm_timing_child_nanos.len();
+        if timing_start.is_some() {
+            self.arm_timing_child_nanos.push(0);
         }
 
         let compiled = (|| {
@@ -8342,28 +8432,34 @@ impl<'a> Ut<'a> {
             Ok(formula)
         })();
 
-        if let Some(start) = profile_start {
+        if let Some(start) = timing_start {
             let inclusive = start.elapsed().as_nanos();
-            let child = self.arm_profile_child_nanos.pop().unwrap_or(0);
-            if let Some(parent) = self.arm_profile_child_nanos.last_mut() {
+            let child = self.arm_timing_child_nanos.pop().unwrap_or(0);
+            if let Some(parent) = self.arm_timing_child_nanos.last_mut() {
                 *parent = parent.saturating_add(inclusive);
             }
-            let (group, task) = self
-                .arm_profile_active_tasks
-                .last()
-                .copied()
-                .unwrap_or((0, 0));
-            eprintln!(
-                "HONK_ARM_TIME arm={:?} core={} group={} task={} depth={} inclusive_us={} exclusive_us={} status={}",
-                key,
-                native_type_id_u64(&core_type),
-                group,
-                task,
-                profile_depth,
-                inclusive / 1_000,
-                inclusive.saturating_sub(child) / 1_000,
-                if compiled.is_ok() { "ok" } else { "error" },
-            );
+            let exclusive = inclusive.saturating_sub(child);
+            self.arm_last_exclusive_us = (exclusive / 1_000).min(u128::from(u64::MAX)) as u64;
+            if self.arm_profile_enabled {
+                let (group, task) = self
+                    .arm_profile_active_tasks
+                    .last()
+                    .copied()
+                    .unwrap_or((0, 0));
+                eprintln!(
+                    "HONK_ARM_TIME arm={:?} core={} group={} task={} depth={} inclusive_us={} exclusive_us={} status={}",
+                    key,
+                    native_type_id_u64(&core_type),
+                    group,
+                    task,
+                    profile_depth,
+                    inclusive / 1_000,
+                    exclusive / 1_000,
+                    if compiled.is_ok() { "ok" } else { "error" },
+                );
+            }
+        } else {
+            self.arm_last_exclusive_us = 0;
         }
 
         compiled
@@ -8390,6 +8486,12 @@ impl<'a> Ut<'a> {
         let hoon = self
             .hoon_ast_lookup_result(hoon_noun)
             .map_err(|err| CompilerError::Noun(format!("arm ast missing: {err}")))?;
+        let signature = self.mint_cache_signature(hoon.as_ref()).unwrap_or(0);
+        let dependency_risk = self
+            .hoon_arena
+            .id_for(hoon.as_ref())
+            .map(|id| self.hoon_arena.entry(id).dependency_risk)
+            .unwrap_or(true);
         let arm_goal = self.goal_arm_expected_type(goal, expected_arms_map, key_noun)?;
 
         let task_index = plan.tasks.len();
@@ -8398,6 +8500,8 @@ impl<'a> Ut<'a> {
             hoon_noun,
             hoon,
             goal: arm_goal,
+            signature,
+            dependency_risk,
         });
         let left = self.plan_arms_battery_from_map(left, goal, expected_arms_map, plan)?;
         let right = self.plan_arms_battery_from_map(right, goal, expected_arms_map, plan)?;
@@ -8436,6 +8540,265 @@ impl<'a> Ut<'a> {
         }
     }
 
+    fn execute_arm_task_serial(
+        &mut self,
+        plan: &ArmBuildPlan,
+        task_index: usize,
+        group_id: u64,
+        core_type: &NRc<NTy>,
+        poly: Poly,
+    ) -> Result<Noun> {
+        let task = &plan.tasks[task_index];
+        if self.arm_profile_enabled {
+            self.arm_profile_active_tasks.push((group_id, task_index));
+        }
+        let result = self.build_arm_formula_direct(
+            Arc::clone(&task.key),
+            core_type.clone(),
+            poly,
+            task.goal.clone(),
+            task.hoon.as_ref(),
+            task.hoon_noun,
+        );
+        self.arm_parallel_cost_us
+            .entry(task.signature)
+            .and_modify(|cost| *cost = (*cost).max(self.arm_last_exclusive_us))
+            .or_insert(self.arm_last_exclusive_us);
+        if self.arm_profile_enabled {
+            let popped = self.arm_profile_active_tasks.pop();
+            debug_assert_eq!(popped, Some((group_id, task_index)));
+        }
+        result
+    }
+
+    fn execute_arm_tasks_serial(
+        &mut self,
+        plan: &ArmBuildPlan,
+        group_id: u64,
+        core_type: &NRc<NTy>,
+        poly: Poly,
+    ) -> Result<Vec<Noun>> {
+        let mut formulas = Vec::with_capacity(plan.tasks.len());
+        for task_index in 0..plan.tasks.len() {
+            formulas
+                .push(self.execute_arm_task_serial(plan, task_index, group_id, core_type, poly)?);
+        }
+        Ok(formulas)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn execute_arm_tasks_parallel(
+        &mut self,
+        plan: &ArmBuildPlan,
+        group_id: u64,
+        core_type: &NRc<NTy>,
+        poly: Poly,
+    ) -> Result<Vec<Noun>> {
+        let core_id = native_type_id_u64(core_type);
+        let speculate = plan.tasks.len() >= self.arm_parallel_speculate_arms;
+        let mut selected: Vec<bool> = plan
+            .tasks
+            .iter()
+            .map(|task| {
+                let measured = self
+                    .arm_parallel_cost_us
+                    .get(&task.signature)
+                    .is_some_and(|cost| *cost >= self.arm_parallel_min_cost_us);
+                measured
+            })
+            .collect();
+        if speculate {
+            let mut speculative_slots = self.arm_parallel_speculate_limit;
+            // Prefer arms with no syntactic fold point, then fill the bounded
+            // remainder in canonical task order. This avoids the catastrophic
+            // "fork every arm" case while still making progress in production
+            // batteries where virtually every arm contains some nested ^~.
+            for dependency_risk in [false, true] {
+                for (task, selected) in plan.tasks.iter().zip(&mut selected) {
+                    if speculative_slots == 0 {
+                        break;
+                    }
+                    if !*selected && task.dependency_risk == dependency_risk {
+                        *selected = true;
+                        speculative_slots -= 1;
+                    }
+                }
+            }
+        }
+        let selected_count = selected.iter().filter(|selected| **selected).count();
+        if selected_count < 2 {
+            return self.execute_arm_tasks_serial(plan, group_id, core_type, poly);
+        }
+
+        if self.arm_profile_enabled {
+            eprintln!(
+                "HONK_ARM_PARALLEL group={} core={} arms={} selected={} jobs={}",
+                group_id,
+                core_id,
+                plan.tasks.len(),
+                selected_count,
+                self.arm_parallel_jobs,
+            );
+        }
+
+        let mut formulas = vec![None; plan.tasks.len()];
+        // Cheap/unselected work stays in the parent. It populates the parent's
+        // pure memo tables before worker snapshots are taken and avoids paying
+        // fork + JAM/cue overhead for sub-millisecond arms.
+        for (task_index, selected) in selected.iter().copied().enumerate() {
+            if !selected {
+                formulas[task_index] = Some(
+                    self.execute_arm_task_serial(plan, task_index, group_id, core_type, poly)?,
+                );
+            }
+        }
+
+        let selected_indices: Vec<usize> = selected
+            .iter()
+            .enumerate()
+            .filter_map(|(index, selected)| selected.then_some(index))
+            .collect();
+        for batch in selected_indices.chunks(self.arm_parallel_jobs) {
+            let mut children = Vec::with_capacity(batch.len());
+            for &task_index in batch {
+                let path = std::env::temp_dir().join(format!(
+                    "honk-arm-{}-{group_id}-{task_index}.ipc",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_file(&path);
+                // SAFETY: the honk CLI enables this path only after arranging
+                // that its compiler worker is the process's sole thread. The
+                // child touches only its copy-on-write Ut snapshot, writes one
+                // result file, and terminates with `_exit` (no inherited Rust
+                // destructors or shared allocator state).
+                let pid = unsafe { libc::fork() };
+                if pid == 0 {
+                    self.arm_parallel_active = true;
+                    let result =
+                        self.execute_arm_task_serial(plan, task_index, group_id, core_type, poly);
+                    let payload = match result {
+                        Ok(formula) => {
+                            self.slab.set_root(formula);
+                            let jam = self.slab.jam();
+                            let mut payload = Vec::with_capacity(jam.len() + 1);
+                            payload.push(0);
+                            payload.extend_from_slice(&jam);
+                            payload
+                        }
+                        Err(err) => {
+                            let mut payload = vec![1];
+                            payload.extend_from_slice(err.to_string().as_bytes());
+                            payload
+                        }
+                    };
+                    let exit_code = if std::fs::write(&path, payload).is_ok() {
+                        0
+                    } else {
+                        74
+                    };
+                    unsafe { libc::_exit(exit_code) };
+                }
+                if pid < 0 {
+                    formulas[task_index] = Some(
+                        self.execute_arm_task_serial(plan, task_index, group_id, core_type, poly)?,
+                    );
+                    continue;
+                }
+                children.push((pid, task_index, path));
+            }
+
+            let mut batch_error = None;
+            for (pid, task_index, path) in children {
+                let mut status = 0;
+                let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+                if waited != pid || !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+                    let _ = std::fs::remove_file(&path);
+                    batch_error.get_or_insert_with(|| {
+                        CompilerError::Noun(format!(
+                            "parallel arm worker failed: pid={pid} task={task_index} status={status}"
+                        ))
+                    });
+                    continue;
+                }
+                let payload = match std::fs::read(&path) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&path);
+                        batch_error.get_or_insert_with(|| {
+                            CompilerError::Noun(format!(
+                                "parallel arm worker result missing for task {task_index}: {err}"
+                            ))
+                        });
+                        continue;
+                    }
+                };
+                let _ = std::fs::remove_file(&path);
+                match payload.split_first() {
+                    Some((&0, jam)) => {
+                        let mut stack = NockStack::new(NOCK_STACK_SIZE_MEDIUM, 0);
+                        match <Noun as NounExt>::cue_bytes_slice(&mut stack, jam) {
+                            Ok(formula) => {
+                                formulas[task_index] =
+                                    Some(self.slab.copy_into(formula, &stack.noun_space()));
+                            }
+                            Err(err) => {
+                                batch_error.get_or_insert_with(|| {
+                                    CompilerError::Noun(format!(
+                                        "parallel arm worker returned invalid jam for task {task_index}: {err:?}"
+                                    ))
+                                });
+                            }
+                        }
+                    }
+                    Some((&1, message)) => {
+                        batch_error.get_or_insert_with(|| {
+                            CompilerError::Noun(format!(
+                                "parallel arm task {task_index}: {}",
+                                String::from_utf8_lossy(message)
+                            ))
+                        });
+                    }
+                    _ => {
+                        batch_error.get_or_insert_with(|| {
+                            CompilerError::Noun(format!(
+                                "parallel arm worker returned an invalid envelope for task {task_index}"
+                            ))
+                        });
+                    }
+                }
+            }
+            if let Some(err) = batch_error {
+                return Err(err);
+            }
+        }
+
+        formulas
+            .into_iter()
+            .enumerate()
+            .map(|(task_index, formula)| {
+                formula.ok_or_else(|| {
+                    CompilerError::Noun(format!(
+                        "parallel arm task {task_index} did not produce a formula"
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    fn execute_arm_tasks(
+        &mut self,
+        plan: &ArmBuildPlan,
+        group_id: u64,
+        core_type: &NRc<NTy>,
+        poly: Poly,
+    ) -> Result<Vec<Noun>> {
+        #[cfg(target_os = "linux")]
+        if self.arm_parallel_jobs > 1 && !self.arm_parallel_active {
+            return self.execute_arm_tasks_parallel(plan, group_id, core_type, poly);
+        }
+        self.execute_arm_tasks_serial(plan, group_id, core_type, poly)
+    }
+
     fn build_arms_battery_from_map(
         &mut self,
         arms_map: Noun,
@@ -8468,25 +8831,7 @@ impl<'a> Ut<'a> {
             );
         }
 
-        let mut formulas = Vec::with_capacity(plan.tasks.len());
-        for (task_index, task) in plan.tasks.iter().enumerate() {
-            if self.arm_profile_enabled {
-                self.arm_profile_active_tasks.push((group_id, task_index));
-            }
-            let result = self.build_arm_formula_direct(
-                Arc::clone(&task.key),
-                core_type.clone(),
-                poly,
-                task.goal.clone(),
-                task.hoon.as_ref(),
-                task.hoon_noun,
-            );
-            if self.arm_profile_enabled {
-                let popped = self.arm_profile_active_tasks.pop();
-                debug_assert_eq!(popped, Some((group_id, task_index)));
-            }
-            formulas.push(result?);
-        }
+        let formulas = self.execute_arm_tasks(&plan, group_id, &core_type, poly)?;
 
         if let Some(start) = group_start {
             eprintln!(

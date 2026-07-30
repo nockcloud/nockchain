@@ -530,16 +530,35 @@ fn main() {
         .ok()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(WORKER_STACK_BYTES);
+
+    let arm_jobs = env::var("HONK_ARM_JOBS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(1);
+    #[cfg(target_os = "linux")]
+    if arm_jobs > 1 {
+        // Fork-based arm workers require a genuinely single-threaded process.
+        // Run the entire compiler on an unconditional stacker fiber instead of
+        // spawning the usual large-stack thread. That preserves the 4GB stack
+        // reservation while leaving exactly one OS thread at every fork.
+        honk::native::ut::enable_arm_fork_mode();
+        let result = stacker::grow(stack_size, || run_cli_sync(cli));
+        report_native_timing_totals();
+        if let Err(err) = result {
+            eprintln!("native hoon compile failed: {err}");
+            process::exit(1);
+        }
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    if arm_jobs > 1 {
+        eprintln!("HONK_ARM_JOBS>1 is currently supported only on Linux; using one job");
+    }
+
     let worker = std::thread::Builder::new()
         .name("honk".to_string())
         .stack_size(stack_size)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("failed to initialize tokio runtime: {err}"))?;
-            runtime.block_on(run(cli)).map_err(|err| err.to_string())
-        });
+        .spawn(move || run_cli_sync(cli));
 
     let result = match worker {
         Ok(worker) => match worker.join() {
@@ -555,6 +574,14 @@ fn main() {
         eprintln!("native hoon compile failed: {err}");
         process::exit(1);
     }
+}
+
+fn run_cli_sync(cli: Cli) -> std::result::Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("failed to initialize tokio runtime: {err}"))?;
+    runtime.block_on(run(cli)).map_err(|err| err.to_string())
 }
 
 async fn run(cli: Cli) -> Result<()> {
