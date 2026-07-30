@@ -281,6 +281,31 @@ impl Drop for HoonAstScope<'_, '_, '_> {
     }
 }
 
+/// Canonical, preorder arm work item. Planning is deliberately separate from
+/// execution: all map decoding and expected-goal derivation remain serial and
+/// deterministic, while the expensive mint calls can later move to isolated
+/// workers without changing the battery's reduction order.
+struct ArmBuildTask {
+    key: Arc<str>,
+    hoon_noun: Noun,
+    hoon: Arc<Hoon>,
+    goal: NRc<NTy>,
+}
+
+#[derive(Clone, Copy)]
+struct ArmBuildPlanNode {
+    task_index: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+#[derive(Default)]
+struct ArmBuildPlan {
+    tasks: Vec<ArmBuildTask>,
+    nodes: Vec<ArmBuildPlanNode>,
+    root: Option<usize>,
+}
+
 pub struct Ut<'a> {
     pub slab: &'a mut NounSlab,
     // Owned per-compile native-IR state (intern table + decode/encode memos +
@@ -308,6 +333,8 @@ pub struct Ut<'a> {
     // work without perturbing normal builds.
     arm_profile_enabled: bool,
     arm_profile_child_nanos: Vec<u128>,
+    arm_profile_next_group_id: u64,
+    arm_profile_active_tasks: Vec<(u64, usize)>,
     pub lazy_resolver_next_id: u64,
     pub lazy_resolvers: HashMap<u64, LazyResolverContext>,
     // RT-05 canonical lazy-core identity: maps a recursive core's structural key
@@ -2088,6 +2115,8 @@ impl<'a> Ut<'a> {
             arm_epoch: 0,
             arm_profile_enabled: std::env::var_os("HONK_ARM_PROFILE").is_some(),
             arm_profile_child_nanos: Vec::new(),
+            arm_profile_next_group_id: 1,
+            arm_profile_active_tasks: Vec::new(),
             lazy_resolver_next_id: 1,
             lazy_resolvers: HashMap::new(),
             lazy_resolver_canonical_ids: HashMap::new(),
@@ -8319,10 +8348,17 @@ impl<'a> Ut<'a> {
             if let Some(parent) = self.arm_profile_child_nanos.last_mut() {
                 *parent = parent.saturating_add(inclusive);
             }
+            let (group, task) = self
+                .arm_profile_active_tasks
+                .last()
+                .copied()
+                .unwrap_or((0, 0));
             eprintln!(
-                "HONK_ARM_TIME arm={:?} core={} depth={} inclusive_us={} exclusive_us={} status={}",
+                "HONK_ARM_TIME arm={:?} core={} group={} task={} depth={} inclusive_us={} exclusive_us={} status={}",
                 key,
                 native_type_id_u64(&core_type),
+                group,
+                task,
                 profile_depth,
                 inclusive / 1_000,
                 inclusive.saturating_sub(child) / 1_000,
@@ -8331,6 +8367,73 @@ impl<'a> Ut<'a> {
         }
 
         compiled
+    }
+
+    fn plan_arms_battery_from_map(
+        &mut self,
+        arms_map: Noun,
+        goal: Noun,
+        expected_arms_map: Option<Noun>,
+        plan: &mut ArmBuildPlan,
+    ) -> Result<Option<usize>> {
+        let space = self.slab.noun_space();
+        let Some((node, left, right)) = map_node(arms_map, &self.slab.noun_space())? else {
+            return Ok(None);
+        };
+        let node_cell = node
+            .in_space(&space)
+            .as_cell()
+            .map_err(|err| CompilerError::Decode(format!("arm node not cell: {err}")))?;
+        let key_noun = node_cell.head().noun();
+        let key = self.arm_key_term(key_noun)?;
+        let hoon_noun = node_cell.tail().noun();
+        let hoon = self
+            .hoon_ast_lookup_result(hoon_noun)
+            .map_err(|err| CompilerError::Noun(format!("arm ast missing: {err}")))?;
+        let arm_goal = self.goal_arm_expected_type(goal, expected_arms_map, key_noun)?;
+
+        let task_index = plan.tasks.len();
+        plan.tasks.push(ArmBuildTask {
+            key,
+            hoon_noun,
+            hoon,
+            goal: arm_goal,
+        });
+        let left = self.plan_arms_battery_from_map(left, goal, expected_arms_map, plan)?;
+        let right = self.plan_arms_battery_from_map(right, goal, expected_arms_map, plan)?;
+        let node_index = plan.nodes.len();
+        plan.nodes.push(ArmBuildPlanNode {
+            task_index,
+            left,
+            right,
+        });
+        Ok(Some(node_index))
+    }
+
+    fn reduce_arms_battery_plan(
+        &mut self,
+        plan: &ArmBuildPlan,
+        formulas: &[Noun],
+        node_index: usize,
+    ) -> Result<Noun> {
+        let node = plan.nodes[node_index];
+        let formula = formulas[node.task_index];
+        match (node.left, node.right) {
+            (None, None) => Ok(formula),
+            (None, Some(right)) => {
+                let right = self.reduce_arms_battery_plan(plan, formulas, right)?;
+                Ok(T(self.slab, &[formula, right]))
+            }
+            (Some(left), None) => {
+                let left = self.reduce_arms_battery_plan(plan, formulas, left)?;
+                Ok(T(self.slab, &[formula, left]))
+            }
+            (Some(left), Some(right)) => {
+                let left = self.reduce_arms_battery_plan(plan, formulas, left)?;
+                let right = self.reduce_arms_battery_plan(plan, formulas, right)?;
+                Ok(T(self.slab, &[formula, left, right]))
+            }
+        }
     }
 
     fn build_arms_battery_from_map(
@@ -8345,58 +8448,56 @@ impl<'a> Ut<'a> {
         goal: Noun,
         expected_arms_map: Option<Noun>,
     ) -> Result<Noun> {
-        let space = self.slab.noun_space();
-        let Some((node, left, right)) = map_node(arms_map, &self.slab.noun_space())? else {
+        let mut plan = ArmBuildPlan::default();
+        plan.root =
+            self.plan_arms_battery_from_map(arms_map, goal, expected_arms_map, &mut plan)?;
+        let Some(root) = plan.root else {
             return Ok(D(0));
         };
-        let node_cell = node
-            .in_space(&space)
-            .as_cell()
-            .map_err(|err| CompilerError::Decode(format!("arm node not cell: {err}")))?;
-        let key_noun = node_cell.head().noun();
-        let key = self.arm_key_term(key_noun)?;
-        let hoon_noun = node_cell.tail().noun();
-        let hoon = self
-            .hoon_ast_lookup_result(hoon_noun)
-            .map_err(|err| CompilerError::Noun(format!("arm ast missing: {err}")))?;
-        let arm_goal = self.goal_arm_expected_type(goal, expected_arms_map, key_noun)?;
 
-        let formula = self.build_arm_formula_direct(
-            Arc::clone(&key),
-            core_type.clone(),
-            poly,
-            arm_goal,
-            hoon.as_ref(),
-            hoon_noun,
-        )?;
-
-        let left_empty = noun_is_zero(left);
-        let right_empty = noun_is_zero(right);
-        if left_empty && right_empty {
-            return Ok(formula);
+        let group_id = self.arm_profile_next_group_id;
+        self.arm_profile_next_group_id = self.arm_profile_next_group_id.wrapping_add(1).max(1);
+        let group_start = self.arm_profile_enabled.then(Instant::now);
+        if self.arm_profile_enabled {
+            eprintln!(
+                "HONK_ARM_GROUP_START group={} core={} arms={} depth={}",
+                group_id,
+                native_type_id_u64(&core_type),
+                plan.tasks.len(),
+                self.arm_goal_in_progress.len(),
+            );
         }
 
-        if left_empty {
-            let right_bat =
-                self.build_arms_battery_from_map(right, core_type, poly, goal, expected_arms_map)?;
-            return Ok(T(self.slab, &[formula, right_bat]));
-        }
-        if right_empty {
-            let left_bat =
-                self.build_arms_battery_from_map(left, core_type, poly, goal, expected_arms_map)?;
-            return Ok(T(self.slab, &[formula, left_bat]));
+        let mut formulas = Vec::with_capacity(plan.tasks.len());
+        for (task_index, task) in plan.tasks.iter().enumerate() {
+            if self.arm_profile_enabled {
+                self.arm_profile_active_tasks.push((group_id, task_index));
+            }
+            let result = self.build_arm_formula_direct(
+                Arc::clone(&task.key),
+                core_type.clone(),
+                poly,
+                task.goal.clone(),
+                task.hoon.as_ref(),
+                task.hoon_noun,
+            );
+            if self.arm_profile_enabled {
+                let popped = self.arm_profile_active_tasks.pop();
+                debug_assert_eq!(popped, Some((group_id, task_index)));
+            }
+            formulas.push(result?);
         }
 
-        let left_bat = self.build_arms_battery_from_map(
-            left,
-            core_type.clone(),
-            poly,
-            goal,
-            expected_arms_map,
-        )?;
-        let right_bat =
-            self.build_arms_battery_from_map(right, core_type, poly, goal, expected_arms_map)?;
-        Ok(T(self.slab, &[formula, left_bat, right_bat]))
+        if let Some(start) = group_start {
+            eprintln!(
+                "HONK_ARM_GROUP_END group={} core={} arms={} elapsed_us={} status=ok",
+                group_id,
+                native_type_id_u64(&core_type),
+                plan.tasks.len(),
+                start.elapsed().as_micros(),
+            );
+        }
+        self.reduce_arms_battery_plan(&plan, &formulas, root)
     }
 
     // garb_from_parts (noun garb builder) is superseded by `garb_native`, which
