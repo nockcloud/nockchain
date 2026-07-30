@@ -15,7 +15,7 @@ use hatch::utils::{
 };
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::NounAllocatorExt;
-use nockapp::utils::{create_context, NOCK_STACK_SIZE_MEDIUM};
+use nockapp::utils::{create_context, NOCK_STACK_1KB, NOCK_STACK_SIZE_MEDIUM};
 use nockvm::ext::{AtomExt, NounExt};
 use nockvm::interpreter::{interpret, Context as NockContext};
 use nockvm::jets::cold::{Cold, Nounable};
@@ -78,6 +78,15 @@ const SEMI_TAG_FULL: u64 = 1_819_047_270; // %full
 const SEMI_TAG_HALF: u64 = 1_718_378_856; // %half
 const SEMI_TAG_LAZY: u64 = 2_038_063_468; // %lazy
 
+/// Debug-only tracing for `^~` (ketsig) compile-time folding, enabled with
+/// `HONK_DEBUG_KTSG=1`. A fold that declines keeps its formula silently, so
+/// without this there is no way to tell a baked `^~` from an inert one.
+static KTSG_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn ktsg_trace_enabled() -> bool {
+    *KTSG_TRACE.get_or_init(|| std::env::var_os("HONK_DEBUG_KTSG").is_some())
+}
+
 #[derive(Clone, Copy)]
 struct KtsgFoldCacheEntry {
     bran: Noun,
@@ -104,6 +113,12 @@ struct MuskRuntime {
     // copied batteries/context instead of copying the same core tree for every arm invocation.
     mack_core_cache_raw: FastHashMap<u64, Noun>,
     mack_core_cache_context: Option<u64>,
+    /// Set once a mack core copy has exhausted the eval stack. Rolling the
+    /// copy back frees only that copy -- every earlier interned copy is still
+    /// resident, so the next mack almost certainly exhausts it again. Without
+    /// this latch each subsequent fold pays a full copy before failing the
+    /// same way, turning one hard failure into an unbounded grind.
+    mack_stack_exhausted: bool,
     mack_cache_raw: FastHashMap<(u64, u64), Option<Noun>>,
     mack_cache: BucketMemo<(u32, u64), MuskMackCacheEntry>,
 }
@@ -115,6 +130,7 @@ impl MuskRuntime {
             cold_state: None,
             mack_core_cache_raw: Default::default(),
             mack_core_cache_context: None,
+            mack_stack_exhausted: false,
             mack_cache_raw: Default::default(),
             mack_cache: Default::default(),
         }
@@ -5144,6 +5160,29 @@ impl<'a> Ut<'a> {
             MuskOutput::Done(noun) => Some(noun),
             MuskOutput::Stop | MuskOutput::Wait => None,
         };
+        if ktsg_trace_enabled() {
+            let outcome = match jon {
+                MuskOutput::Done(_) => "DONE (folded)",
+                MuskOutput::Stop => "STOP (musk declined)",
+                MuskOutput::Wait => "WAIT (subject not fully known)",
+            };
+            // Was the SUBJECT itself already blocked? That is the fork: a blocked
+            // subject means the context type is not a known constant; a known
+            // subject with a blocked RESULT means the formula did something musk
+            // could not fold.
+            let (bran_mask, _) = self.semi_parts(bran)?;
+            let bran_blocks = self.semi_squash_mask(bran_mask)?;
+            let subject_known = noun_is_zero(bran_blocks);
+            let arm = self
+                .arm_goal_in_progress
+                .last()
+                .map(|entry| entry.key.to_string())
+                .unwrap_or_else(|| "<top level>".to_string());
+            eprintln!(
+                "HONK_DEBUG_KTSG: ^~ fold -> {outcome}; \
+                 subject_fully_known={subject_known}; arm={arm}"
+            );
+        }
         self.ktsg_fold_cache_store(fold_key, bran, formula, collapsed);
         if let Some(noun) = collapsed {
             return Ok((ty, T(self.slab, &[D(1), noun])));
@@ -6103,6 +6142,55 @@ impl<'a> Ut<'a> {
         self.semi_require(frag, |ut, ryf| ut.musk_araw(one, ryf, memo))
     }
 
+    /// Copy a mack call core onto the musk eval stack, tolerating exhaustion.
+    ///
+    /// `musk_mack_cached_core_in_context` bump-allocates the core onto the eval
+    /// stack, and on a fold-heavy entry that allocation can exhaust it. nockvm
+    /// signals exhaustion by PANICKING (`panic_out_of_memory_for`, mem.rs), so
+    /// an unguarded copy aborts the whole compile. The interpretation that
+    /// follows is already guarded for exactly this reason; the copy was not.
+    /// honk's contract is that an infeasible fold reports failure and the `^~`
+    /// simply keeps its formula, so catch it here too.
+    ///
+    /// On failure the stack is rolled back past the partially-written copy,
+    /// which leaves every cached pointer into it dangling -- so the core-copy
+    /// cache must be dropped, not merely bounded.
+    unsafe fn musk_mack_core_on_eval_stack(
+        &mut self,
+        context: &mut NockContext,
+        core: Noun,
+        core_space: &NounSpace,
+    ) -> Option<Noun> {
+        if self.musk.mack_stack_exhausted {
+            return None;
+        }
+        let snapshot = context.save();
+        let stack_checkpoint = context.stack.checkpoint();
+        let self_ptr: *mut Self = self;
+        let context_ptr: *mut NockContext = context;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (*self_ptr).musk_mack_cached_core_in_context(&mut *context_ptr, core, core_space)
+        }));
+        match outcome {
+            Ok(copied) => Some(copied),
+            Err(_) => {
+                self.musk.mack_core_cache_raw.clear();
+                self.musk.mack_core_cache_context = None;
+                self.musk.mack_stack_exhausted = true;
+                context.stack.restore_checkpoint(&stack_checkpoint);
+                context.restore(&snapshot);
+                if ktsg_trace_enabled() {
+                    eprintln!(
+                        "HONK_DEBUG_KTSG: mack core copy exhausted the eval stack; \
+                         all further folds in this entry will decline. \
+                         Raise HONK_EVAL_STACK_GB to fold more."
+                    );
+                }
+                None
+            }
+        }
+    }
+
     fn semi_full_complete_data(&mut self, semi: Noun) -> Result<Option<Noun>> {
         let (mask, data) = self.semi_parts(semi)?;
         if self.semi_mask_tag(mask)? != SemiTag::Full {
@@ -6156,7 +6244,7 @@ impl<'a> Ut<'a> {
         let context = &mut self.musk.context as *mut NockContext;
         unsafe {
             let context = &mut *context;
-            let core = self.musk_mack_cached_core_in_context(context, core, &slab_space);
+            let core = self.musk_mack_core_on_eval_stack(context, core, &slab_space)?;
             Self::musk_interpret_mack_in_context(context, slab, core, axis)
         }
     }
@@ -6215,7 +6303,9 @@ impl<'a> Ut<'a> {
         let context = &mut self.musk.context as *mut NockContext;
         unsafe {
             let context = &mut *context;
-            let core = self.musk_mack_cached_core_in_context(context, core, &slab_space);
+            let Some(core) = self.musk_mack_core_on_eval_stack(context, core, &slab_space) else {
+                return Ok(None);
+            };
             Self::musk_interpret_mack_axis_noun_in_context(context, slab, core, axis, &slab_space)
         }
     }
@@ -11822,8 +11912,25 @@ fn noun_biguint(slab: &mut NounSlab, value: BigUint) -> Noun {
 // mack-core copies on this stack for the duration of an entry compile.
 const HONK_EVAL_STACK_SIZE: usize = NOCK_STACK_SIZE_MEDIUM; // 16GB
 
+/// `HONK_EVAL_STACK_GB` overrides the fold-evaluation stack reservation.
+///
+/// Exhausting it does not fail loudly -- it degrades the `^~` to no fold at
+/// all (see `musk_mack_core_on_eval_stack`), so an entry whose folds are near
+/// the ceiling silently loses its compile-time bakes. The reservation is
+/// virtual, so the only cost of raising it is address space; the real limit is
+/// how much of it the fold actually touches.
+pub(crate) fn honk_eval_stack_size() -> usize {
+    match std::env::var("HONK_EVAL_STACK_GB") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(gb) if gb > 0 => (NOCK_STACK_1KB << 10 << 10) * gb,
+            _ => HONK_EVAL_STACK_SIZE,
+        },
+        Err(_) => HONK_EVAL_STACK_SIZE,
+    }
+}
+
 fn create_musk_eval_context() -> NockContext {
-    let mut stack = NockStack::new(HONK_EVAL_STACK_SIZE, 0);
+    let mut stack = NockStack::new(honk_eval_stack_size(), 0);
     let cold = Cold::new(&mut stack);
     create_context(
         stack,

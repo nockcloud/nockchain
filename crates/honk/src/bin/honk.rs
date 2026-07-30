@@ -17,7 +17,7 @@ use honk::pipeline;
 use honk::pipeline::{NativeImportKind, ScopeMode};
 use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::noun::{BrandedEvalExt, BrandedNounSpaceExt, NounAllocatorExt};
-use nockapp::utils::{create_context, NOCK_STACK_SIZE_MEDIUM};
+use nockapp::utils::{create_context, NOCK_STACK_1KB, NOCK_STACK_SIZE_MEDIUM};
 use nockapp::AtomExt;
 use nockvm::ext::NounExt;
 use nockvm::hamt::Hamt;
@@ -3472,8 +3472,22 @@ fn jam_standard_kernel_trap_native(
 // above observed peaks.
 const HONK_EVAL_STACK_SIZE: usize = NOCK_STACK_SIZE_MEDIUM; // 16GB
 
+/// `HONK_EVAL_STACK_GB` overrides the reservation above. Exhaustion is silent
+/// (folds degrade to no fold), so this is the knob for entries whose folds sit
+/// near the ceiling. The reservation is virtual; only what the fold touches is
+/// resident.
+fn honk_eval_stack_size() -> usize {
+    match std::env::var("HONK_EVAL_STACK_GB") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(gb) if gb > 0 => (NOCK_STACK_1KB << 10 << 10) * gb,
+            _ => HONK_EVAL_STACK_SIZE,
+        },
+        Err(_) => HONK_EVAL_STACK_SIZE,
+    }
+}
+
 fn create_eval_context() -> Context {
-    let mut stack = NockStack::new(HONK_EVAL_STACK_SIZE, 0);
+    let mut stack = NockStack::new(honk_eval_stack_size(), 0);
     let cold = Cold::new(&mut stack);
     create_context(
         stack,
