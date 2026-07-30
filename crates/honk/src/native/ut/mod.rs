@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc as SharedRc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use hatch::ast::hoon::{
     Alas, Axis as AstAxis, BaseType, Beer, Block, Chum, Coil, Cord, FaceType, Garb, Gate, Hoon,
@@ -301,6 +302,12 @@ pub struct Ut<'a> {
     pub arm_goal_in_progress: Vec<ArmInProgressEntry>,
     pub arm_placeholder_play_in_progress: HashSet<u64>,
     pub arm_epoch: u64,
+    // Opt-in profiling for the dependency-aware arm-parallelism campaign.
+    // The stack records inclusive time spent in nested lazy-resolver arm
+    // compilations so each completion can report both inclusive and exclusive
+    // work without perturbing normal builds.
+    arm_profile_enabled: bool,
+    arm_profile_child_nanos: Vec<u128>,
     pub lazy_resolver_next_id: u64,
     pub lazy_resolvers: HashMap<u64, LazyResolverContext>,
     // RT-05 canonical lazy-core identity: maps a recursive core's structural key
@@ -2079,6 +2086,8 @@ impl<'a> Ut<'a> {
             arm_goal_in_progress: Vec::new(),
             arm_placeholder_play_in_progress: HashSet::new(),
             arm_epoch: 0,
+            arm_profile_enabled: std::env::var_os("HONK_ARM_PROFILE").is_some(),
+            arm_profile_child_nanos: Vec::new(),
             lazy_resolver_next_id: 1,
             lazy_resolvers: HashMap::new(),
             lazy_resolver_canonical_ids: HashMap::new(),
@@ -5691,6 +5700,20 @@ impl<'a> Ut<'a> {
             .map_err(|err| {
                 CompilerError::Noun(format!("native mint: lazy resolver arm ast missing: {err}"))
             })?;
+        if self.arm_profile_enabled {
+            let caller = self
+                .arm_goal_in_progress
+                .last()
+                .map(|entry| entry.key.as_ref())
+                .unwrap_or("<root>");
+            eprintln!(
+                "HONK_ARM_EDGE caller={caller:?} callee={:?} resolver={} axis={} depth={}",
+                arm_entry.arm_name,
+                resolver_id,
+                fragment,
+                self.arm_goal_in_progress.len(),
+            );
+        }
         // Canonical hoon-138 `++laze` callback compiles via `hemp` with `gol=%noun`.
         let compiled = self.build_arm_formula_direct(
             Arc::clone(&arm_entry.arm_name),
@@ -8230,62 +8253,84 @@ impl<'a> Ut<'a> {
             }
         }
 
-        let skip_vet = poly == Poly::Wet;
-        let prev_vet = self.vet;
-        let arm_vet = if skip_vet { false } else { prev_vet };
-        self.vet = arm_vet;
+        let profile_start = self.arm_profile_enabled.then(Instant::now);
+        let profile_depth = self.arm_profile_child_nanos.len();
+        if profile_start.is_some() {
+            self.arm_profile_child_nanos.push(0);
+        }
 
-        // The in-progress dedup id is the interned core Rc's pointer (one canonical
-        // Rc per type via hash-cons), replacing the old noun as_raw() identity.
-        let core_type_id = native_type_id_u64(&core_type);
-        let in_progress_key = (Arc::clone(&key), core_type_id);
-        let in_progress_entry = ArmInProgressEntry {
-            key: Arc::clone(&key),
-            core: core_type.clone(),
-            hoon: hoon_noun,
-            goal: goal.clone(),
-            vet: arm_vet,
-        };
-        self.arm_in_progress.insert(in_progress_key.clone());
-        self.arm_goal_in_progress.push(in_progress_entry);
-        self.arm_epoch = self.arm_epoch.wrapping_add(1);
-        // core_type/goal are the NATIVE deepening core + goal: thread straight to
-        // native mint (no per-arm native_of re-lift — the O(N^2) -> O(N) win).
-        let result = self.mint(core_type.clone(), goal.clone(), hoon);
-        self.vet = prev_vet;
-        self.arm_in_progress.remove(&in_progress_key);
-        let popped = self.arm_goal_in_progress.pop();
-        debug_assert_eq!(
-            popped.map(|entry| (
-                entry.key,
-                entry.core.arena_id(),
-                unsafe { entry.hoon.as_raw() },
-                entry.goal.arena_id(),
-                entry.vet,
-            )),
-            Some((
-                Arc::clone(&key),
-                core_type.arena_id(),
-                unsafe { hoon_noun.as_raw() },
-                goal.arena_id(),
-                arm_vet,
-            ))
-        );
-        self.arm_epoch = self.arm_epoch.wrapping_add(1);
-        let (ty, formula) = match result {
-            Ok(ok) => ok,
-            Err(err) => {
-                return Err(with_arm_context(key.as_ref(), err));
+        let compiled = (|| {
+            let skip_vet = poly == Poly::Wet;
+            let prev_vet = self.vet;
+            let arm_vet = if skip_vet { false } else { prev_vet };
+            self.vet = arm_vet;
+
+            // The in-progress dedup id is the interned core Rc's pointer (one canonical
+            // Rc per type via hash-cons), replacing the old noun as_raw() identity.
+            let core_type_id = native_type_id_u64(&core_type);
+            let in_progress_key = (Arc::clone(&key), core_type_id);
+            let in_progress_entry = ArmInProgressEntry {
+                key: Arc::clone(&key),
+                core: core_type.clone(),
+                hoon: hoon_noun,
+                goal: goal.clone(),
+                vet: arm_vet,
+            };
+            self.arm_in_progress.insert(in_progress_key.clone());
+            self.arm_goal_in_progress.push(in_progress_entry);
+            self.arm_epoch = self.arm_epoch.wrapping_add(1);
+            // core_type/goal are the NATIVE deepening core + goal: thread straight to
+            // native mint (no per-arm native_of re-lift — the O(N^2) -> O(N) win).
+            let result = self.mint(core_type.clone(), goal.clone(), hoon);
+            self.vet = prev_vet;
+            self.arm_in_progress.remove(&in_progress_key);
+            let popped = self.arm_goal_in_progress.pop();
+            debug_assert_eq!(
+                popped.map(|entry| (
+                    entry.key,
+                    entry.core.arena_id(),
+                    unsafe { entry.hoon.as_raw() },
+                    entry.goal.arena_id(),
+                    entry.vet,
+                )),
+                Some((
+                    Arc::clone(&key),
+                    core_type.arena_id(),
+                    unsafe { hoon_noun.as_raw() },
+                    goal.arena_id(),
+                    arm_vet,
+                ))
+            );
+            self.arm_epoch = self.arm_epoch.wrapping_add(1);
+            let (ty, formula) = result.map_err(|err| with_arm_context(key.as_ref(), err))?;
+            // prune_recursive_holds takes the arm RESULT type as a noun. `ty` is the
+            // native mint result (the arm's output, NOT the deepening core), so
+            // lowering it per arm is bounded and acceptable; the deepening core is
+            // never lowered.
+            let ty_noun = live_to_noun(&mut self.cx, &ty, self.slab);
+            let _ty = self.prune_recursive_holds(ty_noun, hoon_noun)?;
+
+            Ok(formula)
+        })();
+
+        if let Some(start) = profile_start {
+            let inclusive = start.elapsed().as_nanos();
+            let child = self.arm_profile_child_nanos.pop().unwrap_or(0);
+            if let Some(parent) = self.arm_profile_child_nanos.last_mut() {
+                *parent = parent.saturating_add(inclusive);
             }
-        };
-        // prune_recursive_holds takes the arm RESULT type as a noun. `ty` is the
-        // native mint result (the arm's output, NOT the deepening core), so
-        // lowering it per arm is bounded and acceptable; the deepening core is
-        // never lowered.
-        let ty_noun = live_to_noun(&mut self.cx, &ty, self.slab);
-        let _ty = self.prune_recursive_holds(ty_noun, hoon_noun)?;
+            eprintln!(
+                "HONK_ARM_TIME arm={:?} core={} depth={} inclusive_us={} exclusive_us={} status={}",
+                key,
+                native_type_id_u64(&core_type),
+                profile_depth,
+                inclusive / 1_000,
+                inclusive.saturating_sub(child) / 1_000,
+                if compiled.is_ok() { "ok" } else { "error" },
+            );
+        }
 
-        Ok(formula)
+        compiled
     }
 
     fn build_arms_battery_from_map(
