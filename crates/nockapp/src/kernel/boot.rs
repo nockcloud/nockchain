@@ -347,6 +347,7 @@ fn parse_optional_u64(input: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -1150,6 +1151,90 @@ INSERT INTO events (
 
     #[tokio::test(flavor = "current_thread")]
     #[cfg_attr(miri, ignore)]
+    async fn quick_check_runs_only_when_event_log_recovery_is_required() {
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("conditional-event-log-quick-check");
+
+        let mut app = setup_test_app(&data_dir).await;
+        poke_inc(&app).await;
+        stop_app(&mut app).await;
+        drop(app);
+
+        let event_log_path = data_dir.join("event-log.sqlite3");
+        let conn = Connection::open(&event_log_path).expect("open event log sqlite");
+        conn.execute_batch(
+            "CREATE TABLE quick_check_probe (payload BLOB NOT NULL);\
+             INSERT INTO quick_check_probe VALUES (zeroblob(8192));\
+             PRAGMA wal_checkpoint(TRUNCATE);",
+        )
+        .expect("create and checkpoint quick-check probe table");
+        let page_size: u64 = conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("read sqlite page size");
+        let root_page: u64 = conn
+            .query_row(
+                "SELECT rootpage FROM sqlite_schema WHERE name = 'quick_check_probe'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read probe root page");
+        drop(conn);
+
+        let mut event_log_file = fs::OpenOptions::new()
+            .write(true)
+            .open(&event_log_path)
+            .expect("open event log for probe corruption");
+        event_log_file
+            .seek(SeekFrom::Start((root_page - 1) * page_size))
+            .expect("seek to probe root page");
+        event_log_file
+            .write_all(&vec![0; page_size as usize])
+            .expect("corrupt probe root page");
+        event_log_file.sync_all().expect("sync probe corruption");
+        drop(event_log_file);
+
+        let boot_selection = select_boot_state::<NockJammer>(
+            &data_dir.join("checkpoints"),
+            &load_test_jam_bytes(),
+            &event_log_path,
+            &data_dir.join("pma").join("0.pma"),
+            &data_dir.join("pma").join("1.pma"),
+            Arc::new(NockAppMetrics::default()),
+            BootEventLogPolicy {
+                preexisting: true,
+                allow_empty_bootstrap: false,
+            },
+        )
+        .await
+        .expect("matching PMA should not scan unrelated event-log pages");
+        assert!(boot_selection.pma_open_existing);
+        assert!(boot_selection.replay_jobs.is_empty());
+
+        clear_pma_files(&data_dir);
+        let recovery_result = select_boot_state::<NockJammer>(
+            &data_dir.join("checkpoints"),
+            &load_test_jam_bytes(),
+            &event_log_path,
+            &data_dir.join("pma").join("0.pma"),
+            &data_dir.join("pma").join("1.pma"),
+            Arc::new(NockAppMetrics::default()),
+            BootEventLogPolicy {
+                preexisting: true,
+                allow_empty_bootstrap: false,
+            },
+        )
+        .await;
+        match recovery_result {
+            Ok(_) => panic!("event-log recovery trusted a database that failed quick_check"),
+            Err(err) => assert!(
+                err.to_string().contains("quick_check"),
+                "unexpected recovery error: {err}"
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[cfg_attr(miri, ignore)]
     async fn valid_pma_with_unopenable_event_log_fails_closed() {
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("valid-pma-unopenable-event-log");
@@ -1918,13 +2003,6 @@ async fn select_boot_state<J: Jammer>(
         }
     };
 
-    if let Some(event_log) = recovery_event_log.as_mut() {
-        if let Err(err) = event_log.quick_check() {
-            return Err(CrownError::Unknown(format!(
-                "event log quick_check failed during snapshot recovery: {err}"
-            )));
-        }
-    }
     let event_log_max = recovery_event_log
         .as_mut()
         .map(|event_log| {
@@ -2020,6 +2098,23 @@ async fn select_boot_state<J: Jammer>(
         }
         None => {}
         Some(ExistingPmaStatus::Valid { .. }) => {}
+    }
+
+    // A full SQLite quick_check is O(N) in the database size. The PMA is a
+    // complete boot source when its event number matches the event log, so
+    // scanning the entire log before opening that PMA only adds downtime.
+    // Keep the check on every path that will actually trust event-log rows for
+    // snapshot, checkpoint, or fresh-state recovery.
+    if let Some(event_log) = recovery_event_log.as_mut() {
+        info!(
+            event_log_max,
+            "PMA unavailable or out of sync; checking event log before recovery"
+        );
+        if let Err(err) = event_log.quick_check() {
+            return Err(CrownError::Unknown(format!(
+                "event log quick_check failed during snapshot recovery: {err}"
+            )));
+        }
     }
 
     if let Some(event_log) = recovery_event_log.as_mut() {
