@@ -16,10 +16,11 @@ use honk::{CompilerErrorLocation, CompilerResolutionFact, CompilerSemanticFact};
 use honk_service::semantic::{
     completion_term_range, hoon_rune_at, hoon_term_at, range_from_one_based_spot,
     structural_completions, structural_declaration_ranges, structural_definition,
-    structural_rune_definition, structural_symbols, validate_rename_name, SemanticCompletion,
-    SemanticCompletionKind, SemanticHover, SemanticNodeId, SemanticRename, SemanticRenameEdit,
-    SemanticRenameError, SemanticRenameTarget, SemanticSession, SemanticStructuralSymbol,
-    SemanticSymbol, SemanticSymbolKind, SemanticTextRange,
+    structural_exported_definition, structural_rune_definition, structural_symbols,
+    validate_rename_name, SemanticCompletion, SemanticCompletionKind, SemanticHover,
+    SemanticNodeId, SemanticRename, SemanticRenameEdit, SemanticRenameError, SemanticRenameTarget,
+    SemanticSession, SemanticStructuralSymbol, SemanticSymbol, SemanticSymbolKind,
+    SemanticTextRange,
 };
 use honk_service::{CompilerHandle, CompilerService, CompilerServiceConfig, DocumentUpdate};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
@@ -1762,7 +1763,10 @@ fn structural_external_definition(
             let Ok(dependency_source) = workspace.sources.read_to_string(&dependency) else {
                 continue;
             };
-            if let Some(range) = structural_definition(&dependency_source, name) {
+            // Only an imported file's outermost arms are reachable by a bare
+            // name; a nested arm that happens to be unique in that file (such
+            // as `add` inside zose's `secp` core) must not shadow the prelude.
+            if let Some(range) = structural_exported_definition(&dependency_source, name) {
                 definitions.push(SemanticDefinition {
                     path: dependency.clone(),
                     source: Arc::from(dependency_source.as_str()),
@@ -1782,13 +1786,16 @@ fn structural_external_definition(
         .sources
         .read_to_string(&workspace.prelude)
         .with_context(|| format!("failed to read prelude {}", workspace.prelude.display()))?;
-    Ok(
-        structural_definition(&prelude_source, name).map(|range| SemanticDefinition {
-            path: workspace.prelude.clone(),
-            source: Arc::from(prelude_source),
-            range,
-        }),
-    )
+    // Built-ins such as `add` are declared once at the prelude's outermost
+    // level and again inside specialised cores; prefer the exported arm, and
+    // only then accept a name that is unique at any depth.
+    let range = structural_exported_definition(&prelude_source, name)
+        .or_else(|| structural_definition(&prelude_source, name));
+    Ok(range.map(|range| SemanticDefinition {
+        path: workspace.prelude.clone(),
+        source: Arc::from(prelude_source),
+        range,
+    }))
 }
 
 struct StructuralReferenceQuery<'path> {

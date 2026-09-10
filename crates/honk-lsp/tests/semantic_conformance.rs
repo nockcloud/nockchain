@@ -1020,6 +1020,71 @@ fn workspace_rename_edits_unopened_sources_and_rejects_import_collisions() {
 }
 
 #[test]
+fn bare_names_skip_arms_nested_in_wildcard_imports_and_reach_the_prelude() {
+    // `bip39.hoon` wildcard-imports `zose.hoon`, whose only `add` arm lives
+    // three cores deep inside `crypto`/`secp`. A bare `add` cannot reach it, so
+    // the structural fallback must continue to the prelude's outermost `add`
+    // rather than the unique-but-nested arm. The prelude declares `add` and
+    // `lent` again inside specialised cores, which must not make them
+    // ambiguous either.
+    let root = repository_root();
+    let entry = root.join("hoon/common/bip39.hoon");
+    let source = std::fs::read_to_string(&entry).expect("read bip39 source");
+    let entry_uri = file_uri(&entry);
+    let prelude = root.join("hoon/common/hoon.hoon");
+    let prelude_source = std::fs::read_to_string(&prelude).expect("read prelude source");
+    let prelude_uri = file_uri(&prelude);
+    let (client, server_thread) = start_server(&root, 0);
+    client
+        .sender
+        .send(
+            Notification::new(
+                DidOpenTextDocument::METHOD.to_string(),
+                DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem::new(
+                        entry_uri.clone(),
+                        "hoon".to_string(),
+                        1,
+                        source.clone(),
+                    ),
+                },
+            )
+            .into(),
+        )
+        .expect("send didOpen");
+
+    let mut request_id = 2;
+    for (use_text, symbol) in [("(add wid cs)", "add"), ("(lent ", "lent")] {
+        let line = source
+            .lines()
+            .position(|line| line.contains(use_text))
+            .unwrap_or_else(|| panic!("missing bip39 use: {use_text}"));
+        let character = source
+            .lines()
+            .nth(line)
+            .expect("use line")
+            .find(use_text)
+            .expect("use")
+            + use_text.find(symbol).expect("symbol in use")
+            + 1;
+        let definition = request_definition(&client, request_id, &entry_uri, line, character)
+            .unwrap_or_else(|| panic!("no definition for bare `{symbol}`"));
+        assert_eq!(
+            definition.uri, prelude_uri,
+            "bare `{symbol}` must resolve to the prelude, not an arm nested in an import"
+        );
+        let expected_line = prelude_source
+            .lines()
+            .position(|line| line.starts_with(&format!("++  {symbol}")))
+            .unwrap_or_else(|| panic!("prelude declares an outermost `{symbol}`"));
+        assert_eq!(definition.range.start.line as usize, expected_line);
+        request_id += 1;
+    }
+
+    shutdown_server(&client, server_thread, request_id);
+}
+
+#[test]
 fn definition_navigates_to_a_hyphenated_mold_arm() {
     let root = repository_root();
     let temp = TempDir::new().expect("temporary workspace");

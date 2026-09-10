@@ -584,11 +584,36 @@ pub fn hoon_rune_at(source: &str, byte_offset: u32) -> Option<&str> {
         })
 }
 
-/// Locate a unique arm or mold declaration without parsing the whole file.
+/// Locate a unique arm or mold declared in one of a file's outermost cores.
 ///
-/// This lightweight structural index is used for imported editor sources and
-/// the large standard-library prelude. It declines duplicate declarations so
-/// callers never guess between nested cores with the same arm name.
+/// A bare name in an importing file can only reach an imported file's
+/// outermost arms: arms nested inside inner cores are addressed through their
+/// enclosing arms, never directly. The standard-library prelude likewise
+/// declares `add`, `mul`, or `lent` once at the outermost level and again
+/// inside specialised cores such as `fe` or `rd`, so this lookup is what
+/// resolves a built-in without guessing between those cores.
+pub fn structural_exported_definition(source: &str, name: &str) -> Option<SemanticTextRange> {
+    if source.len() > u32::MAX as usize {
+        return None;
+    }
+    let mut matches = scan_arm_headers(source)
+        .into_iter()
+        .filter(|symbol| symbol.depth == 0 && symbol.name == name);
+    let definition = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(definition.selection_range)
+}
+
+/// Locate a unique arm or mold declaration at any depth without parsing the
+/// whole file.
+///
+/// This lightweight structural index is used for the large standard-library
+/// prelude, including arms nested inside its parser core. It declines
+/// duplicate declarations so callers never guess between nested cores with the
+/// same arm name; prefer [`structural_exported_definition`] for names an
+/// importing file can reach directly.
 pub fn structural_definition(source: &str, name: &str) -> Option<SemanticTextRange> {
     if source.len() > u32::MAX as usize {
         return None;
@@ -919,6 +944,9 @@ struct RawSymbol {
     range: SemanticTextRange,
     selection_range: SemanticTextRange,
     indent: usize,
+    /// Number of enclosing arms. Zero means the arm belongs to one of the
+    /// file's outermost cores.
+    depth: usize,
     signature: String,
 }
 
@@ -1765,6 +1793,7 @@ fn scan_arm_headers(source: &str) -> Vec<RawSymbol> {
                 let occurrence = occurrences.entry(base_signature.clone()).or_default();
                 let signature = format!("{base_signature}:{}", *occurrence);
                 *occurrence += 1;
+                let depth = hierarchy.len();
                 hierarchy.push((indent, identity));
                 let header_start = offset + indent;
                 let selection_start = header_start + name_start;
@@ -1785,6 +1814,7 @@ fn scan_arm_headers(source: &str) -> Vec<RawSymbol> {
                         end: (selection_start + name.len()) as u32,
                     },
                     indent,
+                    depth,
                     signature,
                 });
             }
@@ -1879,9 +1909,9 @@ mod tests {
 
     use super::{
         completion_term_range, hoon_rune_at, range_from_one_based_spot, scan_arm_headers,
-        structural_completions, structural_definition, structural_rune_definition,
-        structural_symbols, LineIndex, SemanticCompletionKind, SemanticRenameError,
-        SemanticSession, SemanticSymbolKind, SemanticTextRange,
+        structural_completions, structural_definition, structural_exported_definition,
+        structural_rune_definition, structural_symbols, LineIndex, SemanticCompletionKind,
+        SemanticRenameError, SemanticSession, SemanticSymbolKind, SemanticTextRange,
     };
 
     const SOURCE: &str = "|%\n++  answer\n  42\n+$  pair\n  $:  left=@  right=@  ==\n--\n";
@@ -1962,6 +1992,36 @@ mod tests {
         );
         let duplicated_source = source.replace("++  moat", "+$  kernel-state  @\n++  moat");
         assert!(structural_definition(&duplicated_source, "kernel-state").is_none());
+    }
+
+    #[test]
+    fn exported_definitions_ignore_arms_nested_in_inner_cores() {
+        let source = concat!(
+            "|%\n", "++  add  |=([a=@ b=@] (^add a b))\n", "++  crypto\n", "  |%\n",
+            "  ++  secp\n", "    |%\n", "    ++  add  |=([a=@ b=@] (^add a b))\n",
+            "    ++  double  |=(a=@ (add a a))\n", "    --\n", "  --\n",
+            "++  lent  |=(a=(list) 0)\n", "--\n",
+        );
+        let exported = structural_exported_definition(source, "add").expect("outermost add");
+        assert_eq!(
+            &source[exported.start as usize..exported.end as usize],
+            "add"
+        );
+        assert_eq!(
+            exported.start,
+            source.find("++  add").expect("outermost header") as u32 + 4
+        );
+        assert!(
+            structural_definition(source, "add").is_none(),
+            "any-depth lookup still declines the duplicated name"
+        );
+        assert!(
+            structural_exported_definition(source, "double").is_none(),
+            "arms nested in inner cores are never reachable by a bare name"
+        );
+        assert!(structural_definition(source, "double").is_some());
+        assert!(structural_exported_definition(source, "lent").is_some());
+        assert!(structural_exported_definition(source, "missing").is_none());
     }
 
     #[test]
