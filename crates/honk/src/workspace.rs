@@ -1883,12 +1883,18 @@ impl<'arena> WorkspaceCompiler<'arena> {
     }
 }
 
+fn prelude_read_error(prelude: &Path, error: &io::Error) -> DynError {
+    format!("failed to read Hoon prelude {}: {error}", prelude.display()).into()
+}
+
 fn workspace_config_fingerprint(config: &WorkspaceConfig) -> Result<blake3::Hash> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"honk-workspace-config-v1\0");
     hasher.update(config.prelude.as_os_str().as_encoded_bytes());
     hasher.update(b"\0");
-    hasher.update(&fs::read(&config.prelude)?);
+    hasher.update(
+        &fs::read(&config.prelude).map_err(|error| prelude_read_error(&config.prelude, &error))?,
+    );
     hasher.update(b"\0dependencies\0");
     hasher.update(config.dependencies.as_os_str().as_encoded_bytes());
     hasher.update(b"\0subject-type\0");
@@ -1909,7 +1915,11 @@ fn workspace_config_fingerprint_with_sources(
     hasher.update(b"honk-workspace-overlay-config-v1\0");
     hasher.update(config.prelude.as_os_str().as_encoded_bytes());
     hasher.update(b"\0");
-    hasher.update(&sources.read_bytes(&config.prelude)?);
+    hasher.update(
+        &sources
+            .read_bytes(&config.prelude)
+            .map_err(|error| prelude_read_error(&config.prelude, &error))?,
+    );
     hasher.update(b"\0dependencies\0");
     hasher.update(config.dependencies.as_os_str().as_encoded_bytes());
     hasher.update(b"\0subject-type\0");

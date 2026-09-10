@@ -529,6 +529,12 @@ fn resolve_config(config: LspConfig, initialize: &InitializeParams) -> Result<Re
         .or(initialization_options.prelude)
         .map(|path| resolve_path(&root, path))
         .unwrap_or_else(|| dependencies.join("common/hoon.hoon"));
+    if !prelude.is_file() {
+        warn!(
+            prelude = %prelude.display(),
+            "honk prelude does not exist; set honk.preludePath (or --prelude) for this workspace"
+        );
+    }
     let entry = config
         .entry
         .or(initialization_options.entry)
@@ -3364,10 +3370,11 @@ fn spawn_check_worker(
         .name("honk-lsp-checks".to_string())
         .spawn(move || {
             if let Err(error) = check_worker_loop(config, state, trigger, &events, &stopping) {
-                error!(%error, "honk LSP check worker stopped");
+                let message = format!("{error:#}");
+                error!(error = %message, "honk LSP check worker stopped");
                 let _ = events.send(WorkerEvent::Error {
                     generation: u64::MAX,
-                    message: error.to_string(),
+                    message,
                 });
             }
         })
