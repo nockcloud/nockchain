@@ -152,11 +152,36 @@ struct RankedCompletion {
 }
 
 impl EditorSnapshot {
-    fn target(&self, configured_entry: Option<&Path>) -> Option<PathBuf> {
-        configured_entry
-            .map(Path::to_path_buf)
-            .or_else(|| self.active.clone())
-            .or_else(|| self.documents.keys().min().cloned())
+    /// Choose the document the next check compiles as its entry.
+    ///
+    /// The prelude is a dependency of every check, never an entry. Opening it
+    /// (for example by navigating into a standard-library definition) must not
+    /// make it the target: checking the prelude as an entry runs the hoon-138
+    /// self-mint, the deepest build in the tree, which stalls every later
+    /// check behind minutes of compilation. An explicitly configured entry is
+    /// always honoured.
+    fn target(&self, configured_entry: Option<&Path>, prelude: &Path) -> Option<PathBuf> {
+        if let Some(entry) = configured_entry {
+            return Some(entry.to_path_buf());
+        }
+        let is_entry_candidate = |path: &Path| !paths_match(path, prelude);
+        if let Some(active) = self
+            .active
+            .as_deref()
+            .filter(|path| is_entry_candidate(path))
+        {
+            return Some(active.to_path_buf());
+        }
+        self.documents
+            .keys()
+            .filter(|path| is_entry_candidate(path))
+            .max_by_key(|path| {
+                (
+                    self.path_revisions.get(*path).copied().unwrap_or(0),
+                    std::cmp::Reverse((*path).clone()),
+                )
+            })
+            .cloned()
     }
 
     fn mark_path_changed(&mut self, path: PathBuf) {
@@ -3412,7 +3437,8 @@ fn check_worker_loop(
         }
         debounce(&trigger, config.check_delay, stopping);
         let mut snapshot = lock_snapshot(&state)?.clone();
-        let Some(mut target) = snapshot.target(config.entry.as_deref()) else {
+        let Some(mut target) = snapshot.target(config.entry.as_deref(), &config.workspace.prelude)
+        else {
             continue;
         };
 
@@ -3442,7 +3468,9 @@ fn check_worker_loop(
             // Initialization can be expensive. Collapse edits received while
             // the compiler was starting into the first actual check.
             snapshot = lock_snapshot(&state)?.clone();
-            let Some(latest_target) = snapshot.target(config.entry.as_deref()) else {
+            let Some(latest_target) =
+                snapshot.target(config.entry.as_deref(), &config.workspace.prelude)
+            else {
                 continue;
             };
             target = latest_target;
@@ -3875,6 +3903,48 @@ fn file_path_to_uri(path: &Path) -> Result<Uri> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_target_never_selects_the_prelude() {
+        let prelude = PathBuf::from("/tmp/honk-lsp-target-test/hoon/common/hoon.hoon");
+        let lib = PathBuf::from("/tmp/honk-lsp-target-test/hoon/lib/a.hoon");
+        let app = PathBuf::from("/tmp/honk-lsp-target-test/hoon/app/b.hoon");
+        let open = |path: &PathBuf| OpenDocument {
+            uri: file_path_to_uri(path).expect("file URI"),
+            version: 1,
+            text: String::new(),
+        };
+        let mut snapshot = EditorSnapshot {
+            documents: HashMap::from([(prelude.clone(), open(&prelude))]),
+            active: Some(prelude.clone()),
+            ..EditorSnapshot::default()
+        };
+        assert_eq!(snapshot.target(None, &prelude), None);
+        assert_eq!(
+            snapshot.target(Some(&prelude), &prelude),
+            Some(prelude.clone()),
+            "an explicitly configured entry is honoured even when it is the prelude"
+        );
+
+        snapshot.documents.insert(lib.clone(), open(&lib));
+        snapshot.documents.insert(app.clone(), open(&app));
+        snapshot.generation = 3;
+        snapshot.mark_path_changed(app.clone());
+        snapshot.generation = 4;
+        snapshot.mark_path_changed(lib.clone());
+        snapshot.generation = 5;
+        snapshot.mark_path_changed(prelude.clone());
+        snapshot.active = Some(prelude.clone());
+        assert_eq!(
+            snapshot.target(None, &prelude),
+            Some(lib.clone()),
+            "the most recently changed non-prelude document replaces an active prelude"
+        );
+
+        snapshot.active = Some(app.clone());
+        assert_eq!(snapshot.target(None, &prelude), Some(app.clone()));
+        assert_eq!(snapshot.target(Some(&lib), &prelude), Some(lib));
+    }
+
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
